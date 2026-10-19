@@ -28,7 +28,7 @@ use kairos_client::Error;
 use kairos_client::types::Pagination;
 use kairos_client::types_org::{AddTeamMemberRequest, CreateTeamRequest};
 use kairos_client::types_team_pages::{
-    CreateTeamAnnouncementRequest, CreateTeamPageRequest, TeamPage, UpdateTeamPageRequest,
+    CreateTeamAnnouncementRequest, CreateTeamPageRequest, TeamPageSummary, UpdateTeamPageRequest,
 };
 use kairos_db::models::{
     BoardLevel, NewOrganizationMember, OrgRole, RelationshipType, TaskType, WorkClass,
@@ -69,7 +69,7 @@ fn rejection<T: std::fmt::Debug>(result: Result<T, Error>) -> Error {
 }
 
 /// The page with this slug (panics when absent).
-fn by_slug<'a>(pages: &'a [TeamPage], slug: &str) -> &'a TeamPage {
+fn by_slug<'a>(pages: &'a [TeamPageSummary], slug: &str) -> &'a TeamPageSummary {
     pages
         .iter()
         .find(|p| p.slug == slug)
@@ -244,7 +244,7 @@ async fn team_pages_endpoints_against_live_stack() {
     let ghost = Uuid::new_v4().to_string();
     let err = rejection(bob.list_team_pages(&ghost).await);
     assert!(matches!(err, Error::NotFound { .. }), "{err}");
-    let err = rejection(bob.list_team_announcements(&ghost).await);
+    let err = rejection(bob.list_team_announcements(&ghost, None, None).await);
     assert!(matches!(err, Error::NotFound { .. }), "{err}");
 
     // =======================================================================
@@ -527,9 +527,11 @@ async fn team_pages_endpoints_against_live_stack() {
     // The history of a page: each saved version, newest first, with the name
     // of the person who saved it (KAIROS-T-0439).
     let history = bob
-        .team_page_history(&team.id, &charter.id)
+        .team_page_history(&team.id, &charter.id, None, None)
         .await
         .expect("history is open tenant-wide");
+    assert_eq!((history.limit, history.offset), (50, 0), "the default page");
+    let history = history.items;
     assert!(!history.is_empty());
     assert!(
         history.windows(2).all(|w| w[0].version > w[1].version),
@@ -537,6 +539,33 @@ async fn team_pages_endpoints_against_live_stack() {
     );
     assert!(history.iter().all(|v| !v.edited_by_name.is_empty()));
     assert_eq!(history.last().map(|v| v.version), Some(1));
+    // KAIROS-T-0629: a limit and an offset; a row has no content, and
+    // `?version=N` gives one version in full.
+    let page = bob
+        .team_page_history(&team.id, &charter.id, Some(1), Some(1))
+        .await
+        .expect("one row of the history");
+    assert_eq!(page.total, history.len() as i64);
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].version, history[1].version);
+    let capped = bob
+        .team_page_history(&team.id, &charter.id, Some(10_000), None)
+        .await
+        .expect("a limit over the maximum");
+    assert_eq!(capped.limit, 200, "the maximum");
+    let v1 = bob
+        .team_page_version(&team.id, &charter.id, 1)
+        .await
+        .expect("version 1 in full");
+    assert_eq!(v1.version, 1);
+    assert!(v1.content.starts_with("# Team Charter"), "{v1:?}");
+    let latest = bob
+        .team_page_version(&team.id, &charter.id, history[0].version)
+        .await
+        .expect("the newest version in full");
+    assert_eq!(latest.content, "# Charter v2");
+    let err = rejection(bob.team_page_version(&team.id, &charter.id, 999).await);
+    assert!(matches!(err, Error::NotFound { .. }), "{err}");
 
     // =======================================================================
     // Announcements: append-only, pinned-first, author-or-admin delete
@@ -585,13 +614,25 @@ async fn team_pages_endpoints_against_live_stack() {
         .expect("org admin pins");
     // Pinned first, then newest-first.
     let feed = bob
-        .list_team_announcements(&team.id)
+        .list_team_announcements(&team.id, None, None)
         .await
         .expect("open read");
+    assert_eq!((feed.total, feed.limit, feed.offset), (3, 50, 0));
+    let feed = feed.items;
     assert_eq!(
         feed.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
         vec![pinned.id.as_str(), second.id.as_str(), first.id.as_str()],
         "pinned-first then newest: {feed:?}"
+    );
+    // KAIROS-T-0629: a limit and an offset.
+    let rest = bob
+        .list_team_announcements(&team.id, Some(2), Some(1))
+        .await
+        .expect("a page of the announcements");
+    assert_eq!(rest.total, 3);
+    assert_eq!(
+        rest.items.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
+        vec![second.id.as_str(), first.id.as_str()]
     );
     // Body size cap applies to announcements too.
     let err = rejection(

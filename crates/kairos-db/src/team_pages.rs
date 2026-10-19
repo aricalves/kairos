@@ -12,7 +12,9 @@ use diesel::result::Error as DieselError;
 use uuid::Uuid;
 
 use crate::models::enums::TeamPageKind;
-use crate::models::team_pages::{NewTeamPage, NewTeamPageHistory, TeamPage, TeamPageHistory};
+use crate::models::team_pages::{
+    NewTeamPage, NewTeamPageHistory, TeamPage, TeamPageHistory, TeamPageMeta, TeamPageVersionMeta,
+};
 
 /// The charter's templated skeleton (mirrors the `team_charter` system
 /// template's headings).
@@ -154,14 +156,18 @@ pub fn load_page(
 }
 
 /// A team's live page tree, parents-with-position order (flat list; the
-/// client nests by parent_id).
-pub fn list_pages(conn: &mut PgConnection, team_id: Uuid) -> Result<Vec<TeamPage>, DieselError> {
+/// client nests by parent_id). The rows have no content (KAIROS-T-0629):
+/// [`load_page`] reads one page in full.
+pub fn list_pages(
+    conn: &mut PgConnection,
+    team_id: Uuid,
+) -> Result<Vec<TeamPageMeta>, DieselError> {
     use crate::schema::team_pages::dsl;
     dsl::team_pages
         .filter(dsl::team_id.eq(team_id))
         .filter(dsl::deleted_at.is_null())
         .order((dsl::position.asc(), dsl::title.asc()))
-        .select(TeamPage::as_select())
+        .select(TeamPageMeta::as_select())
         .load(conn)
 }
 
@@ -459,16 +465,17 @@ pub fn soft_delete_page(
 }
 
 /// The archived nodes of a team, newest archive first (KAIROS-T-0439).
+/// The rows have no content (KAIROS-T-0629).
 pub fn list_archived_pages(
     conn: &mut PgConnection,
     team_id: Uuid,
-) -> Result<Vec<TeamPage>, DieselError> {
+) -> Result<Vec<TeamPageMeta>, DieselError> {
     use crate::schema::team_pages::dsl;
     dsl::team_pages
         .filter(dsl::team_id.eq(team_id))
         .filter(dsl::deleted_at.is_not_null())
         .order((dsl::deleted_at.desc(), dsl::title.asc()))
-        .select(TeamPage::as_select())
+        .select(TeamPageMeta::as_select())
         .load(conn)
 }
 
@@ -568,39 +575,90 @@ pub fn restore_page(
     })
 }
 
-/// The saved versions of a page, newest first (KAIROS-T-0439). An archived
-/// page has its history too.
-pub fn page_history(
+/// The page of a team, live or archived, or the typed not-found.
+fn require_page_of_team(
     conn: &mut PgConnection,
     team_id: Uuid,
     page_id: Uuid,
-) -> Result<Vec<TeamPageHistory>, TeamPageError> {
-    use crate::schema::{team_page_history as history, team_pages as pages};
+) -> Result<(), TeamPageError> {
+    use crate::schema::team_pages as pages;
     let exists: Option<Uuid> = pages::table
         .filter(pages::id.eq(page_id))
         .filter(pages::team_id.eq(team_id))
         .select(pages::id)
         .first(conn)
         .optional()?;
-    exists.ok_or(TeamPageError::PageNotFound(page_id))?;
-    Ok(history::table
-        .filter(history::page_id.eq(page_id))
-        .order(history::version.desc())
-        .select(TeamPageHistory::as_select())
-        .load(conn)?)
+    exists
+        .map(|_| ())
+        .ok_or(TeamPageError::PageNotFound(page_id))
 }
 
-/// A team's announcements, pinned first then newest first.
+/// One page of the saved versions of a page, newest first (KAIROS-T-0439),
+/// and the number of versions. An archived page has its history too. The
+/// rows have no content (KAIROS-T-0629): [`page_version`] reads one
+/// version in full.
+pub fn page_history(
+    conn: &mut PgConnection,
+    team_id: Uuid,
+    page_id: Uuid,
+    limit: i64,
+    offset: i64,
+) -> Result<(i64, Vec<TeamPageVersionMeta>), TeamPageError> {
+    use crate::schema::team_page_history as history;
+    require_page_of_team(conn, team_id, page_id)?;
+    let total: i64 = history::table
+        .filter(history::page_id.eq(page_id))
+        .count()
+        .get_result(conn)?;
+    let rows = history::table
+        .filter(history::page_id.eq(page_id))
+        .order(history::version.desc())
+        .limit(limit)
+        .offset(offset)
+        .select(TeamPageVersionMeta::as_select())
+        .load(conn)?;
+    Ok((total, rows))
+}
+
+/// One saved version of a page with its title and content
+/// (KAIROS-T-0629), or `None` when the page has no such version.
+pub fn page_version(
+    conn: &mut PgConnection,
+    team_id: Uuid,
+    page_id: Uuid,
+    version: i32,
+) -> Result<Option<TeamPageHistory>, TeamPageError> {
+    use crate::schema::team_page_history as history;
+    require_page_of_team(conn, team_id, page_id)?;
+    Ok(history::table
+        .filter(history::page_id.eq(page_id))
+        .filter(history::version.eq(version))
+        .select(TeamPageHistory::as_select())
+        .first(conn)
+        .optional()?)
+}
+
+/// One page of the announcements of a team, pinned first then newest
+/// first, and the number of announcements (KAIROS-T-0629).
 pub fn list_announcements(
     conn: &mut PgConnection,
     team_id: Uuid,
-) -> Result<Vec<TeamAnnouncement>, DieselError> {
+    limit: i64,
+    offset: i64,
+) -> Result<(i64, Vec<TeamAnnouncement>), DieselError> {
     use crate::schema::team_announcements::dsl;
-    dsl::team_announcements
+    let total: i64 = dsl::team_announcements
         .filter(dsl::team_id.eq(team_id))
-        .order((dsl::pinned.desc(), dsl::created_at.desc()))
+        .count()
+        .get_result(conn)?;
+    let rows = dsl::team_announcements
+        .filter(dsl::team_id.eq(team_id))
+        .order((dsl::pinned.desc(), dsl::created_at.desc(), dsl::id.asc()))
+        .limit(limit)
+        .offset(offset)
         .select(TeamAnnouncement::as_select())
-        .load(conn)
+        .load(conn)?;
+    Ok((total, rows))
 }
 
 // ---------------------------------------------------------------------------

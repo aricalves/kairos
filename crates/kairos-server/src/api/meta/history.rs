@@ -79,18 +79,8 @@ pub(crate) async fn get_history(
                 return serde_json::to_value(snapshot).map_err(ApiError::internal);
             }
 
-            let total: i64 = history::table
-                .filter(history::item_id.eq(item_id))
-                .count()
-                .get_result(conn)
-                .map_err(ApiError::internal)?;
-            let rows: Vec<ItemHistory> = history::table
-                .filter(history::item_id.eq(item_id))
-                .order(history::version.desc())
-                .limit(limit)
-                .offset(offset)
-                .select(ItemHistory::as_select())
-                .load(conn)
+            // KAIROS-T-0629: the list reads no title and no content.
+            let (total, rows) = kairos_db::items::history_versions(conn, item_id, limit, offset)
                 .map_err(ApiError::internal)?;
             let envelope = dto_base::ListEnvelope::<dto::HistoryVersion> {
                 items: rows.into_iter().map(IntoDto::into_dto).collect(),

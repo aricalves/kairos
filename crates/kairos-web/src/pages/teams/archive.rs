@@ -6,7 +6,8 @@
 //!   folder is gone.
 //! - The history of a page lists each saved version, newest first, with the
 //!   person who saved it, and "(agent)" when an agent saved it with the
-//!   agent key of the person.
+//!   agent key of the person. The list has no content: "View" reads that
+//!   version (KAIROS-T-0629).
 
 use aurora_dark::components::{Alert, Button, Empty, Group, Loading, Panel, Pill, Stack, Text};
 use aurora_dark::tokens::token;
@@ -132,6 +133,20 @@ pub(crate) fn HistoryPanel(team_id: String, page_id: String) -> impl IntoView {
             api::page_history(auth, &team_id.get_value(), &page_id.get_value()).await
         }
     });
+    // KAIROS-T-0629: the list has no content; read the version shown.
+    let snapshot = LocalResource::new(move || {
+        let wanted = shown.get();
+        async move {
+            match wanted {
+                None => Ok(None),
+                Some(version) => {
+                    api::page_version(auth, &team_id.get_value(), &page_id.get_value(), version)
+                        .await
+                        .map(Some)
+                }
+            }
+        }
+    });
     view! {
         <Panel title="History" caption="each saved version, newest first">
             {move || if !open.get() {
@@ -149,8 +164,6 @@ pub(crate) fn HistoryPanel(team_id: String, page_id: String) -> impl IntoView {
                             {rows.into_iter().map(|row| {
                                 let number = row.version;
                                 let label = format!("v{} · {} · {}", row.version, editor_label(&row), short_time(&row.edited_at));
-                                let rendered = StoredValue::new(markdown::to_html(&row.content));
-                                let title = StoredValue::new(row.title.clone());
                                 view! {
                                     <Stack gap="xs">
                                         <Group justify="between">
@@ -165,11 +178,15 @@ pub(crate) fn HistoryPanel(team_id: String, page_id: String) -> impl IntoView {
                                                 {move || if shown.get() == Some(number) { "Hide" } else { "View" }}
                                             </Button>
                                         </Group>
-                                        {move || (shown.get() == Some(number)).then(|| view! {
-                                            <Stack gap="xs">
-                                                <Text bright=true size="sm">{title.get_value()}</Text>
-                                                <div class="kairos-markdown" inner_html=rendered.get_value()></div>
-                                            </Stack>
+                                        {move || (shown.get() == Some(number)).then(|| match snapshot.get() {
+                                            Some(Ok(Some(version))) if version.version == number => view! {
+                                                <Stack gap="xs">
+                                                    <Text bright=true size="sm">{version.title.clone()}</Text>
+                                                    <div class="kairos-markdown" inner_html=markdown::to_html(&version.content)></div>
+                                                </Stack>
+                                            }.into_any(),
+                                            Some(Err(e)) => view! { <Text dimmed=true size="sm">{error_text(&e)}</Text> }.into_any(),
+                                            _ => view! { <Loading label="Loading the version…"/> }.into_any(),
                                         })}
                                     </Stack>
                                 }
@@ -190,7 +207,6 @@ mod tests {
         api::PageVersion {
             version: 2,
             title: "Charter".into(),
-            content: String::new(),
             edited_by_name: "Robin".into(),
             edited_at: "2026-10-14T09:43:36.123+00:00".into(),
             agent_key_id: agent.then(|| "k1".into()),

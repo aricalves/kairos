@@ -16,16 +16,20 @@ use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use kairos_client::types_team_pages as dto;
 use kairos_db::models::enums::TeamPageKind;
-use kairos_db::models::team_pages::{NewTeamAnnouncement, TeamAnnouncement, TeamPage};
+use kairos_db::models::team_pages::{
+    NewTeamAnnouncement, TeamAnnouncement, TeamPage, TeamPageMeta,
+};
 use kairos_db::team_pages::{self, CreatePage, TeamPageError};
 use serde_json::json;
 use uuid::Uuid;
 
 use super::super::{parse_enum, parse_opt_uuid, parse_uuid};
 use super::teams::team_by_ref;
+use crate::api::clamp_pagination;
 use crate::app::AppState;
 use crate::body::ApiJson;
 use crate::error::ApiError;
+use crate::input::ApiQuery;
 use crate::middleware::auth::AuthContext;
 use crate::middleware::tenant::TenantContext;
 
@@ -216,6 +220,23 @@ fn page_dto(page: TeamPage) -> dto::TeamPage {
     }
 }
 
+/// A node of the tree without its content (KAIROS-T-0629).
+fn summary_dto(page: TeamPageMeta) -> dto::TeamPageSummary {
+    dto::TeamPageSummary {
+        id: page.id.to_string(),
+        team_id: page.team_id.to_string(),
+        parent_id: page.parent_id.map(|id| id.to_string()),
+        kind: page.kind.to_string(),
+        slug: page.slug,
+        title: page.title,
+        position: page.position,
+        is_protected: page.is_protected,
+        version: page.version,
+        created_at: page.created_at.to_rfc3339(),
+        updated_at: page.updated_at.to_rfc3339(),
+    }
+}
+
 fn announcement_dto(row: TeamAnnouncement) -> dto::TeamAnnouncement {
     dto::TeamAnnouncement {
         id: row.id.to_string(),
@@ -227,14 +248,16 @@ fn announcement_dto(row: TeamAnnouncement) -> dto::TeamAnnouncement {
     }
 }
 
-/// The team's live page tree as a flat list (open tenant-wide).
+/// The team's live page tree as a flat list, without content (open
+/// tenant-wide). `GET /api/teams/{id}/pages/{page_id}` gives the content
+/// of one page (KAIROS-T-0629).
 #[utoipa::path(
     get,
     path = "/api/teams/{id}/pages",
     tag = "team-pages",
     params(("id" = String, Path, description = "The slug or the id (UUID) of the team")),
     responses(
-        (status = 200, description = "The page tree, flat", body = Vec<dto::TeamPage>),
+        (status = 200, description = "The page tree, flat, without content", body = Vec<dto::TeamPageSummary>),
         (status = 404, description = "Unknown team", body = kairos_client::types::ErrorEnvelope),
     ),
 )]
@@ -242,7 +265,7 @@ pub(crate) async fn list_pages(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Path(id): Path<String>,
-) -> Result<Json<Vec<dto::TeamPage>>, ApiError> {
+) -> Result<Json<Vec<dto::TeamPageSummary>>, ApiError> {
     let pages = state
         .blocking
         .run(&tenant.slug, move |conn| {
@@ -253,15 +276,27 @@ pub(crate) async fn list_pages(
     Ok(Json(pages))
 }
 
-/// The live page tree of a team, flat, as the REST route gives it. MCP
-/// calls this too (KAIROS-T-0434).
+/// The live page tree of a team, flat, without content, as the REST route
+/// gives it. MCP calls this too (KAIROS-T-0434).
 pub(crate) fn list_as(
     conn: &mut PgConnection,
     team_id: Uuid,
-) -> Result<Vec<dto::TeamPage>, ApiError> {
+) -> Result<Vec<dto::TeamPageSummary>, ApiError> {
     require_team(conn, team_id)?;
     let pages = team_pages::list_pages(conn, team_id).map_err(ApiError::internal)?;
-    Ok(pages.into_iter().map(page_dto).collect())
+    Ok(pages.into_iter().map(summary_dto).collect())
+}
+
+/// One live page of a team in full, as `GET /api/teams/{id}/pages/{page_id}`
+/// gives it. MCP calls this too.
+pub(crate) fn page_as(
+    conn: &mut PgConnection,
+    team_id: Uuid,
+    page_id: Uuid,
+) -> Result<dto::TeamPage, ApiError> {
+    require_team(conn, team_id)?;
+    let page = team_pages::load_page(conn, team_id, page_id).map_err(map_page_error)?;
+    Ok(page_dto(page))
 }
 
 /// One live page (open tenant-wide).
@@ -288,9 +323,7 @@ pub(crate) async fn get_page(
         .blocking
         .run(&tenant.slug, move |conn| {
             let team_id = team_by_ref(conn, &id)?;
-            require_team(conn, team_id)?;
-            let page = team_pages::load_page(conn, team_id, page_id).map_err(map_page_error)?;
-            Ok(page_dto(page))
+            page_as(conn, team_id, page_id)
         })
         .await?;
     Ok(Json(page))
@@ -588,7 +621,7 @@ pub(crate) fn list_archived_as(
         .map(|row| {
             let archived_at = row.deleted_at.map(|at| at.to_rfc3339()).unwrap_or_default();
             dto::ArchivedTeamPage {
-                page: page_dto(row),
+                page: summary_dto(row),
                 archived_at,
             }
         })
@@ -655,8 +688,9 @@ pub(crate) fn restore_as(
     Ok(page_dto(restored))
 }
 
-/// The saved versions of a page, newest first (open tenant-wide,
-/// KAIROS-T-0439).
+/// The saved versions of a page, newest first, without content, or one
+/// version in full with `?version=N` (open tenant-wide, KAIROS-T-0439,
+/// KAIROS-T-0629).
 #[utoipa::path(
     get,
     path = "/api/teams/{id}/pages/{page_id}/history",
@@ -664,53 +698,72 @@ pub(crate) fn restore_as(
     params(
         ("id" = String, Path, description = "The slug or the id (UUID) of the team"),
         ("page_id" = String, Path, description = "Page id (UUID)"),
+        dto::TeamPageHistoryQuery,
     ),
     responses(
-        (status = 200, description = "The versions, newest first", body = Vec<dto::TeamPageVersion>),
-        (status = 404, description = "Unknown team or page", body = kairos_client::types::ErrorEnvelope),
+        (status = 200, description = "One page of the versions, newest first, without content (or a TeamPageVersion with ?version=N)", body = kairos_client::types::ListEnvelope<dto::TeamPageVersionSummary>),
+        (status = 404, description = "Unknown team, page, or version", body = kairos_client::types::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn page_history(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Path((id, page_id)): Path<(String, String)>,
-) -> Result<Json<Vec<dto::TeamPageVersion>>, ApiError> {
+    ApiQuery(query): ApiQuery<dto::TeamPageHistoryQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
     let page_id = parse_uuid(&page_id, "page_id")?;
-    let rows = state
+    let (limit, offset) = clamp_pagination(&kairos_client::types::Pagination {
+        limit: query.limit,
+        offset: query.offset,
+    });
+    let answer = state
         .blocking
         .run(&tenant.slug, move |conn| {
             let team_id = team_by_ref(conn, &id)?;
-            history_as(conn, team_id, page_id)
+            match query.version {
+                Some(version) => serde_json::to_value(version_as(conn, team_id, page_id, version)?),
+                None => serde_json::to_value(history_as(conn, team_id, page_id, limit, offset)?),
+            }
+            .map_err(ApiError::internal)
         })
         .await?;
-    Ok(Json(rows))
+    Ok(Json(answer))
 }
 
-/// The saved versions of a page, with the name of each editor.
+/// The display names of the editors `ids`.
+fn editor_names(
+    conn: &mut PgConnection,
+    ids: &[Uuid],
+) -> Result<std::collections::HashMap<Uuid, String>, ApiError> {
+    use kairos_db::schema::users::dsl;
+    Ok(dsl::users
+        .filter(dsl::id.eq_any(ids))
+        .select((dsl::id, dsl::display_name))
+        .load::<(Uuid, String)>(conn)
+        .map_err(ApiError::internal)?
+        .into_iter()
+        .collect())
+}
+
+/// One page of the saved versions of a page, without content, with the
+/// name of each editor.
 pub(crate) fn history_as(
     conn: &mut PgConnection,
     team_id: Uuid,
     page_id: Uuid,
-) -> Result<Vec<dto::TeamPageVersion>, ApiError> {
+    limit: i64,
+    offset: i64,
+) -> Result<kairos_client::types::ListEnvelope<dto::TeamPageVersionSummary>, ApiError> {
     require_team(conn, team_id)?;
-    let rows = team_pages::page_history(conn, team_id, page_id).map_err(map_page_error)?;
+    let (total, rows) =
+        team_pages::page_history(conn, team_id, page_id, limit, offset).map_err(map_page_error)?;
     let ids: Vec<Uuid> = rows.iter().map(|row| row.edited_by).collect();
-    let names: std::collections::HashMap<Uuid, String> = {
-        use kairos_db::schema::users::dsl;
-        dsl::users
-            .filter(dsl::id.eq_any(&ids))
-            .select((dsl::id, dsl::display_name))
-            .load::<(Uuid, String)>(conn)
-            .map_err(ApiError::internal)?
-            .into_iter()
-            .collect()
-    };
-    Ok(rows
+    let names = editor_names(conn, &ids)?;
+    let items = rows
         .into_iter()
-        .map(|row| dto::TeamPageVersion {
+        .map(|row| dto::TeamPageVersionSummary {
             version: row.version,
             title: row.title,
-            content: row.content,
             edited_by: row.edited_by.to_string(),
             edited_by_name: names
                 .get(&row.edited_by)
@@ -719,7 +772,43 @@ pub(crate) fn history_as(
             edited_at: row.edited_at.to_rfc3339(),
             agent_key_id: row.agent_key_id.map(|key| key.to_string()),
         })
-        .collect())
+        .collect();
+    Ok(kairos_client::types::ListEnvelope {
+        items,
+        total,
+        limit,
+        offset,
+    })
+}
+
+/// One saved version of a page in full, with the name of its editor.
+pub(crate) fn version_as(
+    conn: &mut PgConnection,
+    team_id: Uuid,
+    page_id: Uuid,
+    version: i32,
+) -> Result<dto::TeamPageVersion, ApiError> {
+    require_team(conn, team_id)?;
+    let row = team_pages::page_version(conn, team_id, page_id, version)
+        .map_err(map_page_error)?
+        .ok_or_else(|| {
+            ApiError::not_found(format!(
+                "The team page {page_id} has no version {version} in its history."
+            ))
+        })?;
+    let names = editor_names(conn, &[row.edited_by])?;
+    Ok(dto::TeamPageVersion {
+        version: row.version,
+        title: row.title,
+        content: row.content,
+        edited_by: row.edited_by.to_string(),
+        edited_by_name: names
+            .get(&row.edited_by)
+            .cloned()
+            .unwrap_or_else(|| row.edited_by.to_string()),
+        edited_at: row.edited_at.to_rfc3339(),
+        agent_key_id: row.agent_key_id.map(|key| key.to_string()),
+    })
 }
 
 /// The documents and ADRs of a team with their places in its tree (open
@@ -851,14 +940,18 @@ pub(crate) fn place_item_as(
         .ok_or_else(|| ApiError::internal("the placed item is gone"))
 }
 
-/// The team's announcements, pinned first then newest (open tenant-wide).
+/// One page of the team's announcements, pinned first then newest (open
+/// tenant-wide; KAIROS-T-0629: limit and offset).
 #[utoipa::path(
     get,
     path = "/api/teams/{id}/announcements",
     tag = "team-pages",
-    params(("id" = String, Path, description = "The slug or the id (UUID) of the team")),
+    params(
+        ("id" = String, Path, description = "The slug or the id (UUID) of the team"),
+        kairos_client::types::Pagination,
+    ),
     responses(
-        (status = 200, description = "Announcements", body = Vec<dto::TeamAnnouncement>),
+        (status = 200, description = "One page of the announcements", body = kairos_client::types::ListEnvelope<dto::TeamAnnouncement>),
         (status = 404, description = "Unknown team", body = kairos_client::types::ErrorEnvelope),
     ),
 )]
@@ -866,17 +959,25 @@ pub(crate) async fn list_announcements(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Path(id): Path<String>,
-) -> Result<Json<Vec<dto::TeamAnnouncement>>, ApiError> {
-    let rows = state
+    ApiQuery(query): ApiQuery<kairos_client::types::Pagination>,
+) -> Result<Json<kairos_client::types::ListEnvelope<dto::TeamAnnouncement>>, ApiError> {
+    let (limit, offset) = clamp_pagination(&query);
+    let envelope = state
         .blocking
         .run(&tenant.slug, move |conn| {
             let team_id = team_by_ref(conn, &id)?;
             require_team(conn, team_id)?;
-            let rows = team_pages::list_announcements(conn, team_id).map_err(ApiError::internal)?;
-            Ok(rows.into_iter().map(announcement_dto).collect::<Vec<_>>())
+            let (total, rows) = team_pages::list_announcements(conn, team_id, limit, offset)
+                .map_err(ApiError::internal)?;
+            Ok(kairos_client::types::ListEnvelope {
+                items: rows.into_iter().map(announcement_dto).collect(),
+                total,
+                limit,
+                offset,
+            })
         })
         .await?;
-    Ok(Json(rows))
+    Ok(Json(envelope))
 }
 
 /// Post an announcement (team member or org admin; append-only — there
