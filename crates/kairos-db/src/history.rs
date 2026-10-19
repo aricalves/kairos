@@ -57,12 +57,30 @@ pub fn insert_version(
         .select((item_history::version, item_history::content))
         .first(conn)
         .optional()?;
-    let form = history_diff::plan_write(
+    insert_planned(
+        conn,
+        item_id,
         version,
-        base.as_ref().map(|(v, text)| (*v, text.as_str())),
+        title,
         content,
-    );
-    match form {
+        actor,
+        base.as_ref().map(|(v, text)| (*v, text.as_str())),
+    )
+}
+
+/// [`insert_version`] for a caller that has the newest full row of the
+/// item before `version`, as `(version, text)`: the content write reads it
+/// in its UPDATE (KAIROS-T-0635, KAIROS-T-0651). `None` writes a full row.
+pub fn insert_planned(
+    conn: &mut PgConnection,
+    item_id: Uuid,
+    version: i32,
+    title: &str,
+    content: &str,
+    actor: Uuid,
+    base: Option<(i32, &str)>,
+) -> Result<(), DieselError> {
+    match history_diff::plan_write(version, base, content) {
         StoredForm::Full => diesel::insert_into(item_history::table)
             .values(NewItemHistory {
                 item_id,

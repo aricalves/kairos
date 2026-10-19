@@ -54,6 +54,17 @@ const MARK: &str = "Zebrawood";
 /// and `pg_notify`). So each count of statements is 2 lower for each
 /// event: 1 event in each content write, 2 in `append_note`. The copies
 /// do not change.
+///
+/// KAIROS-T-0651: a version is a diff from the newest full row of the
+/// history, so the write needs the text of that row. The content UPDATE
+/// gives it back (a scalar subquery in its RETURNING), so the write has no
+/// more statements. That is one more content READ in each content write
+/// (the stale case counts it too, but no row comes back). The history row
+/// is now a small diff, not a second copy of the content, so a write
+/// SENDS one copy fewer (2 stays the ceiling: a full row each 10
+/// versions, and a diff that holds the marked line, still send it). The
+/// copies on the wire stay the same; the history stores about a fifth.
+/// A text with no base (a full row is due) does not come back.
 struct Budget {
     statements: usize,
     sent: usize,
@@ -217,7 +228,7 @@ async fn content_writes_move_the_content_once_against_live_stack() {
             Budget {
                 statements: 8,
                 sent: 2,
-                read: 0,
+                read: 1,
             },
         ),
         (
@@ -229,7 +240,7 @@ async fn content_writes_move_the_content_once_against_live_stack() {
             Budget {
                 statements: 8,
                 sent: 2,
-                read: 1,
+                read: 2,
             },
         ),
         (
@@ -241,7 +252,7 @@ async fn content_writes_move_the_content_once_against_live_stack() {
             Budget {
                 statements: 10,
                 sent: 2,
-                read: 1,
+                read: 2,
             },
         ),
         (
@@ -251,7 +262,7 @@ async fn content_writes_move_the_content_once_against_live_stack() {
             Budget {
                 statements: 9,
                 sent: 2,
-                read: 1,
+                read: 2,
             },
         ),
         (
@@ -261,7 +272,7 @@ async fn content_writes_move_the_content_once_against_live_stack() {
             Budget {
                 statements: 7,
                 sent: 1,
-                read: 1,
+                read: 2,
             },
         ),
         (
@@ -349,12 +360,18 @@ async fn content_writes_move_the_content_once_against_live_stack() {
         .select(tasks::id)
         .first(&mut tenant_conn)
         .expect("the task id");
-    let history: Vec<(i32, String)> = item_history::table
+    // KAIROS-T-0651: v2..v5 are diff rows; read the full text of each.
+    let rows = item_history::table
         .filter(item_history::item_id.eq(task_id))
         .order(item_history::version.asc())
-        .select((item_history::version, item_history::content))
+        .select(kairos_db::models::ItemHistory::as_select())
         .load(&mut tenant_conn)
         .expect("the history");
+    let history: Vec<(i32, String)> = kairos_db::history::with_full_content(&mut tenant_conn, rows)
+        .expect("the text of each version")
+        .into_iter()
+        .map(|row| (row.version, row.content))
+        .collect();
     assert_eq!(history.len(), 5);
     assert_eq!(history[4], (5, content));
     assert_eq!(history[1].1, body("One."));
