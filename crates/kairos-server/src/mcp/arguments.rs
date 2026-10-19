@@ -91,7 +91,7 @@ fn argument_error(serde_message: &str, given: &[String], schema: &JsonObject) ->
             "The call has the argument {argument:?}. This tool does not accept that \
              argument. {known}"
         ))
-        .with_details(json!({ "argument": argument, "allowed": allowed }));
+        .with_details(json!({ "field": argument, "allowed": allowed }));
     }
     if let Some(argument) = missing_field(serde_message) {
         // The list is the arguments of the tool. When the argument is in an
@@ -105,13 +105,13 @@ fn argument_error(serde_message: &str, given: &[String], schema: &JsonObject) ->
                  that argument. The arguments of this tool are: {}.",
                 allowed.join(", ")
             ))
-            .with_details(json!({ "argument": argument, "allowed": allowed }));
+            .with_details(json!({ "field": argument, "allowed": allowed }));
         }
         return validation(format!(
             "An object of the call does not have the field {argument:?}. The tool must \
              have that field."
         ))
-        .with_details(json!({ "argument": argument }));
+        .with_details(json!({ "field": argument }));
     }
     validation(format!(
         "The arguments are not correct for this tool: {serde_message}."
@@ -226,7 +226,7 @@ mod tests {
         );
         assert_eq!(
             err.details,
-            json!({"argument": "verbose", "allowed": ["short_code", "limit", "within"]})
+            json!({"field": "verbose", "allowed": ["short_code", "limit", "within"]})
         );
     }
 
@@ -240,7 +240,7 @@ mod tests {
             "The call has the argument \"team\". This tool does not accept that argument. \
              This tool has no arguments."
         );
-        assert_eq!(err.details, json!({"argument": "team", "allowed": []}));
+        assert_eq!(err.details, json!({"field": "team", "allowed": []}));
     }
 
     /// An argument that the tool must have, and the call has not.
@@ -253,7 +253,7 @@ mod tests {
             "The call does not have the argument \"short_code\". This tool must have that \
              argument. The arguments of this tool are: limit, short_code, within."
         );
-        assert_eq!(err.details["argument"], "short_code");
+        assert_eq!(err.details["field"], "short_code");
     }
 
     /// The field is absent in an object of the call: no list of the tool.
@@ -265,7 +265,7 @@ mod tests {
             "An object of the call does not have the field \"from\". The tool must have \
              that field."
         );
-        assert_eq!(err.details, json!({"argument": "from"}));
+        assert_eq!(err.details, json!({"field": "from"}));
     }
 
     /// A different fault keeps the message of `serde`.
@@ -292,7 +292,7 @@ mod tests {
             text[0]["text"],
             "VALIDATION: The call has the argument \"team\". This tool does not accept that \
              argument. This tool has no arguments.\n\
-             details: {\"allowed\":[],\"argument\":\"team\"}"
+             details: {\"allowed\":[],\"field\":\"team\"}"
         );
         assert!(tool_error_of(ErrorData::internal_error("no", None)).is_err());
     }
