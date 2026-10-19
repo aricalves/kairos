@@ -955,8 +955,10 @@ fn children_progress_rollups() {
     let t3 = make_task(&mut conn, board_b, b_backlog, "Open child B");
     let t4 = make_task(&mut conn, board_a, a_backlog, "Deleted child");
     let t5 = make_task(&mut conn, board_b, b_backlog, "Other parent's child");
+    // KAIROS-T-0571: a child archived from a done column.
+    let t6 = make_task(&mut conn, board_a, a_completed, "Done child, put away");
 
-    for child in [t1.id, t2.id, t3.id, t4.id] {
+    for child in [t1.id, t2.id, t3.id, t4.id, t6.id] {
         graph::link_items(&mut conn, i1.id, child, RelationshipType::Parent, alice)
             .expect("linking child");
     }
@@ -976,8 +978,10 @@ fn children_progress_rollups() {
     .expect("creating document");
     graph::link_items(&mut conn, i1.id, d1.id, RelationshipType::Supports, alice)
         .expect("linking supports");
-    // Soft-deleted children drop out.
+    // KAIROS-T-0571: a child archived from a column that is not done is
+    // removed; a child archived from a done column counts as done.
     items::soft_delete_item(&mut conn, ItemType::Task, t4.id, alice).expect("soft-deleting");
+    items::soft_delete_item(&mut conn, ItemType::Task, t6.id, alice).expect("soft-deleting");
 
     // ---- per-parent rollup ---------------------------------------------------
     let rows = graph::children_progress(&mut conn, i1.id).expect("children_progress");
@@ -986,7 +990,7 @@ fn children_progress_rollups() {
         .map(|row| (row.column_id, row.is_done, row.count))
         .collect();
     assert!(
-        buckets.contains(&(a_completed, true, 1))
+        buckets.contains(&(a_completed, true, 2))
             && buckets.contains(&(a_backlog, false, 1))
             && buckets.contains(&(b_backlog, false, 1)),
         "multi-board children group by column: {buckets:?}"
@@ -995,13 +999,25 @@ fn children_progress_rollups() {
     let counts = kairos_core::items::children_progress_counts(
         &rows
             .iter()
-            .map(|row| (row.is_done, row.count, row.cancelled))
+            .map(|row| kairos_core::items::ColumnChildren {
+                is_done: row.is_done,
+                count: row.count,
+                cancelled: row.cancelled,
+                removed: row.removed,
+            })
             .collect::<Vec<_>>(),
     );
     assert_eq!(
-        (counts.done, counts.cancelled, counts.open, counts.total),
-        (1, 0, 2, 3),
-        "doc + soft-deleted child excluded"
+        (
+            counts.done,
+            counts.cancelled,
+            counts.open,
+            counts.total,
+            counts.removed
+        ),
+        (2, 0, 2, 4, 1),
+        "the doc does not count; the child archived from Completed is done; \
+         the child archived from Backlog is removed"
     );
 
     // A leaf has no rollup at all.
@@ -1016,7 +1032,10 @@ fn children_progress_rollups() {
     let batch =
         graph::page_children_progress(&mut conn, initiative_board, &page).expect("page rollup");
     let p1 = batch.get(&i1.id).expect("i1 present");
-    assert_eq!((p1.done, p1.total, p1.has_done), (1, 3, true));
+    assert_eq!(
+        (p1.done, p1.total, p1.has_done, p1.removed),
+        (2, 4, true, 1)
+    );
     let p2 = batch.get(&i2.id).expect("i2 present");
     assert_eq!((p2.done, p2.total, p2.has_done), (0, 1, true));
     assert_eq!(
@@ -1056,7 +1075,12 @@ fn children_progress_rollups() {
     let batch =
         graph::page_children_progress(&mut conn, initiative_board, &[i1.id]).expect("page rollup");
     let p1 = batch.get(&i1.id).expect("i1 present");
-    assert_eq!((p1.done, p1.total, p1.has_done), (0, 3, false));
+    // The archived child of Completed is in a column that is not done now:
+    // it is removed.
+    assert_eq!(
+        (p1.done, p1.total, p1.has_done, p1.removed),
+        (0, 3, false, 2)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1361,8 +1385,9 @@ fn focal_subgraph_contract() {
 ///
 /// - the relationship LIST names both children, the archived one marked
 ///   (containment is a fact about the record);
-/// - the progress ROLLUP counts only the live one (progress is a fact
-///   about live work — ADR-20 rule 5).
+/// - the progress ROLLUP does not count the archived one as open work: it
+///   was archived from a column that is not done, so it is `removed`
+///   (KAIROS-T-0571).
 #[test]
 fn archived_children_are_listed_marked_but_never_counted() {
     static NEIGHBOUR_DB: scratch::ScratchName =
@@ -1506,13 +1531,15 @@ fn archived_children_are_listed_marked_but_never_counted() {
         "an archived item still knows its LIVE parent, unmarked: {from_archived:?}"
     );
 
-    // --- the rollup: the live child only ------------------------------------
+    // --- the rollup: the live child; the archived one is removed ----------
     let progress = graph::children_progress(&mut conn, initiative.id).expect("children_progress");
     let total: i64 = progress.iter().map(|row| row.count).sum();
+    let removed: i64 = progress.iter().map(|row| row.removed).sum();
     assert_eq!(
-        total, 1,
-        "progress counts LIVE children only — archived work is not live \
-         work (ADR-20 rule 5): {progress:?}"
+        (total, removed),
+        (1, 1),
+        "a child archived from a column that is not done is removed, not \
+         open work (KAIROS-T-0571): {progress:?}"
     );
 
     drop(conn);

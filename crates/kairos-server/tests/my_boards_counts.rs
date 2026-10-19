@@ -58,14 +58,22 @@ const TENANT: [(&str, &str); 1] = [("x-tenant", "acme")];
 static QUERIES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// The instrumentation of each connection of this process: it records the
-/// text of each query.
+/// text of each query. It skips each query of the connection of the outbox
+/// emitter (KAIROS-T-0632): the emitter polls on a timer and sends the
+/// events of the writes before, so its queries would make the count depend
+/// on time (KAIROS-T-0664). That connection is the one that reads
+/// `event_outbox`: a write only adds rows to it.
 fn recorder() -> Option<Box<dyn Instrumentation>> {
-    Some(Box::new(|event: InstrumentationEvent<'_>| {
+    let mut emitter = false;
+    Some(Box::new(move |event: InstrumentationEvent<'_>| {
         if let InstrumentationEvent::StartQuery { query, .. } = event {
-            QUERIES
-                .lock()
-                .expect("the list of the queries")
-                .push(query.to_string());
+            let sql = query.to_string();
+            // A write adds to the outbox (INSERT); only the emitter reads it.
+            emitter = emitter
+                || (sql.contains("event_outbox") && !sql.trim_start().starts_with("INSERT"));
+            if !emitter {
+                QUERIES.lock().expect("the list of the queries").push(sql);
+            }
         }
     }))
 }
@@ -417,6 +425,7 @@ async fn my_boards_counts_in_the_database_against_live_stack() {
     let start = query_count();
     let text = my_boards(&router, &token, session.as_deref()).await;
     let with_two_boards = query_count() - start;
+    let window = QUERIES.lock().expect("the list of the queries")[start..].to_vec();
     let reads_of_columns = column_queries(start);
     let billing_line = columns_line(&mut conn, "billing-delivery");
     assert!(billing_line.contains("(3)"), "{billing_line}");
@@ -452,7 +461,8 @@ async fn my_boards_counts_in_the_database_against_live_stack() {
     assert!(text.contains("[done]"), "the done column is marked: {text}");
     assert_eq!(
         with_two_boards, with_one_board,
-        "the number of queries does not grow with the number of boards"
+        "the number of queries does not grow with the number of boards: {:#?}",
+        window
     );
     assert_eq!(
         reads_of_columns, 1,

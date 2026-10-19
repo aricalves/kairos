@@ -80,6 +80,7 @@ fn key_request(name: &str, days: Option<i64>) -> CreateApiKeyRequest {
             (Utc::now() + chrono::Duration::days(d)).to_rfc3339_opts(SecondsFormat::Secs, true)
         }),
         no_expiry: days.is_none(),
+        scope: None,
     }
 }
 

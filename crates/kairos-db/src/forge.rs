@@ -500,6 +500,52 @@ pub fn repository_refs(
     .load(conn)?)
 }
 
+/// A row of [`repository_unlinked_refs`].
+#[derive(diesel::QueryableByName)]
+struct PagedRefRow {
+    #[diesel(embed)]
+    item: ForgeRefRow,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    total: i64,
+}
+
+/// The branches and pull requests of one repository in the given states
+/// that are NOT linked to an item, newest first: at most `limit` rows after
+/// `offset`, and the count of all of them (KAIROS-T-0561). The filter is in
+/// the query, so that a page has `limit` rows when there are. A page past
+/// the end runs the query once more for the count.
+pub fn repository_unlinked_refs(
+    conn: &mut PgConnection,
+    repository_id: Uuid,
+    states: &[&str],
+    limit: i64,
+    offset: i64,
+) -> Result<(Vec<ForgeRefRow>, i64), ForgeError> {
+    let states: Vec<String> = states.iter().map(|s| s.to_string()).collect();
+    let sql = format!(
+        "SELECT refs.*, count(*) OVER () AS total \
+           FROM ({REF_SELECT} WHERE f.repository_id = $1 AND f.state = ANY($2)) AS refs \
+          WHERE cardinality(refs.item_short_codes) = 0 \
+          ORDER BY refs.forge_updated_at DESC, refs.kind, refs.external_id \
+          LIMIT $3 OFFSET $4"
+    );
+    let mut page = |limit: i64, offset: i64| -> Result<Vec<PagedRefRow>, ForgeError> {
+        Ok(diesel::sql_query(&sql)
+            .bind::<diesel::sql_types::Uuid, _>(repository_id)
+            .bind::<diesel::sql_types::Array<diesel::sql_types::Text>, _>(&states)
+            .bind::<diesel::sql_types::BigInt, _>(limit)
+            .bind::<diesel::sql_types::BigInt, _>(offset)
+            .load(conn)?)
+    };
+    let rows = page(limit, offset)?;
+    let total = match rows.first() {
+        Some(row) => row.total,
+        None if offset > 0 => page(1, 0)?.first().map_or(0, |row| row.total),
+        None => 0,
+    };
+    Ok((rows.into_iter().map(|r| r.item).collect(), total))
+}
+
 /// The branches and pull requests in the given states that are NOT linked
 /// to an item, in the repositories that the team owns, newest first
 /// (KAIROS-T-0480: the unlinked half of the team rollup).

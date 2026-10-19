@@ -808,6 +808,71 @@ async fn archive_reach_and_proposal_confirm_against_live_stack() {
         reply.1
     );
     let before = svc.get_task(&victim_mcp.short_code).await.expect("read");
+    // KAIROS-T-0558: `preview: true` gives the same plan and changes
+    // nothing. Over MCP, before the archive.
+    let reply = alice_mcp
+        .call(
+            "delete_item",
+            json!({"short_code": attack_mcp.short_code, "preview": true}),
+        )
+        .await;
+    checks.check(
+        "2 MCP preview: the preview names the task of bob as not reached",
+        !reply.0
+            && reply.1.contains("Nothing is archived.")
+            && reply.1.contains("Cascade: none.")
+            && reply.1.contains("would not reach 1 item.")
+            && reply.1.contains(&format!(
+                "- {}: You need `manage_tasks` on the board {platform_board}.",
+                victim_mcp.short_code
+            ))
+            && reply.1.contains("confirm=true")
+            && !reply.1.contains("You cannot archive"),
+        &reply.1,
+    );
+    checks.check(
+        "2 MCP preview: the initiative of alice is live after the preview",
+        !is_archived(&mut conn, &attack_mcp.short_code),
+        "the preview archived it",
+    );
+    let reply = carol_mcp
+        .call(
+            "delete_item",
+            json!({"short_code": attack_mcp.short_code, "preview": true}),
+        )
+        .await;
+    checks.check(
+        "2 MCP preview: carol may not archive the initiative, and the preview says so",
+        !reply.0
+            && reply.1.contains(&format!(
+                "You cannot archive {}: FORBIDDEN",
+                attack_mcp.short_code
+            )),
+        &reply.1,
+    );
+    for (arguments, needed) in [
+        (
+            json!({"short_code": attack_mcp.short_code, "preview": true, "confirm": true}),
+            "Do not send both",
+        ),
+        (json!({"short_code": attack_mcp.short_code}), "preview=true"),
+        (
+            json!({"short_code": attack_mcp.short_code, "preview": true, "dry_run": true}),
+            "dry_run",
+        ),
+    ] {
+        let reply = alice_mcp.call("delete_item", arguments.clone()).await;
+        checks.check(
+            &format!("2 MCP preview: {arguments} is refused and named"),
+            reply.0 && reply.1.starts_with("VALIDATION") && reply.1.contains(needed),
+            &reply.1,
+        );
+    }
+    checks.check(
+        "2 MCP preview: the refusals archived nothing",
+        !is_archived(&mut conn, &attack_mcp.short_code),
+        "a refusal archived it",
+    );
     let reply = alice_mcp
         .call(
             "delete_item",
@@ -1235,6 +1300,7 @@ async fn archive_reach_and_proposal_confirm_against_live_stack() {
             content: "original content".into(),
             decision_maker: None,
             decision_date: None,
+            parent: None,
         })
         .await
         .expect("adr");

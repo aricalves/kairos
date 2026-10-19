@@ -1202,3 +1202,171 @@ async fn ws_person_only_and_lagged() {
     drop(pool);
     drop_scratch_db(&mut admin_conn, LAGGED_DB);
 }
+
+/// The scratch database of [`ws_every_kind_through_the_outbox`].
+const OUTBOX_DB: &str = "kairos_ws_outbox_t0632_test";
+
+/// KAIROS-T-0632: each event kind goes through the outbox and the emitter
+/// of a server, and reaches the socket. Two servers run on one database,
+/// as two processes do: each socket gets each event once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ws_every_kind_through_the_outbox() {
+    use kairos_db::events::{self, EventKind};
+
+    let mut admin_conn = recreate_scratch_db(OUTBOX_DB);
+    let scratch_url = with_database(&common::admin_database_url(), OUTBOX_DB);
+    let mut conn = PgConnection::establish(&scratch_url).expect("connecting to scratch database");
+    run_public_migrations(&mut conn).expect("running public migrations");
+    provision_tenant(&mut conn, "acme", "Acme Inc").expect("provisioning acme");
+    let acme_org: Uuid = organizations::table
+        .filter(organizations::slug.eq("acme"))
+        .select(organizations::id)
+        .first(&mut conn)
+        .expect("acme org row");
+
+    let http = reqwest::Client::new();
+    let alice_token = user_token(&http, "alice").await;
+    let pool = TenantPool::new(&scratch_url, 4).await.expect("pool");
+    let auth = Arc::new(
+        Authenticator::discover(ISSUER, AUDIENCE)
+            .await
+            .expect("OIDC discovery against live Dex"),
+    );
+    let mut servers = Vec::new();
+    for _ in 0..2 {
+        let router = app::router(app::state_with(
+            base_config(&scratch_url),
+            pool.clone(),
+            Arc::clone(&auth),
+        ));
+        servers.push(spawn_server(router).await);
+    }
+    let alice = servers[0].client(&alice_token, "acme");
+    let _ = alice.whoami().await;
+    let alice_id = user_id(&mut conn, "alice@kairos.test");
+    diesel::insert_into(kairos_db::schema::organization_members::table)
+        .values(NewOrganizationMember {
+            organization_id: acme_org,
+            user_id: alice_id,
+            role: OrgRole::Member,
+        })
+        .execute(&mut conn)
+        .expect("granting acme membership");
+    let mut acme = tenant_connection(&scratch_url, "org_acme");
+    let board = board_of_level(&mut acme, BoardLevel::Strategy);
+
+    let mut sockets = Vec::new();
+    for server in &servers {
+        let client = server.client(&alice_token, "acme");
+        let mut socket = client.connect_events().await.expect("socket");
+        socket.subscribe_all().await.expect("subscribe");
+        sockets.push(socket);
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Each kind of the items, the boards and the repositories, in its own
+    // committed write.
+    let mut expected: Vec<String> = Vec::new();
+    for (n, kind) in EventKind::ALL.into_iter().enumerate() {
+        let short_code = format!("ACME-K-{n:04}");
+        events::emit_event(
+            &mut acme,
+            &events::ThinEvent {
+                event: kind,
+                entity_type: "strategy".into(),
+                short_code: short_code.clone(),
+                board_id: Some(board),
+                column_id: None,
+                actor: alice_id,
+            },
+        )
+        .expect("emit");
+        expected.push(format!("{}:{short_code}", kind.as_str()));
+    }
+    // The events of a person: a notification, a read, and one event for
+    // 150 persons (two rows of the outbox; alice is in the second).
+    let told = kairos_db::notifications::notify(
+        &mut acme,
+        &[alice_id],
+        kairos_core::notifications::NotificationKind::P0Bug,
+        None,
+        "A critical bug",
+        Uuid::nil(),
+    )
+    .expect("notify");
+    assert_eq!(told, vec![alice_id]);
+    expected.push(format!("{}:", events::NOTIFICATION_CREATED));
+    events::emit_notification_event(
+        &mut acme,
+        events::NOTIFICATIONS_READ,
+        &[alice_id],
+        "",
+        alice_id,
+    )
+    .expect("read");
+    expected.push(format!("{}:", events::NOTIFICATIONS_READ));
+    let mut many: Vec<Uuid> = (0..149).map(|_| Uuid::new_v4()).collect();
+    many.insert(120, alice_id);
+    events::emit_notification_event(
+        &mut acme,
+        events::NOTIFICATION_CREATED,
+        &many,
+        "ACME-K-MANY",
+        Uuid::nil(),
+    )
+    .expect("many");
+    expected.push(format!("{}:ACME-K-MANY", events::NOTIFICATION_CREATED));
+    expected.sort();
+
+    for (n, socket) in sockets.iter_mut().enumerate() {
+        let mut got = Vec::new();
+        while got.len() < expected.len() {
+            let (event, raw) = recv_event(socket).await;
+            for routing in ["tenant", "recipients", "recipient", "blocks_boards"] {
+                assert!(
+                    raw.get(routing).is_none(),
+                    "{routing} reaches a client: {raw}"
+                );
+            }
+            got.push(format!("{}:{}", event.event, event.short_code));
+        }
+        got.sort();
+        assert_eq!(got, expected, "server {n}: each kind, each once");
+    }
+    // No event comes twice: after one more pass of each emitter, a marker
+    // is the next frame of each socket.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    events::emit_event(
+        &mut acme,
+        &events::ThinEvent {
+            event: EventKind::ItemUpdated,
+            entity_type: "strategy".into(),
+            short_code: "ACME-K-LAST".into(),
+            board_id: Some(board),
+            column_id: None,
+            actor: alice_id,
+        },
+    )
+    .expect("marker");
+    for socket in &mut sockets {
+        let (event, raw) = recv_event(socket).await;
+        assert_eq!(
+            event.short_code, "ACME-K-LAST",
+            "no duplicate before it: {raw}"
+        );
+    }
+    let unsent: i64 = diesel::select(diesel::dsl::sql::<diesel::sql_types::BigInt>(
+        "(SELECT COUNT(*) FROM public.event_outbox WHERE sent_at IS NULL)",
+    ))
+    .get_result(&mut conn)
+    .expect("unsent rows");
+    assert_eq!(unsent, 0, "the emitters sent each row");
+
+    for socket in sockets {
+        socket.close().await.expect("close");
+    }
+    drop(conn);
+    drop(acme);
+    drop(pool);
+    drop_scratch_db(&mut admin_conn, OUTBOX_DB);
+}

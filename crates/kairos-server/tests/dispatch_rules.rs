@@ -20,6 +20,12 @@
 //! 7. KAIROS-T-0577: enable sends the skipped deliveries again, with
 //!    their ids; redeliver does it on request (with `since`),
 //!    needs configure_boards, and refuses a target that is off.
+//! 8. KAIROS-T-0566: a create into the entry column fires its rules (REST
+//!    and MCP); a create that names another column is a 422 that names the
+//!    entry column, and fires nothing.
+//! 9. KAIROS-T-0558: MCP remove_webhook_target, enable_webhook_target and
+//!    test_webhook_target need configure_boards, refuse an unknown
+//!    argument, and do what REST does.
 //!
 //! Runs against the LIVE compose stack (`angreal services up`), with
 //! KAIROS_WEBHOOK_ALLOW_PRIVATE on (the receiver is on 127.0.0.1). Owns the
@@ -995,6 +1001,71 @@ async fn a_task_that_enters_the_column_of_a_rule_fires_one_signed_delivery() {
         .expect("nothing left");
     assert_eq!(again.redelivered, Some(0));
 
+    // --- 8. KAIROS-T-0566: a create fires the rules of the entry column ---
+    let before_create = receiver.received().len();
+    let born = new_task(&admin, &api_board, "Born in the entry column", "task").await;
+    let mut admin_mcp = Mcp::connect(&server.base_url, &svc_token).await;
+    let (text, error) = admin_mcp
+        .call(
+            "create_item",
+            json!({"item_type": "task", "title": "Born over MCP", "board": api_board}),
+        )
+        .await;
+    assert!(!error, "{text}");
+    let born_mcp = text
+        .split_whitespace()
+        .find(|word| word.starts_with("API-T-"))
+        .expect("the code")
+        .trim_end_matches(['.', ':', ','])
+        .to_string();
+    // A create into another column is refused for a manager too, names the
+    // entry column, and fires nothing.
+    let api_active = api_detail
+        .columns
+        .iter()
+        .find(|c| c.name == "Active")
+        .expect("Active")
+        .id
+        .clone();
+    let (status, body) = admin
+        .raw_request(
+            reqwest::Method::POST,
+            "/api/tasks",
+            Some(&json!({
+                "board_id": api_board,
+                "column_id": api_active,
+                "title": "Born in Active",
+            })),
+        )
+        .await
+        .expect("POST");
+    assert_eq!(status, 422, "{body}");
+    assert_eq!(body["error"]["code"], "VALIDATION", "{body}");
+    assert_eq!(body["error"]["details"]["field"], "column_id", "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains(&format!("entry column of its board ({api_entry})")),
+        "{body}"
+    );
+    deliver(&worker, &scratch_url).await;
+    let mut created: Vec<(String, String)> = receiver.received()[before_create..]
+        .iter()
+        .filter(|r| r.headers["x-kairos-event"] == "task.entered_column")
+        .map(|r| {
+            let body = r.json();
+            (
+                body["data"]["code"].as_str().unwrap().to_string(),
+                body["data"]["column"]["name"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    created.sort();
+    let mut want = vec![(born, api_entry.clone()), (born_mcp, api_entry.clone())];
+    want.sort();
+    assert_eq!(created, want, "one delivery for each create");
+
     // A removed target takes its rules and its log.
     alice
         .delete_webhook_target(&slug, &target)
@@ -1008,4 +1079,112 @@ async fn a_task_that_enters_the_column_of_a_rule_fires_one_signed_delivery() {
             .iter()
             .all(|r| r.target_id != target)
     );
+
+    // --- 9. KAIROS-T-0558: the webhook targets over MCP -----------------
+    // The target that create_dispatch_rule made in section 5.
+    let runner = alice
+        .list_webhook_targets(&slug)
+        .await
+        .expect("targets")
+        .into_iter()
+        .find(|t| t.name == "Claude runner")
+        .expect("the MCP target")
+        .id;
+    let args = json!({ "board": slug, "target_id": runner });
+    let mut carol_mcp = Mcp::connect(&server.base_url, &carol_token).await;
+    // The capability of REST: configure_boards. bob is in the team, carol
+    // is in no team; both are refused, and nothing changes.
+    for tool in [
+        "test_webhook_target",
+        "enable_webhook_target",
+        "remove_webhook_target",
+    ] {
+        for mcp in [&mut bob_mcp, &mut carol_mcp] {
+            let (text, error) = mcp.call(tool, args.clone()).await;
+            assert!(error && text.starts_with("FORBIDDEN"), "{tool}: {text}");
+        }
+        // An unknown argument is refused and named.
+        let (text, error) = alice_mcp
+            .call(
+                tool,
+                json!({ "board": slug, "target_id": runner, "force": true }),
+            )
+            .await;
+        assert!(
+            error && text.starts_with("VALIDATION") && text.contains("force"),
+            "{tool}: {text}"
+        );
+        // A target id that is not a UUID, and a target of no board.
+        let (text, error) = alice_mcp
+            .call(tool, json!({ "board": slug, "target_id": "nope" }))
+            .await;
+        assert!(error && text.starts_with("VALIDATION"), "{tool}: {text}");
+        let (text, error) = alice_mcp
+            .call(
+                tool,
+                json!({ "board": slug, "target_id": Uuid::new_v4().to_string() }),
+            )
+            .await;
+        assert!(error && text.starts_with("NOT_FOUND"), "{tool}: {text}");
+    }
+    let before = receiver.received().len();
+    let (text, error) = alice_mcp.call("test_webhook_target", args.clone()).await;
+    assert!(!error, "{text}");
+    assert!(
+        text.contains("event ping") && text.contains("pending"),
+        "{text}"
+    );
+    deliver(&worker, &scratch_url).await;
+    let pings = receiver.received();
+    assert_eq!(pings.len(), before + 1, "one ping to the local receiver");
+    assert_eq!(pings[before].headers["x-kairos-event"], "ping");
+    assert!(
+        text.contains(&pings[before].headers["x-kairos-delivery"]),
+        "the answer names the delivery: {text}"
+    );
+    // Off, a ping is skipped; enable turns it on and sends the skipped one.
+    diesel::sql_query(format!(
+        "UPDATE org_acme.webhook_targets SET enabled = false, consecutive_failures = 3 \
+         WHERE id = '{runner}'"
+    ))
+    .execute(&mut conn)
+    .expect("turn the runner off");
+    let (text, error) = alice_mcp.call("test_webhook_target", args.clone()).await;
+    assert!(!error && text.contains("skipped"), "{text}");
+    let (text, error) = alice_mcp.call("enable_webhook_target", args.clone()).await;
+    assert!(!error, "{text}");
+    assert!(
+        text.contains("is on") && text.contains("queued 1 skipped"),
+        "{text}"
+    );
+    let on = alice
+        .list_webhook_targets(&slug)
+        .await
+        .expect("targets")
+        .into_iter()
+        .find(|t| t.id == runner)
+        .expect("the runner");
+    assert!(on.enabled && on.consecutive_failures == 0, "{on:?}");
+    deliver(&worker, &scratch_url).await;
+    assert_eq!(
+        receiver.received().len(),
+        before + 2,
+        "the skipped ping went"
+    );
+    // Remove: the target is gone.
+    let (text, error) = alice_mcp.call("remove_webhook_target", args.clone()).await;
+    assert!(
+        !error && text.contains("Removed the webhook target Claude runner"),
+        "{text}"
+    );
+    assert!(
+        alice
+            .list_webhook_targets(&slug)
+            .await
+            .expect("targets")
+            .iter()
+            .all(|t| t.id != runner)
+    );
+    let (text, error) = alice_mcp.call("remove_webhook_target", args).await;
+    assert!(error && text.starts_with("NOT_FOUND"), "{text}");
 }

@@ -63,8 +63,19 @@ pub(crate) fn map_proposal_error(e: kairos_db::proposals::ProposalError) -> ApiE
 /// 403 `FORBIDDEN` for a decision without the grant (KAIROS-T-0659). The
 /// details have the shape of each other edge refusal: one entry in `any_of`
 /// for each end, with its board.
+///
+/// KAIROS-T-0536: when the scope of the agent key leaves out the boards of
+/// both ends, the refusal is `KEY_SCOPE` for the board of the source.
 fn not_approver(message: &str, boards: &kairos_db::proposals::ApprovalBoards) -> ApiError {
     let capability = kairos_core::abac::APPROVE_PROPOSALS;
+    let source = boards.source.as_ref().map(|b| b.id);
+    let target = boards.target.as_ref().map(|b| b.id);
+    if let (Some(refusal), Some(_)) = (
+        ApiError::outside_key_scope(capability, source),
+        ApiError::outside_key_scope(capability, target),
+    ) {
+        return refusal;
+    }
     let end = |name: &str, board: &Option<kairos_db::proposals::EndBoard>| {
         serde_json::json!({
             "end": name,
@@ -83,7 +94,7 @@ fn not_approver(message: &str, boards: &kairos_db::proposals::ApprovalBoards) ->
 ///
 /// Short codes rather than ids because this is read by a person deciding
 /// something, and a UUID pair tells them nothing about what they are agreeing to.
-fn to_dto(
+pub(crate) fn to_dto(
     conn: &mut diesel::pg::PgConnection,
     p: kairos_db::proposals::EdgeProposal,
 ) -> Result<dto_search::EdgeProposalDto, ApiError> {

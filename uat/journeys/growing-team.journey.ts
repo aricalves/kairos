@@ -233,6 +233,18 @@ journey(
       return { notification: line!.replace(/\s+/g, ' ').slice(0, 140), marked_read: id };
     });
 
+    await step(joiner, 'lists her notifications from the CLI and marks the rest read', async () => {
+      const cli = await joiner.cli();
+      // KAIROS-T-0592: the same notifications over the CLI. The read state
+      // belongs to the credential, so this step does not assume the MCP mark.
+      const listed = await cli.json(['notifications', 'list']);
+      const handOff = listed.items.find((n: any) => n.kind === 'hand_off' && n.short_code === work);
+      expect(handOff, `a hand_off notification about ${work}`).toBeTruthy();
+      const said = await cli.ok(['notifications', 'read', '--all']);
+      expect(said).toMatch(/You have (no unread notification|0 unread now)/);
+      return { notification: handOff.id, unread_before: listed.unread };
+    });
+
     await step(joiner, 'picks up his in-flight work and finishes it, so the offboarding orphans nothing', async () => {
       const page = await joiner.gui();
       await openBoard(page, team.fixture.boardSlug!);

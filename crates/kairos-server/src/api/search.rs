@@ -109,7 +109,7 @@ pub(crate) async fn related(
         .run(&tenant.slug, move |conn| {
             service
                 .related_work(conn, &short_code, &config)
-                .map_err(|e| ApiError::not_found(e.to_string()))
+                .map_err(related_work_error)
         })
         .await?;
 
@@ -144,6 +144,20 @@ pub(crate) async fn related(
         vector: found.sources.vector,
         note,
     }))
+}
+
+/// The error of a search for related work (KAIROS-T-0561), for REST and
+/// MCP: an unknown short code is `NOT_FOUND`; each other error is
+/// `INTERNAL`, so that a fault of the store does not read as a missing item.
+pub(crate) fn related_work_error(error: crate::embedding::RefreshError) -> ApiError {
+    use crate::embedding::RefreshError;
+    use kairos_db::embeddings::EmbeddingError;
+    match error {
+        RefreshError::Store(EmbeddingError::ItemNotFound(code)) => {
+            ApiError::not_found(format!("No item has the short code {code:?}."))
+        }
+        other => ApiError::internal(other),
+    }
 }
 
 /// Query parameters for [`related`].

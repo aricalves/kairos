@@ -986,6 +986,11 @@ pub fn create_task(
             &created.title,
             &created.content,
         )?;
+        // KAIROS-T-0566: a create puts the task in a column, as a move
+        // does. The dispatch rules of that column fire, in this
+        // transaction. The column is the entry column for each caller but
+        // the demo seed (the server refuses any other).
+        crate::dispatch::on_task_entered_column(conn, created.id, column_id, actor)?;
         Ok(created)
     })
 }
@@ -1992,8 +1997,8 @@ fn soft_delete_planned(
             details,
         )?;
 
-        // KAIROS-T-0022: one thin event for the cascade root, delivered on
-        // commit ([`events::item_placement`] still sees the soft-deleted
+        // KAIROS-T-0022: one thin event for the cascade root, delivered
+        // after the commit (the outbox insert still sees the soft-deleted
         // row).
         events::emit_item_event_by_id(
             conn,
@@ -2004,9 +2009,13 @@ fn soft_delete_planned(
         )?;
         // KAIROS-T-0574: and one for each cascaded descendant, with its own
         // board, so a socket filtered to the board of a descendant hears it.
-        for code in &cascaded_short_codes {
-            events::emit_item_event_by_code(conn, EventKind::ItemDeleted, code, actor)?;
-        }
+        // One insert for all of them (KAIROS-T-0632).
+        events::emit_item_events_by_codes(
+            conn,
+            EventKind::ItemDeleted,
+            &cascaded_short_codes,
+            actor,
+        )?;
 
         Ok(SoftDeleteOutcome {
             root_short_code,
@@ -2087,28 +2096,19 @@ fn restore_row(
     }
 }
 
-/// Everything an archived item needs back before it can be live, that is
-/// itself gone. Empty = the restore may proceed.
-///
-/// A document has no column. It can name a board as its owner
-/// (COLLIERY-T-0269), and that board is what it needs back: the delete of
-/// a board looks at the live documents only, so the owner of an archived
-/// document can be gone. The `impacts` links of a document or of an ADR
-/// need nothing: a link to an archived repository stays, and it is shown
-/// as such.
-fn restore_blockers(
+/// The board and the column of an item; each is `None` where the family
+/// has none (a document has no column; an ADR may be off a board).
+type Placement = (Option<Uuid>, Option<Uuid>);
+
+/// The [`Placement`] of an item, per family; `None` when the row is not
+/// there.
+fn placement_of(
     conn: &mut PgConnection,
     item_type: ItemType,
     item_id: Uuid,
-) -> Result<Vec<String>, DieselError> {
-    use crate::schema::{
-        adrs, board_columns, boards, documents, initiatives, repositories, strategies, tasks, teams,
-    };
-
-    let mut missing = Vec::new();
-
-    // (board, column) placement, per family.
-    let placement: Option<(Option<Uuid>, Option<Uuid>)> = match item_type {
+) -> Result<Option<Placement>, DieselError> {
+    use crate::schema::{adrs, documents, initiatives, strategies, tasks};
+    Ok(match item_type {
         ItemType::Strategy => strategies::table
             .filter(strategies::id.eq(item_id))
             .select((strategies::board_id, strategies::column_id))
@@ -2141,9 +2141,28 @@ fn restore_blockers(
             .first::<Uuid>(conn)
             .optional()?
             .map(|board_id| (Some(board_id), None)),
-    };
+    })
+}
 
-    if let Some((board_id, column_id)) = placement {
+/// Everything an archived item needs back before it can be live, that is
+/// itself gone. Empty = the restore may proceed.
+///
+/// A document has no column. It can name a board as its owner
+/// (COLLIERY-T-0269), and that board is what it needs back: the delete of
+/// a board looks at the live documents only, so the owner of an archived
+/// document can be gone. The `impacts` links of a document or of an ADR
+/// need nothing: a link to an archived repository stays, and it is shown
+/// as such.
+fn restore_blockers(
+    conn: &mut PgConnection,
+    item_type: ItemType,
+    item_id: Uuid,
+) -> Result<Vec<String>, DieselError> {
+    use crate::schema::{board_columns, boards, repositories, tasks, teams};
+
+    let mut missing = Vec::new();
+
+    if let Some((board_id, column_id)) = placement_of(conn, item_type, item_id)? {
         if let Some(board_id) = board_id {
             let board_live: Option<Uuid> = boards::table
                 .filter(boards::id.eq(board_id))
@@ -2215,6 +2234,9 @@ pub struct RestoreOutcome {
     /// Archived descendants that were NOT restored, sorted — see
     /// [`restore_item`] for why they are left alone, and named.
     pub still_archived_descendants: Vec<String>,
+    /// The column the item is in again, `None` for a document or an ADR
+    /// off a board (KAIROS-T-0566: the server checks its WIP limit).
+    pub column_id: Option<Uuid>,
 }
 
 /// Why a restore was refused: everything missing that the item needs in
@@ -2313,9 +2335,11 @@ pub fn restore_item(
             actor,
         )?;
 
+        let column_id = placement_of(conn, item_type, item_id)?.and_then(|(_, column)| column);
         Ok(Ok(RestoreOutcome {
             short_code,
             still_archived_descendants,
+            column_id,
         }))
     })
 }

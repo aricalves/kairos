@@ -169,6 +169,10 @@ fn check_capability_with(
     required: &str,
     membership: bool,
 ) -> Result<bool, AbacError> {
+    // KAIROS-T-0536: the scope of the agent key of the request comes first.
+    if !crate::key_scope::allows(user_id, required, Some(board_id)) {
+        return Ok(false);
+    }
     let row: BoolRow = sql_query(
         r"SELECT (
             EXISTS (
@@ -321,6 +325,11 @@ pub fn authorize(
     user_id: Uuid,
     required: &str,
 ) -> Result<bool, AbacError> {
+    // KAIROS-T-0536: the scope of the agent key of the request limits each
+    // way in, the admin role too. A scope never adds a right.
+    if !crate::key_scope::allows(user_id, required, Some(board_id)) {
+        return Ok(false);
+    }
     if is_org_admin(conn, org_slug, user_id)? {
         return Ok(true);
     }
@@ -787,8 +796,13 @@ pub fn edit_facts(
 ) -> Result<(kairos_core::abac::EditFacts, Option<Uuid>), AbacError> {
     let manage_capability = kairos_core::abac::manage_capability(item_type);
     let (creator, board) = creator_and_board(conn, item_type, item_id)?.unzip();
-    let created_item = creator == Some(user_id);
     let board = board.flatten();
+    // KAIROS-T-0536: outside the scope of the agent key of the request, no
+    // fact counts: not the creator, not the admin role, not the claim.
+    if !crate::key_scope::allows(user_id, manage_capability, board) {
+        return Ok((kairos_core::abac::EditFacts::default(), board));
+    }
+    let created_item = creator == Some(user_id);
     let holds_manage = match (board, edit_use) {
         (Some(board_id), kairos_core::abac::EditUse::Edit) => {
             check_capability(conn, board_id, user_id, manage_capability)?
@@ -925,6 +939,21 @@ pub fn edit_facts_of_items(
         };
         let manage_capability = kairos_core::abac::manage_capability(item_type);
         let board_id = row.board_id;
+        // KAIROS-T-0536: outside the scope of the agent key, no fact counts.
+        if !crate::key_scope::allows(user_id, manage_capability, board_id) {
+            facts_of.insert(
+                row.id,
+                ItemEditFacts {
+                    item_type,
+                    short_code: row.short_code,
+                    live: row.live,
+                    facts: kairos_core::abac::EditFacts::default(),
+                    manage_capability,
+                    board_id,
+                },
+            );
+            continue;
+        }
         let holds_manage = match board_id {
             Some(board_id) => match held.get(&(board_id, manage_capability)) {
                 Some(answer) => *answer,

@@ -3,7 +3,9 @@
 //!
 //! - **The connection.** The URL: `--url`, else `KAIROS_URL`, else
 //!   `deployment_url` in `.claude/kairos.local.md` of the checkout, else the
-//!   credential cache of `kairos login`. The token: `KAIROS_KEY`, else
+//!   credential cache of `kairos login`. A worktree has no such file (git
+//!   excludes it): the CLI then reads the file of its main clone
+//!   ([`settings_path`], KAIROS-T-0646), as the plugin hooks do. The token: `KAIROS_KEY`, else
 //!   `KAIROS_MCP_KEY` (an agent key or a service-account key, as the plugin
 //!   and `scripts/render-references.sh` use), else the credential cache.
 //!   [`crate::auth`] resolves both, as for each other command.
@@ -20,7 +22,7 @@
 //!   not ignore.
 
 use std::collections::{BTreeSet, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -142,28 +144,9 @@ pub async fn find(root: &Path, args: &RemoteArgs) -> Found {
             return Found::NoBase(format!("Kairos refused the request ({why})"));
         }
     };
-    let wanted = args
-        .repository
-        .clone()
-        .or_else(|| settings.get("repository").cloned());
-    let repository = match &wanted {
-        Some(slug) => repositories
-            .iter()
-            .find(|r| &r.slug == slug || &r.id == slug),
-        None => git_output(root, &["remote", "get-url", "origin"]).and_then(|origin| {
-            let origin = normalized_remote(&origin);
-            repositories
-                .iter()
-                .find(|r| normalized_remote(&r.repo_url) == origin)
-        }),
-    };
-    let Some(repository) = repository else {
-        return Found::NoBase(match wanted {
-            Some(slug) => format!("Kairos has no repository {slug:?}"),
-            None => "no repository in Kairos has the `origin` remote of this checkout. \
-                     Give `--repo`"
-                .to_string(),
-        });
+    let repository = match pick_repository(root, args, &settings, &repositories) {
+        Ok(repository) => repository,
+        Err(why) => return Found::NoBase(why),
     };
 
     let point = branch_point(root, &repository.default_branch);
@@ -221,6 +204,65 @@ pub async fn find(root: &Path, args: &RemoteArgs) -> Found {
         ]
         .contains(&&kairos_client::types_repositories::CodeIndexSummaries::Hosted),
     })
+}
+
+/// The repository of the checkout at `root` in `repositories`: `--repo`,
+/// else `repository` in `.claude/kairos.local.md`, else the repository
+/// whose `repo_url` is the `origin` remote. The error says why none is.
+fn pick_repository<'a>(
+    root: &Path,
+    args: &RemoteArgs,
+    settings: &HashMap<String, String>,
+    repositories: &'a [kairos_client::types_repositories::Repository],
+) -> Result<&'a kairos_client::types_repositories::Repository, String> {
+    let wanted = args
+        .repository
+        .clone()
+        .or_else(|| settings.get("repository").cloned());
+    let repository = match &wanted {
+        Some(slug) => repositories
+            .iter()
+            .find(|r| &r.slug == slug || &r.id == slug),
+        None => git_output(root, &["remote", "get-url", "origin"]).and_then(|origin| {
+            let origin = normalized_remote(&origin);
+            repositories
+                .iter()
+                .find(|r| normalized_remote(&r.repo_url) == origin)
+        }),
+    };
+    repository.ok_or_else(|| match wanted {
+        Some(slug) => format!("Kairos has no repository {slug:?}"),
+        None => "no repository in Kairos has the `origin` remote of this checkout. \
+                 Give `--repo`"
+            .to_string(),
+    })
+}
+
+/// The client and the slug of the repository of the checkout at `root`,
+/// for `kairos index upload` (KAIROS-T-0592). The connection and the
+/// repository come as for [`find`]. The error says what is missing.
+pub async fn repository_of(
+    root: &Path,
+    args: &RemoteArgs,
+) -> Result<(KairosClient, String), String> {
+    let settings = settings(root);
+    let (client, url) = client(args, &settings)?.ok_or_else(|| {
+        format!(
+            "The CLI does not know the deployment. Use --url, set {}, or run `kairos login`",
+            auth::URL_VAR
+        )
+    })?;
+    let repositories = match within(client.list_repositories(None)).await {
+        Ok(list) => list,
+        Err(Failure::Unreachable(why)) => {
+            return Err(format!("The CLI cannot reach Kairos at {url} ({why})"));
+        }
+        Err(Failure::Refused(why)) => return Err(format!("Kairos refused the request ({why})")),
+    };
+    let slug = pick_repository(root, args, &settings, &repositories)?
+        .slug
+        .clone();
+    Ok((client, slug))
 }
 
 /// One nearest index that Kairos gave, and the files of the checkout that
@@ -385,9 +427,30 @@ fn login_tenant(
         .or(cached)
 }
 
-/// The `key: value` lines of the front matter of `.claude/kairos.local.md`.
-fn settings(root: &Path) -> HashMap<String, String> {
-    let Ok(text) = std::fs::read_to_string(root.join(SETTINGS_FILE)) else {
+/// The settings file of the checkout at `root` (KAIROS-T-0646):
+/// `.claude/kairos.local.md` in `root`, else the same file in the main
+/// clone. Git excludes the file, so a worktree has none. The main clone is
+/// the folder above `git rev-parse --git-common-dir`, as in
+/// `session_start.wiring_path` of the plugin. `None` when neither exists.
+/// A folder with no `.git` gets no git call.
+pub(crate) fn settings_path(root: &Path) -> Option<PathBuf> {
+    let own = root.join(SETTINGS_FILE);
+    if own.is_file() {
+        return Some(own);
+    }
+    if !root.join(".git").exists() {
+        return None;
+    }
+    let common = git_output(root, &["rev-parse", "--git-common-dir"])?;
+    let common = std::fs::canonicalize(root.join(common)).ok()?;
+    let clone = common.parent()?.join(SETTINGS_FILE);
+    clone.is_file().then_some(clone)
+}
+
+/// The `key: value` lines of the front matter of the settings file of the
+/// checkout at `root` ([`settings_path`]).
+pub(crate) fn settings(root: &Path) -> HashMap<String, String> {
+    let Some(text) = settings_path(root).and_then(|path| std::fs::read_to_string(path).ok()) else {
         return HashMap::new();
     };
     let mut lines = text.lines();
@@ -407,7 +470,7 @@ fn settings(root: &Path) -> HashMap<String, String> {
 /// A remote URL as `host/path`, in lower case, with no scheme, user,
 /// `.git` or `/` at the end: `git@github.com:a/b.git` and
 /// `https://github.com/a/b` give `github.com/a/b`.
-fn normalized_remote(url: &str) -> String {
+pub(crate) fn normalized_remote(url: &str) -> String {
     let url = url.trim();
     let rest = match url.split_once("://") {
         Some((_, rest)) => rest.to_string(),
@@ -544,6 +607,39 @@ mod tests {
         assert_eq!(settings["repository"], "kairos");
         assert_eq!(settings.len(), 3);
         assert!(super::settings(&dir.path().join("none")).is_empty());
+    }
+
+    /// KAIROS-T-0646: a worktree has no settings file (git excludes it).
+    /// The CLI reads the file of its main clone. A file in the worktree
+    /// comes first.
+    #[test]
+    fn a_worktree_reads_the_settings_file_of_its_clone() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let clone = dir.path().join("payments");
+        std::fs::create_dir_all(clone.join(".claude")).expect("make .claude");
+        crate::index::test_git(&clone, &["init", "-q", "-b", "main"]);
+        crate::index::test_git(&clone, &["commit", "-q", "--allow-empty", "-m", "A"]);
+        std::fs::write(
+            clone.join(SETTINGS_FILE),
+            "---\ndeployment_url: https://kairos.example\nrepository: payments\n---\n",
+        )
+        .expect("write");
+        let worktree = dir.path().join("wt-payments");
+        let path = worktree.display().to_string();
+        crate::index::test_git(&clone, &["worktree", "add", "-q", "-b", "work", &path]);
+
+        let settings = settings(&worktree);
+        assert_eq!(settings["deployment_url"], "https://kairos.example");
+        assert_eq!(settings["repository"], "payments");
+
+        std::fs::create_dir_all(worktree.join(".claude")).expect("make .claude");
+        std::fs::write(worktree.join(SETTINGS_FILE), "---\nrepository: own\n---\n").expect("write");
+        assert_eq!(super::settings(&worktree)["repository"], "own");
+
+        // A folder that is no checkout has no settings, and git is not asked.
+        let plain = dir.path().join("plain");
+        std::fs::create_dir_all(&plain).expect("make the folder");
+        assert!(settings_path(&plain).is_none());
     }
 
     /// KAIROS-T-0516: the base with the smaller diff, the branch point on a

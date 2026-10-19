@@ -5,6 +5,7 @@
 import type { Browser, BrowserContext, Page } from '@playwright/test';
 import path from 'node:path';
 import { runContext } from '../run/context';
+import { recordSurface } from '../run/coverage';
 import { Api } from '../surfaces/api';
 import { mintToken } from '../surfaces/auth';
 import { Cli } from '../surfaces/cli';
@@ -74,8 +75,14 @@ export class Persona {
       const ctx = runContext();
       this.context = await this.browser.newContext({ baseURL: ctx.server });
       await this.context.tracing.start({ screenshots: true, snapshots: true });
-      this.pageInstance = await this.context.newPage();
-      await login(this.pageInstance, this.credentials);
+      const page = await this.context.newPage();
+      this.pageInstance = page;
+      // KAIROS-T-0586: the drift gate names the GUI routes that no
+      // journey opens, so each page that the persona opens is recorded.
+      page.on('framenavigated', (frame) => {
+        if (frame === page.mainFrame()) recordSurface('gui', new URL(frame.url()).pathname);
+      });
+      await login(page, this.credentials);
     }
     return this.pageInstance;
   }
