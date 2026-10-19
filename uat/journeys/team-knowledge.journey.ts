@@ -33,8 +33,10 @@ journey(
       const api = await alice.api();
       const team = await api.teamBySlug(TEAM);
       const pages = (await api.get(`/api/teams/${team.id}/pages`)) as any[];
-      const target = pages.find((p: any) => p.title === 'Deploy Kairos');
-      expect(target, 'the seeded how-to page exists').toBeTruthy();
+      const listed = pages.find((p: any) => p.title === 'Deploy Kairos');
+      expect(listed, 'the seeded how-to page exists').toBeTruthy();
+      // KAIROS-T-0629: the list has no content; read the page.
+      const target = await api.get(`/api/teams/${team.id}/pages/${listed.id}`);
       const original = target.content as string;
       ledger.add({
         kind: 'team-page',
@@ -142,7 +144,9 @@ journey(
       await expect(announcements.getByText(announcement)).toBeVisible({ timeout: 15_000 });
       const api = await alice.api();
       const team = await api.teamBySlug(TEAM);
-      const posted = ((await api.get(`/api/teams/${team.id}/announcements`)) as any[]).find(
+      // KAIROS-T-0629: the announcements come in a list envelope.
+      const feed = await api.get(`/api/teams/${team.id}/announcements?limit=200`);
+      const posted = (feed.items as any[]).find(
         (a: any) => (a.body ?? a.content ?? '').includes(announcement),
       );
       if (posted) {

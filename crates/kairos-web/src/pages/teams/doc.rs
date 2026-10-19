@@ -82,9 +82,23 @@ pub fn TeamDocPage() -> impl IntoView {
     let data = LocalResource::new(move || {
         auth.track_session();
         let slug = params.read().get("slug").unwrap_or_default();
+        let path = params.read().get("path").unwrap_or_default();
         async move {
             let team = api::team_by_slug(auth, &slug).await?;
-            let pages = api::team_pages(auth, &team.id).await?;
+            // KAIROS-T-0629: the list has no content; read the page of the
+            // path.
+            let mut pages = api::team_pages(auth, &team.id).await?;
+            let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+            let open = resolve_path(&pages, &segments)
+                .filter(|node| node.kind == "page")
+                .map(|node| node.id.clone());
+            if let Some(id) = open {
+                let full = api::team_page(auth, &team.id, &id).await?;
+                if let Some(node) = pages.iter_mut().find(|p| p.id == id) {
+                    node.content = full.content;
+                    node.version = full.version;
+                }
+            }
             let items = api::tree_items(auth, &team.id).await?;
             Ok::<_, ApiError>(DocView { team, pages, items })
         }
