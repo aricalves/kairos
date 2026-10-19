@@ -40,45 +40,28 @@ pub struct AgentKey {
     /// The key that a rotation made in place of this key (KAIROS-T-0370).
     #[serde(default)]
     pub replaced_by: Option<String>,
-    /// The scope (KAIROS-T-0536). `None`: no scope, no limit.
+    /// The scope (KAIROS-T-0536): `kairos_client::types_service_accounts::KeyScope`
+    /// as JSON, read by [`scope_text`] only. `None`: no scope, no limit.
     #[serde(default)]
-    pub scope: Option<KeyScope>,
-}
-
-/// mirror of: `kairos_client::types_service_accounts::KeyScope`.
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-pub struct KeyScope {
-    pub capabilities: Vec<String>,
-    #[serde(default)]
-    pub boards: Option<Vec<KeyScopeBoard>>,
-}
-
-/// mirror of: `kairos_client::types_service_accounts::KeyScopeBoard`.
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-pub struct KeyScopeBoard {
-    pub id: String,
-    #[serde(default)]
-    pub slug: Option<String>,
+    pub scope: Option<serde_json::Value>,
 }
 
 /// The scope of a key in words. Pure, host-tested.
-pub(crate) fn scope_text(scope: Option<&KeyScope>) -> String {
+pub(crate) fn scope_text(scope: Option<&serde_json::Value>) -> String {
     let Some(scope) = scope else {
-        return "Scope: none. The key can do each thing that you can do.".to_string();
+        return "Scope: none.".to_string();
     };
-    let capabilities = if scope.capabilities.is_empty() {
-        "read-only".to_string()
-    } else {
-        scope.capabilities.join(", ")
+    let names = |list: &serde_json::Value, each: fn(&serde_json::Value) -> Option<&str>| {
+        list.as_array()
+            .map(|items| items.iter().filter_map(each).collect::<Vec<_>>().join(", "))
     };
-    let boards = match &scope.boards {
-        None => "each board".to_string(),
-        Some(boards) => boards
-            .iter()
-            .map(|b| b.slug.clone().unwrap_or_else(|| b.id.clone()))
-            .collect::<Vec<_>>()
-            .join(", "),
-    };
+    let capabilities = names(&scope["capabilities"], |c| c.as_str())
+        .filter(|c| !c.is_empty())
+        .unwrap_or_else(|| "read-only".to_string());
+    let boards = names(&scope["boards"], |b| {
+        b["slug"].as_str().or_else(|| b["id"].as_str())
+    })
+    .unwrap_or_else(|| "each board".to_string());
     format!("Scope: {capabilities} on {boards}.")
 }
 
@@ -142,19 +125,17 @@ pub(crate) fn create_body(new: &NewKey) -> serde_json::Value {
         (Some(expires_at), false) => json!({ "name": new.name, "expires_at": expires_at }),
         (None, false) => json!({ "name": new.name }),
     };
-    let mut scope = serde_json::Map::new();
     let capabilities = words(&new.capabilities);
-    if new.read_only {
-        scope.insert("capabilities".into(), json!([]));
-    } else if !capabilities.is_empty() {
-        scope.insert("capabilities".into(), json!(capabilities));
-    }
     let boards = words(&new.boards);
-    if !boards.is_empty() {
-        scope.insert("boards".into(), json!(boards));
+    if new.read_only || !capabilities.is_empty() {
+        body["scope"]["capabilities"] = json!(if new.read_only {
+            Vec::new()
+        } else {
+            capabilities
+        });
     }
-    if !scope.is_empty() {
-        body["scope"] = serde_json::Value::Object(scope);
+    if !boards.is_empty() {
+        body["scope"]["boards"] = json!(boards);
     }
     body
 }
@@ -307,10 +288,7 @@ pub fn AgentKeysPage() -> impl IntoView {
                     <Switch checked=read_only label="Read-only"/>
                     <Button on_click=Callback::new(on_create)>"Make key"</Button>
                 </Group>
-                <Text size="sm" dimmed=true>
-                    "With no capabilities, the key gets each capability but purge and \
-                     manage_structure. The key never does more than you can do."
-                </Text>
+
             </Panel>
             <Panel title="Your agent keys"
                 caption="Kairos keeps the start of each key only. A revoked key stays in the \
@@ -410,7 +388,7 @@ pub fn AgentKeysPage() -> impl IntoView {
 
 #[cfg(test)]
 mod tests {
-    use super::{KeyScope, KeyScopeBoard, NewKey, create_body, day, day_and_time, scope_text};
+    use super::{NewKey, create_body, day, day_and_time, scope_text};
 
     fn key(name: &str) -> NewKey {
         NewKey {
@@ -463,22 +441,13 @@ mod tests {
 
     #[test]
     fn the_scope_reads_as_words() {
-        assert_eq!(
-            scope_text(None),
-            "Scope: none. The key can do each thing that you can do."
-        );
-        let scope = KeyScope {
-            capabilities: vec!["manage_tasks".into()],
-            boards: Some(vec![KeyScopeBoard {
-                id: "b1".into(),
-                slug: Some("web".into()),
-            }]),
-        };
+        assert_eq!(scope_text(None), "Scope: none.");
+        let scope = serde_json::json!({
+            "capabilities": ["manage_tasks"],
+            "boards": [{"id": "b1", "slug": "web"}],
+        });
         assert_eq!(scope_text(Some(&scope)), "Scope: manage_tasks on web.");
-        let read_only = KeyScope {
-            capabilities: Vec::new(),
-            boards: None,
-        };
+        let read_only = serde_json::json!({"capabilities": [], "boards": null});
         assert_eq!(
             scope_text(Some(&read_only)),
             "Scope: read-only on each board."
