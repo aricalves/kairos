@@ -42,6 +42,9 @@ pub enum NotificationKind {
     /// organization (you are an admin), expires within
     /// [`KEY_EXPIRING_DAYS`] days (KAIROS-T-0540).
     KeyExpiring,
+    /// A person confirmed or rejected an edge proposal that you made
+    /// (KAIROS-T-0558).
+    ProposalDecided,
 }
 
 /// A key that expires within this many days gets one `key_expiring`
@@ -50,7 +53,7 @@ pub const KEY_EXPIRING_DAYS: i64 = 7;
 
 impl NotificationKind {
     /// Each kind, in the order of the settings.
-    pub const ALL: [NotificationKind; 12] = [
+    pub const ALL: [NotificationKind; 13] = [
         NotificationKind::HandOff,
         NotificationKind::BlockerCleared,
         NotificationKind::BlockedAgain,
@@ -63,6 +66,7 @@ impl NotificationKind {
         NotificationKind::ClaimDropped,
         NotificationKind::ClaimStale,
         NotificationKind::KeyExpiring,
+        NotificationKind::ProposalDecided,
     ];
 
     /// The wire name (`kind` column and API field).
@@ -80,6 +84,7 @@ impl NotificationKind {
             NotificationKind::ClaimDropped => "claim_dropped",
             NotificationKind::ClaimStale => "claim_stale",
             NotificationKind::KeyExpiring => "key_expiring",
+            NotificationKind::ProposalDecided => "proposal_decided",
         }
     }
 

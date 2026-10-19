@@ -3,8 +3,8 @@ title: "MCP tools"
 ---
 
 Kairos serves the Model Context Protocol at `/mcp`. The surface is exactly
-seventy-five tools. A drift gate in the test suite
-asserts that `tools/list` returns these seventy-five and no others. The same
+seventy-eight tools. A drift gate in the test suite
+asserts that `tools/list` returns these seventy-eight and no others. The same
 gate asserts that this page has one section for each tool.
 
 The promise is for one release: this page agrees with `tools/list`. The count
@@ -23,7 +23,7 @@ organization.
 | URL | Profile | Tools |
 |---|---|---|
 | `/mcp` or `/mcp?profile=work` | work (the default) | The work on items, the repository directory and code index builds, the members, claims, notifications, the scales and templates, board flow, dispatch rules and team pages to read: 47 tools. |
-| `/mcp?profile=admin` | admin | Teams, boards, columns and transitions, grants, metadata definitions and templates, the writes of dispatch rules, agent triage, the writes of team pages, org read tokens, the delete of repositories, purge: the other 28 tools. |
+| `/mcp?profile=admin` | admin | Teams, boards, columns and transitions, grants, metadata definitions and templates, the writes of dispatch rules and webhook targets, agent triage, the writes of team pages, org read tokens, the delete of repositories, purge: the other 31 tools. |
 | `/mcp?profile=all` | all | Each tool. |
 
 The profile changes the list, not the rights. Kairos runs a call to a tool
@@ -72,7 +72,8 @@ These hold for every tool.
 | Retired codes | When an item gets a new short code, its old code is retired. Kairos does not issue a retired code again. A read tool (`get_item`, `get_history`, `search`) finds the item from a retired code and shows the current code. A write tool refuses a retired code for the item that it changes. The refusal is `NOT_FOUND`, and it gives the current code. A reference in a write follows a retired code: the `source` and the `target` of `link_items` and `unlink_items`, and the `parent` of `create_item`. The answer then has a line such as `COLLIERY-T-2430 is now SKADI-T-0577.` |
 | Board and team references | A `board`, `to_board`, `team` or `repository` argument accepts either a slug or a UUID. A `column` or `to_column` argument accepts either a column name, case-insensitively, or a UUID. |
 | Listing weight | Listings are compact: short code, title and key fields. Full markdown content arrives only from `get_item` and from `get_history` with a `version`. |
-| Errors | A refusal comes back as an MCP tool error whose text is `CODE: message`, the code being the same stable one as the REST API's error envelope. Where that code has structured `details`, a second line follows: `details: ` and the JSON object. See [Errors](../errors/) for what each code's `details` carries. |
+| Parts of a list | A list can show a part of its rows. Then the list says how many rows come after it, and the `offset` of the next part: `2 more; offset 50.` Send that `offset` to get the next part. `search`, `get_history`, and the two lists of open work of `get_repository` say it this way. |
+| Errors | A refusal comes back as an MCP tool error whose text is `CODE: message`, the code being the same stable one as the REST API's error envelope. Where that code has structured `details`, a second line follows: `details: ` and the JSON object. See [Errors](../errors/) for what each code's `details` carries. The key `field` names the argument that the refusal is about, as it names the field of a REST body. |
 | Audit | Writes are recorded in the activity log by the same code path as the REST API. |
 | Notifications | While the caller has unread [notifications](#your-notifications), each answer (not a refusal) ends with a block: the 5 newest, then `More: call get_events` when there are more. The block stops when the caller marks them read. An agent key keeps its own read state, apart from the person. `get_events` itself has no block, because it lists them. A service account gets no notifications. |
 | Claims | A task in Active has a [claim](../glossary/#claim): the person who works on it. A write to a task that a different person has the claim on succeeds and is recorded. The text of the tool then ends with a line: `Warning: Alice (agent) has the claim on ACME-T-0012 (since 2026-10-09T10:00:00Z). Your change is recorded.` A write by the person who has the claim, also with the agent key of the person, gets no warning. |
@@ -117,7 +118,7 @@ argument and gives the arguments of the tool:
 
 ```text
 VALIDATION: The call has the argument "column". This tool does not accept that argument. The arguments of this tool are: item_type, title, board, …
-details: {"allowed":["item_type","title","board", …],"argument":"column"}
+details: {"allowed":["item_type","title","board", …],"field":"column"}
 ```
 
 An argument can be in an object of the call, such as `filter` of `search`. Then
@@ -147,6 +148,10 @@ team gives with no grant (`(team <slug>, no grant)`). On the ADR board of the
 team, these include `manage_adrs`. The section `Structure (manage_structure)`
 gives the grants of [`manage_structure`](../capabilities/#manage_structure) of
 the caller: on the organization, or on one board.
+
+When the request uses an agent key, the section `Agent key scope` gives the
+capabilities and the boards of the scope of the key. A key with no scope says
+so. See [The scope of an agent key](../capabilities/#the-scope-of-an-agent-key).
 
 The line `user name` gives the name that `hand_off_item` and the `claimed_by`
 filter of `search` take. `@<user name>` in the content of an item mentions the
@@ -279,7 +284,8 @@ The repository directory. Each line of the output has these parts:
 
 - the slug, the forge and the full name
 - `owner`: the single owning team
-- `owner's board`: the delivery board of that team
+- `owner's board`: the slug of the delivery board of that team. Send it to
+  `board_items` as `board`.
 - `open tasks`: the open task count
 - `webhooks connected`, when a webhook connection exists
 
@@ -296,6 +302,9 @@ A result can be a part of the directory. Then its first line gives the count
 of the repositories and the `offset` of the next part:
 `Repositories in the directory: 120. Shown: 50 (limit 50, offset 0). Call
 again with offset 50 for the next part.`
+
+`GET /api/repositories` gives the slug of the board in `delivery_board_slug`,
+and its id in `delivery_board_id`.
 
 Refuses: `VALIDATION` for an unknown `team` — it is a filter value, not a
 path.
@@ -320,7 +329,7 @@ One repository in full. The output has these parts:
   when, and the result of the last write. With the token, Kairos writes a
   comment and the commit status `kairos` on each GitHub pull request that
   links to an item. No tool gives or sets the token. See
-  [Turn on GitHub write-back](../../how-to/turn-on-github-write-back/).
+  [Turn on forge write-back](../../how-to/turn-on-github-write-back/).
 - `code index build`: `on` or `off`. When it is `off`, the builder of the
   server does not build the code index of the repository.
   `update_repository` sets it.
@@ -347,6 +356,21 @@ tasks that link to the repository.
 |---|---|---|---|---|
 | `repository` | string | yes | — | Slug or UUID. |
 | `include_deleted` | boolean | no | `false` | Add the archived documents and ADRs of the two sections, each with the mark `[archived]`. |
+| `offset` | integer | no | `0` | The number of rows to skip in `## In flight` and in `## Not linked to an item`. |
+
+The sections `## In flight` and `## Not linked to an item` show 50 rows each,
+newest first. When a section has more rows, its last line gives the count and
+the next `offset`. The same `offset` applies to the two sections. An `offset`
+after the end of a section shows the count of its rows:
+
+```text
+## In flight
+- pull_request 412 [open] Retry the webhook — ACME-T-0012 (Retry the webhook https://github.com/acme/payments-api/pull/412)
+- 3 more; offset 50.
+
+## Not linked to an item
+(none at offset 100: the list has 52)
+```
 
 The section `## Documents and ADRs that impact this repository` has one line
 for each item. The documents come first, in the order of the short code. A
@@ -671,7 +695,7 @@ Refuses: `NOT_FOUND` for an unknown board; `VALIDATION` for a date that is not
 
 Full detail of one item: type, board and column, version, full markdown
 content and its notes, metadata values, and relationships — parent chain, children, blockers,
-supporting documents.
+supporting documents. It also names the creator.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
@@ -683,6 +707,14 @@ transition from the column, it says `next: none`:
 
 ```text
 - board: platform-delivery / column: Todo · next: Active, Blocked
+```
+
+The line `created by` gives the person who created the item and the time. It
+gives the display name and the user name. The
+[edit rule](../capabilities/#the-edit-rule) lets the creator edit the item:
+
+```text
+- created by: Robin (robin) on 2026-10-16T22:04:24Z
 ```
 
 A document has no column. It shows its owner board in the line `owner board`,
@@ -775,6 +807,21 @@ An item that had other codes has the line `retired codes`:
 - retired codes: COLLIERY-T-2430
 ```
 
+An item with [edge proposals](#propose_edge) has the section `## Proposals`
+after the relationships (KAIROS-T-0558). The item can be the source or the
+target. The section lists each pending proposal first, at most 20. Then it
+lists the 5 newest decided proposals.
+
+Each line gives the state, the edge, the id, the proposer and the reason. A
+decided line also gives the decider and the date. When more proposals wait,
+the last line gives their count.
+
+```text
+## Proposals
+- pending: ACME-T-0012 -[blocks]-> ACME-T-0014 (5f0c…), proposed by Robin on 2026-10-17. Why: The first writes the table.
+- confirmed: ACME-T-0012 -[parent]-> ACME-I-0003 (9a1d…), proposed by Robin on 2026-10-16, confirmed by Sam on 2026-10-18. Why: The same goal.
+```
+
 An item with notes has the section `## Notes` after the relationships. Each
 line gives one note: its id, its date, its author and its first line. Cite a
 note by its id: "note n-3 on ACME-T-0012".
@@ -813,7 +860,11 @@ An item's content version history — version, editor, timestamp, newest first.
 |---|---|---|---|---|
 | `short_code` | string | yes | — | The item's short code. |
 | `limit` | integer | no | `20` | Maximum versions to list. Clamped to 1–200. |
+| `offset` | integer | no | `0` | The number of versions to skip, newest first. |
 | `version` | integer | no | — | Return that snapshot's full title and content instead of the list. |
+
+The list can show a part of the versions. Then its last line gives the count
+of the older versions and the next `offset`: `- 18 more; offset 20.`
 
 Archived items' history is returned, marked archived.
 
@@ -829,7 +880,7 @@ line has the old code, the new code, the time and who did the move:
 ```
 
 Refuses: `NOT_FOUND` for an unknown short code, or for a `version` with no
-snapshot.
+snapshot. `VALIDATION` for `version` with `limit` or with `offset`.
 
 ### `list_metadata_definitions`
 
@@ -907,6 +958,23 @@ are compact and grouped by type.
 | `owned_by` | string | no | — | Strategies and initiatives that this person owns. Send `me`, a user id, an email or a user name. |
 | `created_by` | string | no | — | Items that this person created. Send `me`, a user id, an email or a user name. |
 | `include_deleted` | boolean | no | `false` | Include archived items, marked `[archived]`. Composes with everything, `q` and `traverse` included, and counts on its own as a constraining filter. |
+
+The first line gives the count and the part:
+`12 found, 10 shown (limit 10, offset 0). 2 more; offset 10.` The words
+`more; offset` show when more rows come.
+
+A task line gives the type, the board and the column. Then, as it applies, it
+gives who has the claim, the count of open blockers and the repository. The
+search reads these facts with the results. Thus you do not need `get_item`
+for each task:
+
+```text
+- KAIROS-T-0511 — Retry the webhook [bug] kairos/Active, claimed by Robin (agent), blocked by 1 [repo:kairos]
+- KAIROS-T-0512 — Write the guide [task] kairos/Todo
+```
+
+An open blocker is a live item that is not done, or a cancelled task. A task
+in a done column has no open blockers. `board_items` counts them the same way.
 
 `filter.repository` gives three types of item:
 
@@ -1381,7 +1449,8 @@ State of ACME-T-0012: branch acme-t-0012 at abc1234, pushed, PR https://github.c
 
 Refuses: `NOT_FOUND` for an unknown short code or an archived task.
 `VALIDATION` when the item is not a task, when no field has a value, and
-for an unknown argument. `FORBIDDEN` by the edit rule.
+for an unknown argument. `FORBIDDEN` by the edit rule. `CONFLICT` when the
+state changed after `expected_updated_at`.
 
 ### The teams of an initiative or a strategy
 
@@ -1978,6 +2047,10 @@ check rather than facts to act on — the reasoning is
 Items already joined by an edge are not returned: there is nothing to propose and
 nothing you cannot already see.
 
+Refuses: `NOT_FOUND` for an unknown short code. A fault of the server is
+`INTERNAL`, not `NOT_FOUND`. `GET /api/items/{short_code}/related` has the
+same codes.
+
 The response ends with the section `External references` when the item or a
 proposal has one. Each line has the short code, the label and the URI of one
 reference. The search does not read those documents. The section is there when
@@ -2010,7 +2083,11 @@ board that reports to people who believe it. Nobody reads an edge again once it
 exists.
 
 The proposal appears on both items in the interface, with your reasoning, for
-someone to accept or decline. Confirming creates the real edge, and is refused by
+someone to accept or decline. [`get_item`](#get_item) lists the proposals of an
+item in the section `## Proposals`, with the state of each one (KAIROS-T-0558).
+After the decision, Kairos sends you a `proposal_decided`
+[notification](#your-notifications). It names the edge, the state and the
+decider. You get no notification for a decision that you made yourself. Confirming creates the real edge, and is refused by
 the same cycle and rule checks that refuse any other edge.
 
 To propose, a caller needs no capability: a proposal writes no edge and changes
@@ -2054,7 +2131,24 @@ each one back.
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `short_code` | string | yes | — | The item's short code. |
-| `confirm` | boolean | yes | — | Must be `true`. |
+| `confirm` | boolean | no | `false` | `true` archives the item. |
+| `preview` | boolean | no | `false` | `true` shows the cascade and changes nothing. Not with `confirm: true`. |
+
+Send `preview: true` before the archive (KAIROS-T-0558). The preview uses the
+plan of the archive, for you as the caller. It lists the descendants that the
+archive would take. It names each descendant that would stay, and the reason.
+
+The preview changes no item. When the edit rule refuses you the named item,
+the preview says so. REST `GET /api/{entity_type}/{short_code}/cascade-preview`
+gives the same cascade.
+
+```text
+Preview of an archive of ACME-I-0001. Nothing is archived.
+The cascade would archive 2 descendants: ACME-T-0001, ACME-T-0002.
+The archive would not reach 1 item. They would stay live and keep their parent.
+- WEB-T-0003: You need `manage_tasks` on the board <board-id>.
+To archive, call delete_item with short_code ACME-I-0001 and confirm=true.
+```
 
 The archive cascades through `parent` edges to each descendant that the caller
 can edit. Archived items remain retrievable by short code and searchable with
@@ -2081,13 +2175,14 @@ The archive did not reach 2 items. They stay live and keep their parent.
 
 The output has no such lines when the archive reached each descendant.
 
-Refuses: `VALIDATION` when `confirm` is `false` — checked before the short code
-is looked up, so such a call never reports an unknown item; `NOT_FOUND` for an
+Refuses: `VALIDATION` when `confirm` and `preview` are both `false` or both
+`true` — checked before the short code is looked up, so such a call never
+reports an unknown item; `NOT_FOUND` for an
 unknown short code or an already-archived item; `FORBIDDEN` when the
 [edit rule](../capabilities/#the-edit-rule) refuses the caller;
 `AGENT_TRIAGE_OFF` for an agent's archive of intake while the board lets a
-person decide (KAIROS-T-0537). A call with no `confirm` gets `VALIDATION`.
-The text names the argument, and `details.argument` is `confirm`.
+person decide (KAIROS-T-0537). A call with no `confirm` and no `preview`
+gets `VALIDATION`. The text names `confirm=true` and `preview=true`.
 
 ### `restore_item`
 
@@ -2597,6 +2692,7 @@ A notification tells a person about an event of their work (KAIROS-T-0381):
 | `claim_dropped` | A person leaves the organization, and their claim on a task of the board of your team ends. The task stays in its column, free. |
 | `claim_stale` | A claim has no write and no state change for `KAIROS_STALE_CLAIM_DAYS` days (default 14). You get it for your claim, or for a claim on a task of an initiative that you own. The claim stays. Kairos sends it once for each quiet period. |
 | `key_expiring` | An agent key of yours expires in 7 days or less. An organization admin also gets it for a key of a service account. Kairos sends it one time for each key. The text names the key and the `kairos keys rotate` command. |
+| `proposal_decided` | A person confirms or rejects an [edge proposal](#propose_edge) that you made (KAIROS-T-0558). The text names the edge, the state and the decider. A proposal of your agent key is your proposal. |
 
 You get no notification for a change that you made. You can turn a kind off
 with `PUT /api/me/notification-settings` or on the Notifications page of the
@@ -2866,6 +2962,44 @@ Refuses: `FORBIDDEN` without `configure_boards`; `NOT_FOUND` for an unknown
 board or rule.
 
 REST: `DELETE /api/boards/{id}/dispatch-rules/{rule_id}`.
+
+The next three tools work on a webhook target of a board (KAIROS-T-0558). They
+are in the admin profile. Each one requires `configure_boards` on the board, as
+REST does. Each one takes these arguments:
+
+| Argument | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `board` | string | yes | — | Slug or UUID. |
+| `target_id` | string | yes | — | The id of the target, from `list_dispatch_rules`. |
+
+Each one refuses:
+
+- `FORBIDDEN` without `configure_boards`;
+- `NOT_FOUND` for an unknown board, or a target of a different board;
+- `VALIDATION` for a `target_id` that is not a UUID, and for an unknown
+  argument.
+
+### `remove_webhook_target`
+
+Removes a target, with its rules and its delivery log. You cannot undo it.
+
+REST: `DELETE /api/boards/{id}/webhook-targets/{target_id}`.
+
+### `enable_webhook_target`
+
+Turns a target on again and sets its failed tries in a row to 0. Kairos queues
+the `skipped` deliveries of the last 30 days again, oldest first. The answer
+gives their count.
+
+REST: `POST /api/boards/{id}/webhook-targets/{target_id}/enable`.
+
+### `test_webhook_target`
+
+Sends a test delivery with the event `ping` to a target. A target that is off
+gets a `skipped` delivery. The answer gives the id and the status of the
+delivery. `list_dispatch_rules` shows the delivery in the log.
+
+REST: `POST /api/boards/{id}/webhook-targets/{target_id}/test`.
 
 ## Read tokens of the organization
 

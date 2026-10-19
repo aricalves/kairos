@@ -450,6 +450,7 @@ pub async fn authenticate_session(state: &AppState, token: &str) -> Result<AuthC
                 display_name: user.display_name,
                 email_verified: false,
                 agent_key: None,
+                key_scope: None,
             };
             Ok((auth, session.expires_at))
         })

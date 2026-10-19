@@ -608,14 +608,14 @@ pub fn resolve_person(
             "No member of the organization has the id, the email or the user name {reference:?}. \
              Send a person of the organization."
         ))
-        .with_details(serde_json::json!({ "argument": "to" })));
+        .with_details(serde_json::json!({ "field": "to" })));
     };
     if kind != kairos_db::models::public::USER_KIND_HUMAN {
         return Err(ApiError::validation(format!(
             "{reference:?} is a service account. Only a person can have a claim. Send a person \
              of the organization."
         ))
-        .with_details(serde_json::json!({ "argument": "to" })));
+        .with_details(serde_json::json!({ "field": "to" })));
     }
     Ok(id)
 }
@@ -656,7 +656,7 @@ pub fn require_claim_target(
          board, or give the person a grant first."
     ))
     .with_details(serde_json::json!({
-        "argument": "to",
+        "field": "to",
         "board_id": board_id,
         "board": board_slug,
         "required_capability": TRANSITION_ITEMS,

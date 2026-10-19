@@ -350,6 +350,7 @@ async fn an_admin_agent_sets_up_a_team_with_manage_structure() {
                     name: format!("{name}-key"),
                     expires_at: None,
                     no_expiry: false,
+                    scope: None,
                 },
             )
             .await

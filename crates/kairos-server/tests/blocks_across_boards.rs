@@ -223,6 +223,16 @@ async fn a_board_hears_a_blocker_on_a_different_board() {
     // =======================================================================
     // The events: a socket filtered to `watched`
     // =======================================================================
+    // KAIROS-T-0632: the emitter of the server sends the events of the
+    // writes above after their commit. Wait until it sent them, so that
+    // none of them reaches the socket below.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while kairos_db::events::outbox_pending(&mut conn).expect("outbox") {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the emitter sends the outbox");
     let mut stream = svc.connect_events().await.expect("event socket");
     stream
         .subscribe_board(&watched.to_string())

@@ -308,7 +308,7 @@ impl RepositoryCredential {
 }
 
 /// mirror of: `kairos_client::types_repositories::RepositoryWriteBack`:
-/// the GitHub write-back of a repository (KAIROS-T-0386). The server never
+/// the write-back of a repository (KAIROS-T-0386, KAIROS-T-0575). The server never
 /// sends the write token.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 pub struct RepositoryWriteBack {
@@ -332,7 +332,7 @@ impl RepositoryWriteBack {
     /// The text of the status on the admin page. Pure, host-tested.
     pub fn summary(&self) -> String {
         if !self.enabled {
-            return "GitHub write-back: off. The repository has no write token.".to_string();
+            return "Write-back: off. The repository has no write token.".to_string();
         }
         let by = self
             .set_by_name
@@ -348,7 +348,7 @@ impl RepositoryWriteBack {
             ),
             _ => " No write yet.".to_string(),
         };
-        format!("GitHub write-back: on. {by} set the write token at {at}.{last}")
+        format!("Write-back: on. {by} set the write token at {at}.{last}")
     }
 }
 
@@ -550,7 +550,7 @@ mod tests {
         assert!(!bare.write_back.enabled);
         assert_eq!(
             bare.write_back.summary(),
-            "GitHub write-back: off. The repository has no write token."
+            "Write-back: off. The repository has no write token."
         );
         let on = RepositoryWriteBack {
             enabled: true,
@@ -563,7 +563,7 @@ mod tests {
         };
         assert_eq!(
             on.summary(),
-            "GitHub write-back: on. Ada set the write token at 2026-10-12T00:00:00+00:00. \
+            "Write-back: on. Ada set the write token at 2026-10-12T00:00:00+00:00. \
              The last write at 2026-10-12T01:00:00+00:00 failed: GitHub answered 502."
         );
 

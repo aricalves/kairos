@@ -1021,6 +1021,21 @@ pub struct WhoamiResponse {
     /// organization, or on one board. Empty when the caller has none.
     #[serde(default)]
     pub structure: Vec<WhoamiStructureGrant>,
+    /// The agent key of the request (KAIROS-T-0536). `None` when the
+    /// request does not use an agent key, and from an older server.
+    #[serde(default)]
+    pub agent_key: Option<WhoamiAgentKey>,
+}
+
+/// The agent key of [`WhoamiResponse::agent_key`] (KAIROS-T-0536).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct WhoamiAgentKey {
+    /// `api_keys.id` (UUID).
+    pub id: String,
+    /// The scope of the key. `None`: no scope, so no limit (a key made
+    /// before KAIROS-T-0536).
+    #[serde(default)]
+    pub scope: Option<crate::types_service_accounts::KeyScope>,
 }
 
 /// One grant of [`WhoamiResponse::structure`].

@@ -225,9 +225,9 @@ impl From<diesel::result::Error> for Abort {
 /// left the item. Inside this function the transaction of a service is a
 /// savepoint, so an `Err` from `f` rolls back all of them.
 ///
-/// Events are safe in here. `emit_event` is a `pg_notify`, and PostgreSQL
-/// delivers a notification when its transaction commits, so a create that
-/// is rolled back sends none. Short code sequences are not transactional: a
+/// Events are safe in here. `emit_event` inserts a row of the event outbox
+/// (KAIROS-T-0632), and the emitter sends only committed rows, so a create
+/// that is rolled back sends none. Short code sequences are not transactional: a
 /// number that a refused create took stays taken, which is correct.
 pub fn atomically<T>(
     conn: &mut PgConnection,
@@ -256,6 +256,11 @@ pub fn require_capability(
     user_id: Uuid,
     capability: &str,
 ) -> Result<(), ApiError> {
+    // KAIROS-T-0536: the scope of the agent key comes first, so the admin
+    // role does not pass an action that the scope leaves out.
+    if let Some(refusal) = ApiError::outside_key_scope_of(user_id, capability, board_id) {
+        return Err(refusal);
+    }
     let allowed = match board_id {
         Some(board_id) => abac::authorize(conn, slug, board_id, user_id, capability),
         None => abac::is_org_admin(conn, slug, user_id),
@@ -289,6 +294,12 @@ pub fn require_structure(
     slug: &str,
     user_id: Uuid,
 ) -> Result<(), ApiError> {
+    // KAIROS-T-0536: the scope of the agent key must have `manage_structure`.
+    if let Some(refusal) =
+        ApiError::outside_key_scope_of(user_id, kairos_core::abac::MANAGE_STRUCTURE, None)
+    {
+        return Err(refusal);
+    }
     let allowed = abac::is_org_admin(conn, slug, user_id).map_err(map_abac_error)?
         || abac::holds_structure(conn, user_id, None).map_err(map_abac_error)?;
     if allowed {
@@ -436,6 +447,22 @@ pub fn require_item_archive(
     item_type: ItemType,
 ) -> Result<(), ApiError> {
     require_item_edit_for(conn, role, user_id, item_id, item_type, EditUse::Archive)
+}
+
+/// The refusal that an archive of the item by this principal would get, or
+/// `None` (KAIROS-T-0558: the preview of MCP `delete_item`). The rule of
+/// [`require_item_archive`], as a read: it notes no claim.
+pub(crate) fn archive_refusal(
+    conn: &mut PgConnection,
+    role: OrgRole,
+    user_id: Uuid,
+    item_id: Uuid,
+    item_type: ItemType,
+) -> Result<Option<ApiError>, ApiError> {
+    Ok(
+        missing_edit(conn, role, user_id, item_id, item_type, EditUse::Archive)?
+            .map(|missing| ApiError::capability_required(missing.capability, missing.board_id)),
+    )
 }
 
 fn require_item_edit_for(
@@ -623,6 +650,17 @@ fn edge_refusal(
     let target_capability = meta::manage_capability(target_type);
     let source_board = source.as_ref().and_then(|missing| missing.board_id);
     let target_board = target.as_ref().and_then(|missing| missing.board_id);
+    // KAIROS-T-0536: when the scope of the agent key leaves out both ends,
+    // the scope is the reason.
+    if source.is_some()
+        && target.is_some()
+        && let (Some(refusal), Some(_)) = (
+            ApiError::outside_key_scope(source_capability, source_board),
+            ApiError::outside_key_scope(target_capability, target_board),
+        )
+    {
+        return Ok(refusal);
+    }
     let need = |capability: &str, board: Option<Uuid>, end: &str| match board {
         Some(_) => format!("{capability:?} on the board of the {end}"),
         None => format!("the organization admin role for the {end}"),
@@ -1434,7 +1472,7 @@ pub fn map_rename_error(e: RenameError) -> ApiError {
             }
             .to_string(),
         )
-        .with_details(json!({ "argument": "rename", "short_code": code, "code_prefix": prefix })),
+        .with_details(json!({ "field": "rename", "short_code": code, "code_prefix": prefix })),
         RenameError::Item(e) => map_item_error(e),
         RenameError::Retire(e) => ApiError::internal(e),
         RenameError::Database(e) => ApiError::internal(e),

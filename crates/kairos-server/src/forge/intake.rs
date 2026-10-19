@@ -12,7 +12,9 @@
 //!   already (KAIROS-T-0483), makes nothing.
 //! - The task links to the issue (`item_links`, kind `issue`) with its URL,
 //!   number and the login of its author.
-//! - After intake nothing is synced, and nothing is written back.
+//! - After intake nothing is read from the issue. With a write token, the
+//!   end of the task writes back to it ([`super::issue_writeback`],
+//!   KAIROS-T-0575).
 //!
 //! The webhook and the import call [`take_issue`]: one path.
 

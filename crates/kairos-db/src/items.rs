@@ -1980,8 +1980,8 @@ fn soft_delete_planned(
             details,
         )?;
 
-        // KAIROS-T-0022: one thin event for the cascade root, delivered on
-        // commit ([`events::item_placement`] still sees the soft-deleted
+        // KAIROS-T-0022: one thin event for the cascade root, delivered
+        // after the commit (the outbox insert still sees the soft-deleted
         // row).
         events::emit_item_event_by_id(
             conn,
@@ -1992,9 +1992,13 @@ fn soft_delete_planned(
         )?;
         // KAIROS-T-0574: and one for each cascaded descendant, with its own
         // board, so a socket filtered to the board of a descendant hears it.
-        for code in &cascaded_short_codes {
-            events::emit_item_event_by_code(conn, EventKind::ItemDeleted, code, actor)?;
-        }
+        // One insert for all of them (KAIROS-T-0632).
+        events::emit_item_events_by_codes(
+            conn,
+            EventKind::ItemDeleted,
+            &cascaded_short_codes,
+            actor,
+        )?;
 
         Ok(SoftDeleteOutcome {
             root_short_code,

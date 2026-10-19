@@ -2,10 +2,10 @@
 //! column (KAIROS-A-0015: "board views per level with column layout";
 //! `GET /api/boards` + `GET /api/boards/{id}/items`).
 
-use crate::commands::entities::ListArgs;
+use crate::commands::entities::{ListArgs, require_confirm};
 use crate::context::{Common, client, find_column, print_json, team_id};
 use crate::error::CliError;
-use crate::listing::fetch;
+use crate::listing::{fetch, print_whole};
 use crate::table::Table;
 
 use kairos_client::types_org::{
@@ -43,7 +43,8 @@ pub enum BoardsCommand {
         #[command(flatten)]
         common: Common,
     },
-    /// Show a board's live items grouped by column (one page)
+    /// Show a board's live items grouped by column (one page, or each
+    /// page with --all)
     Show {
         /// Board slug or id (UUID)
         #[arg(value_name = "BOARD")]
@@ -54,6 +55,10 @@ pub enum BoardsCommand {
         /// Items to skip
         #[arg(long)]
         offset: Option<i64>,
+        /// Read each page: the CLI asks for one page after the other, and
+        /// shows each item. Not with --limit or --offset
+        #[arg(long, conflicts_with_all = ["limit", "offset"])]
+        all: bool,
         /// Show only the strategies and the initiatives of this team (slug
         /// or UUID), from tasks or set by hand. Tasks and ADRs are not
         /// changed
@@ -145,6 +150,40 @@ pub enum BoardsCommand {
         #[command(subcommand)]
         command: crate::commands::dispatch::DispatchCommand,
     },
+    /// List the members of a board and their board capabilities
+    Members {
+        /// Board slug or id (UUID)
+        #[arg(value_name = "BOARD")]
+        board: String,
+        #[command(flatten)]
+        common: Common,
+    },
+    /// Change the name or the slug of a board (needs configure_boards)
+    Update {
+        /// Board slug or id (UUID)
+        #[arg(value_name = "BOARD")]
+        board: String,
+        /// The new name
+        #[arg(long)]
+        name: Option<String>,
+        /// The new slug (^[a-z][a-z0-9_-]{1,62}$)
+        #[arg(long)]
+        slug: Option<String>,
+        #[command(flatten)]
+        common: Common,
+    },
+    /// Delete an empty board (requires --confirm). Kairos refuses a board
+    /// that has items
+    Delete {
+        /// Board slug or id (UUID)
+        #[arg(value_name = "BOARD")]
+        board: String,
+        /// Delete the board
+        #[arg(long)]
+        confirm: bool,
+        #[command(flatten)]
+        common: Common,
+    },
     /// Archive each task in the done columns of a delivery board, cancelled
     /// tasks too (requires --confirm). You can restore each task
     #[command(name = "archive-completed")]
@@ -235,13 +274,15 @@ impl BoardsCommand {
                 board_id,
                 limit,
                 offset,
+                all,
                 team,
                 no_team,
                 details,
                 common,
             } => {
                 let client = client(&common)?;
-                // COLLIERY-T-0261: one page of the board.
+                // COLLIERY-T-0261: one page of the board, or each page
+                // (KAIROS-T-0592).
                 let query = BoardItemsQuery {
                     limit,
                     offset,
@@ -250,12 +291,20 @@ impl BoardsCommand {
                     with_metadata: details,
                     ..BoardItemsQuery::default()
                 };
-                let items = client.board_items(&board_id, &query).await?;
+                let items = if all {
+                    client.board_items_all(&board_id, &query).await?
+                } else {
+                    client.board_items(&board_id, &query).await?
+                };
                 if common.json {
                     return print_json(&items);
                 }
                 print_board_items(&items, details);
                 println!();
+                if all {
+                    println!("total: {}", items.total);
+                    return Ok(());
+                }
                 println!(
                     "total: {} (limit {}, offset {})",
                     items.total, items.limit, items.offset
@@ -265,6 +314,63 @@ impl BoardsCommand {
                 if let Some(note) = items.incomplete_note("use --offset") {
                     println!("{note}");
                 }
+                Ok(())
+            }
+            Self::Members { board, common } => {
+                let client = client(&common)?;
+                let members = client.list_board_members(&board).await?;
+                if common.json {
+                    return print_whole(&members);
+                }
+                print!("{}", members_text(&members));
+                Ok(())
+            }
+            Self::Update {
+                board,
+                name,
+                slug,
+                common,
+            } => {
+                if name.is_none() && slug.is_none() {
+                    return Err(CliError::Failure(
+                        "Give --name or --slug: the command has nothing to change.".to_string(),
+                    ));
+                }
+                let client = client(&common)?;
+                // A change of a board takes the id (KAIROS-T-0589).
+                let id = client.get_board(&board).await?.board.id;
+                let updated = client
+                    .update_board(
+                        &id,
+                        &UpdateBoardRequest {
+                            name,
+                            slug,
+                            ..UpdateBoardRequest::default()
+                        },
+                    )
+                    .await?;
+                if common.json {
+                    return print_json(&updated);
+                }
+                println!(
+                    "The board {board} has the name {} and the slug {}.",
+                    updated.name, updated.slug
+                );
+                Ok(())
+            }
+            Self::Delete {
+                board,
+                confirm,
+                common,
+            } => {
+                require_confirm(confirm, &format!("the board {board}"))?;
+                let client = client(&common)?;
+                let id = client.get_board(&board).await?.board.id;
+                let deleted = client.delete_board(&id).await?;
+                if common.json {
+                    return print_json(&deleted);
+                }
+                println!("Kairos deleted the board {board}.");
                 Ok(())
             }
             Self::Dispatch { command } => command.run().await,
@@ -381,6 +487,23 @@ impl BoardsCommand {
             }
         }
     }
+}
+
+/// The text of `boards members` (KAIROS-T-0592): one row for each member,
+/// with the capabilities. Pure.
+fn members_text(members: &[kairos_client::types_org::BoardMember]) -> String {
+    if members.is_empty() {
+        return "(none)\ntotal: 0\n".to_string();
+    }
+    let mut table = Table::new(&["EMAIL", "NAME", "CAPABILITIES"]);
+    for member in members {
+        table.row(vec![
+            member.email.clone(),
+            member.display_name.clone(),
+            member.capabilities.join(", "),
+        ]);
+    }
+    format!("{}total: {}\n", table.render(), members.len())
 }
 
 /// The TEAM cell of `boards list`: the slug of the team, or its id when
@@ -659,6 +782,31 @@ mod archive_completed_tests {
             "{text}"
         );
         assert!(text.contains("tasks restore"), "{text}");
+    }
+}
+
+#[cfg(test)]
+mod members_tests {
+    use super::members_text;
+
+    /// KAIROS-T-0592: `boards members` shows the email, the name and the
+    /// capabilities of each member.
+    #[test]
+    fn the_members_text_has_a_row_for_each_member() {
+        let member = kairos_client::types_org::BoardMember {
+            user_id: "u-1".into(),
+            email: "robin@example.com".into(),
+            display_name: "Robin".into(),
+            capabilities: vec!["manage_tasks".into(), "transition_items".into()],
+        };
+        let text = members_text(&[member]);
+        assert!(text.starts_with("EMAIL"), "{text}");
+        assert!(
+            text.contains("robin@example.com  Robin  manage_tasks, transition_items"),
+            "{text}"
+        );
+        assert!(text.ends_with("total: 1\n"), "{text}");
+        assert_eq!(members_text(&[]), "(none)\ntotal: 0\n");
     }
 }
 

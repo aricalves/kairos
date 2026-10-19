@@ -154,3 +154,20 @@ Feature: Start from the base index
     When the agent calls fetch_index with the path of the checkout
     Then the server says that it took the summaries from Kairos
     And each symbol of A has its summary from the base index
+
+  # KAIROS-T-0592: a deployment with no builder of the code index gets its
+  # base indexes from `kairos index upload`, for example in a CI job.
+  Scenario: kairos index upload sends the index of the checkout for its HEAD commit
+    Given Kairos has an index of commit A of main
+    And a checkout of a branch from A with 3 changed files and no local index
+    When I run "kairos index update"
+    And I run "kairos index upload"
+    Then Kairos has an index of the HEAD commit of the checkout, for the ref feature
+
+  Scenario: kairos index upload refuses a tree with changes that are not committed
+    Given Kairos has an index of commit A of main
+    And a checkout of a branch from A with 3 changed files and no local index
+    When I run "kairos index update"
+    And a file of the checkout changes, with no commit
+    And I run "kairos index upload"
+    Then the CLI refuses the upload, because pkg/stats.py is not committed

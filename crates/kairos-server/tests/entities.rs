@@ -957,6 +957,7 @@ async fn entity_endpoints_against_live_stack() {
             content: "## Context".into(),
             decision_maker: Some("dylan".into()),
             decision_date: Some("2026-07-10".into()),
+            parent: None,
         })
         .await
         .expect("creating adr");
@@ -974,12 +975,76 @@ async fn entity_endpoints_against_live_stack() {
                 content: String::new(),
                 decision_maker: None,
                 decision_date: Some("July 10".into()),
+                parent: None,
             })
             .await,
     );
     assert!(
         matches!(err, Error::Validation { status: 422, .. }),
         "{err}"
+    );
+
+    // KAIROS-T-0591: `parent` writes the supports edge in the transaction
+    // of the create; a refused parent leaves no ADR.
+    let adr_request = |title: &str, parent: &str| CreateAdrRequest {
+        board_id: Some(adr_board.to_string()),
+        column_id: None,
+        title: title.into(),
+        content: String::new(),
+        decision_maker: None,
+        decision_date: None,
+        parent: Some(parent.to_string()),
+    };
+    let supported = alice
+        .create_adr(&adr_request("Supports the initiative", &initiative_code))
+        .await
+        .expect("creating an adr with a parent");
+    let relationships = alice
+        .relationships(EntityKind::Adr, &supported.short_code)
+        .await
+        .expect("the relationships of the adr");
+    assert!(
+        relationships
+            .incoming
+            .iter()
+            .any(|group| group.relationship == "supports"
+                && group
+                    .items
+                    .iter()
+                    .any(|item| item.short_code == initiative_code)),
+        "{relationships:?}"
+    );
+    let adr_total = alice
+        .list_adrs(kairos_client::types::Pagination::default())
+        .await
+        .expect("listing adrs")
+        .total;
+    let err = rejection(
+        alice
+            .create_adr(&adr_request("Refused parent", &adr_code))
+            .await,
+    );
+    assert!(
+        matches!(&err, Error::Validation { status: 422, field: Some(field), .. } if field == "parent"),
+        "an ADR is no parent of an ADR: {err}"
+    );
+    let err = rejection(
+        alice
+            .create_adr(&adr_request("Unknown parent", "NOPE-T-9999"))
+            .await,
+    );
+    assert!(
+        matches!(&err, Error::Validation { status: 422, field: Some(field), .. } if field == "parent"),
+        "an unknown parent: {err}"
+    );
+    assert_eq!(
+        alice
+            .list_adrs(kairos_client::types::Pagination::default())
+            .await
+            .expect("listing adrs")
+            .total,
+        adr_total,
+        "a refused parent leaves no ADR"
     );
 
     let body = alice
@@ -1036,6 +1101,7 @@ async fn entity_endpoints_against_live_stack() {
         content: "no board".into(),
         decision_maker: None,
         decision_date: None,
+        parent: None,
     };
     let err = rejection(alice.create_adr(&off_board_request).await);
     match &err {
@@ -1397,6 +1463,7 @@ async fn entity_endpoints_against_live_stack() {
             content: String::new(),
             decision_maker: None,
             decision_date: None,
+            parent: None,
         })
         .await,
     );
