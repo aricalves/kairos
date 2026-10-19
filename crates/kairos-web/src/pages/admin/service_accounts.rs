@@ -22,7 +22,7 @@ use serde_json::json;
 
 use super::{MutationNotice, MutationOutcome, run_mutation};
 use crate::auth::{Auth, use_auth};
-use crate::pages::agent_keys::{AgentKey as ApiKey, create_body, day, day_and_time};
+use crate::pages::agent_keys::{AgentKey as ApiKey, NewKey, create_body, day, day_and_time};
 
 /// mirror of: `kairos_client::types_service_accounts::ServiceAccount`.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -81,7 +81,12 @@ async fn create_key(
     crate::api::post_json(
         auth,
         &format!("{PATH}/{account_id}/keys"),
-        &create_body(name, expires_at, no_expiry),
+        &create_body(&NewKey {
+            name: name.to_string(),
+            expires_at: expires_at.map(str::to_string),
+            no_expiry,
+            ..Default::default()
+        }),
     )
     .await
 }
@@ -501,6 +506,7 @@ mod tests {
             last_used_at: None,
             revoked_at: revoked_at.map(str::to_string),
             replaced_by: replaced_by.map(str::to_string),
+            scope: None,
         }
     }
 

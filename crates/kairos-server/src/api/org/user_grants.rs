@@ -150,7 +150,10 @@ fn user_grants_view(
 ) -> Result<dto::UserGrants, ApiError> {
     use kairos_db::schema::board_member_capabilities::dsl;
     let user = require_org_member(conn, org_id, target)?;
-    let is_admin = abac::is_org_admin(conn, slug, caller).map_err(map_abac_error)?;
+    // KAIROS-T-0536: with an agent key that has a scope, each board goes
+    // through `administers`, which applies the scope.
+    let is_admin = abac::is_org_admin(conn, slug, caller).map_err(map_abac_error)?
+        && crate::blocking::key_scope_of(caller).is_none();
     let mut boards = Vec::new();
     for board in live_boards(conn)? {
         if is_admin || administers(conn, slug, caller, &board)? {

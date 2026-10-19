@@ -260,6 +260,7 @@ impl World {
                 name: "laptop".into(),
                 expires_at: None,
                 no_expiry: false,
+                scope: None,
             })
             .await
             .expect("agent key")

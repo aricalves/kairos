@@ -195,6 +195,8 @@ pub async fn authenticate_api_key(
     // KAIROS-T-0359: the key of a person is an agent key; it acts as the
     // person. The key of a service account is not.
     let agent_key = (!user.is_service_account()).then_some(row.id);
+    // KAIROS-T-0536: the scope of the key. A service-account key has none.
+    let key_scope = row.scope().map(std::sync::Arc::new);
     let auth = AuthContext {
         user_id: user.id,
         external_id: user.external_id,
@@ -202,6 +204,7 @@ pub async fn authenticate_api_key(
         display_name: user.display_name,
         email_verified: false,
         agent_key,
+        key_scope,
     };
     let tenant = ApiKeyTenant { slug, org_id };
     state.auth_cache.put_key(

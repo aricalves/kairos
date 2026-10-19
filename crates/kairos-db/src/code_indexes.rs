@@ -22,7 +22,7 @@ use chrono::{DateTime, Utc};
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::sql_query;
-use diesel::sql_types::{BigInt, Nullable, Timestamptz, Uuid as SqlUuid};
+use diesel::sql_types::{Array, BigInt, Bytea, Nullable, Text, Timestamptz, Uuid as SqlUuid};
 use diesel::upsert::excluded;
 use uuid::Uuid;
 
@@ -140,19 +140,20 @@ pub fn put(
                 .on_conflict_do_nothing()
                 .execute(conn)?;
             // A key that is there gets the vector of the upload if it has
-            // none.
-            let with_vector: Vec<(&str, &[u8])> = chunk
+            // none: one statement for the chunk (KAIROS-T-0637).
+            let (with_keys, vectors): (Vec<&str>, Vec<&[u8]>) = chunk
                 .iter()
                 .filter_map(|r| r.vector.as_deref().map(|v| (r.key.as_str(), v)))
-                .collect();
-            for (key, vector) in with_vector {
-                diesel::update(
-                    code_index_summaries::table
-                        .filter(code_index_summaries::repository_id.eq(index.repository_id))
-                        .filter(code_index_summaries::key.eq(key))
-                        .filter(code_index_summaries::vector.is_null()),
+                .unzip();
+            if !with_keys.is_empty() {
+                sql_query(
+                    "UPDATE code_index_summaries s SET vector = u.vector \
+                       FROM unnest($2::text[], $3::bytea[]) AS u(key, vector) \
+                      WHERE s.repository_id = $1 AND s.key = u.key AND s.vector IS NULL",
                 )
-                .set(code_index_summaries::vector.eq(vector))
+                .bind::<SqlUuid, _>(index.repository_id)
+                .bind::<Array<Text>, _>(&with_keys)
+                .bind::<Array<Bytea>, _>(&vectors)
                 .execute(conn)?;
             }
         }

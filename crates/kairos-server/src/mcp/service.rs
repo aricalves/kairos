@@ -173,11 +173,14 @@ impl ServerHandler for KairosMcp {
         // KAIROS-T-0359: rmcp runs the tool in the task of the MCP session,
         // not in the task of the HTTP request, so the scope of the tenant
         // middleware does not reach here. Set it again from the request.
-        let agent_key = context
+        let request_auth = context
             .extensions
             .get::<Parts>()
-            .and_then(|parts| parts.extensions.get::<AuthContext>())
-            .and_then(|auth| auth.agent_key);
+            .and_then(|parts| parts.extensions.get::<AuthContext>());
+        let agent_key = request_auth.and_then(|auth| auth.agent_key);
+        // KAIROS-T-0536: the scope of the key goes with it.
+        let key_scope =
+            request_auth.and_then(|auth| auth.key_scope.clone().map(|scope| (auth.user_id, scope)));
         // KAIROS-T-0382: the unread notifications of the caller ride along
         // on each answer, but not on `get_events`, which lists them.
         let ride_along = (request.name != "get_events")
@@ -192,6 +195,7 @@ impl ServerHandler for KairosMcp {
         // claim on gets a warning line (`crate::claims`).
         let (result, warnings) = crate::claims::collect(crate::blocking::with_agent_key(
             agent_key,
+            key_scope,
             RIDE_ALONG.scope(slot.clone(), self.tool_router.call(call)),
         ))
         .await;
