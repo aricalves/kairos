@@ -225,9 +225,9 @@ server takes:
 
 The embedding batches, the webhook deliveries, the GitHub write-backs and
 the cleanup of the sites stay on the servers that serve the API. They are
-not build work, and they use little memory. A server that takes the run of
-a pass that its role does not run gives it back with no try counted. Another
-server takes the run.
+not build work, and they use little memory. A server takes only the runs
+of the passes that its role runs: the run of another pass waits for a
+server of the other role.
 
 A build job of a worker that stops (for example, the kernel stops it because
 it ran out of memory) holds its lease until the lease runs out. The next
