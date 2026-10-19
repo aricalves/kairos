@@ -513,7 +513,8 @@ async fn a_known_input_passes_and_a_refusal_writes_nothing_against_live_stack() 
             "no_team",
             "with_metadata",
             "fields",
-            "code"
+            "code",
+            "done_limit"
         ]
     );
     stack

@@ -768,6 +768,26 @@ impl KairosClient {
             .await
     }
 
+    /// `POST /api/boards/{id}/archive-completed?older_than_days=N`: archive
+    /// each task of the done columns that entered its column at least N
+    /// days ago (KAIROS-T-0649). `None` archives each done task, as
+    /// [`Client::archive_completed`].
+    pub async fn archive_completed_older_than(
+        &self,
+        board: &str,
+        older_than_days: Option<i64>,
+    ) -> Result<crate::types::ArchiveCompletedResponse, Error> {
+        match older_than_days {
+            Some(days) => {
+                self.post_empty(&format!(
+                    "/api/boards/{board}/archive-completed?older_than_days={days}"
+                ))
+                .await
+            }
+            None => self.archive_completed(board).await,
+        }
+    }
+
     /// `PUT /api/tasks/{short_code}/repository` — set the repository the
     /// task links to (slug or UUID) or clear it with `None` (KAIROS-T-0104).
     /// It can be any live repository, of any team, and the board and the

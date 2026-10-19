@@ -2216,6 +2216,11 @@ goes too.
 |---|---|---|---|---|
 | `board` | string | yes | — | The delivery board, by slug or UUID. |
 | `confirm` | boolean | yes | — | Must be `true`. |
+| `older_than_days` | integer | no | each done task | Archive only the done tasks that entered their done column at least this many days ago. A whole number from 1 to 36500. |
+
+The time that a task entered its column is the time of its last move. A task
+that never moved has the time of its creation. With `older_than_days` and no
+task that old, the output says so, and Kairos archives nothing.
 
 Each task goes through the archive of `delete_item`. The cascade, the end of
 the claim and the activity row are the same as for one task. `restore_item`
@@ -2230,9 +2235,9 @@ To get one back, restore it by its short code.
 Needs `manage_tasks` on the board: the capability that archives each task of
 the board.
 
-Refuses: `VALIDATION` when `confirm` is `false`; `NOT_FOUND` for an unknown
-board; `FORBIDDEN` without `manage_tasks`; `NOT_DELIVERY_BOARD` for a board
-that is not a delivery board.
+Refuses: `VALIDATION` when `confirm` is `false`, or when `older_than_days` is
+not from 1 to 36500; `NOT_FOUND` for an unknown board; `FORBIDDEN` without
+`manage_tasks`; `NOT_DELIVERY_BOARD` for a board that is not a delivery board.
 
 ### `purge_task`
 

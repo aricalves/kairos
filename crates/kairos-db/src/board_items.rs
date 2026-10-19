@@ -17,12 +17,23 @@
 //! and each card is on one page. It is the order that the route had
 //! before it had pages: the columns by position, and the cards of each
 //! type by short code.
+//!
+//! # The time in the column and the notes (KAIROS-T-0649)
+//!
+//! The page query also gives the time that each card of the page entered
+//! its column, and the number of its notes. The time is that of the last
+//! move of the card in `activity_log` (a `transition`, a `cancel` or a
+//! `board_move`), or the time of its creation. With
+//! [`BoardItemFilter::done_limit`], a done column keeps only its last
+//! cards by that time.
 
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::result::Error as DieselError;
 use diesel::sql_query;
-use diesel::sql_types::{Array, BigInt, Bool, Nullable, SmallInt, Text, Uuid as SqlUuid};
+use diesel::sql_types::{
+    Array, BigInt, Bool, Integer, Nullable, SmallInt, Text, Timestamptz, Uuid as SqlUuid,
+};
 use uuid::Uuid;
 
 /// The type of a card, in the order of the page.
@@ -63,6 +74,10 @@ pub struct BoardItemFilter<'a> {
     /// (KAIROS-T-0321, [`crate::item_teams`]). The tasks and the ADRs are
     /// unaffected.
     pub team: Option<TeamFilter>,
+    /// Keep only the last N cards of each done column, by the time that
+    /// each card entered the column (KAIROS-T-0649). `None`: each card.
+    /// The other columns are unaffected.
+    pub done_limit: Option<i64>,
 }
 
 /// The team filter of a board (KAIROS-T-0321).
@@ -81,6 +96,19 @@ pub struct BoardItemPage {
     pub total: i64,
     /// The cards of the page, in the order of the page.
     pub cards: Vec<(CardKind, Uuid)>,
+    /// The time in the column and the notes of each card of the page, by
+    /// id (KAIROS-T-0649).
+    pub marks: std::collections::HashMap<Uuid, CardMarks>,
+}
+
+/// What the page query gives for each card of the page (KAIROS-T-0649).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CardMarks {
+    /// The time that the card entered its column: its last move, or its
+    /// creation.
+    pub entered_column_at: chrono::DateTime<chrono::Utc>,
+    /// The number of the notes of the item (`item_notes`).
+    pub notes_count: i64,
 }
 
 #[derive(QueryableByName)]
@@ -89,6 +117,10 @@ struct CardRow {
     kind: i16,
     #[diesel(sql_type = SqlUuid)]
     id: Uuid,
+    #[diesel(sql_type = Timestamptz)]
+    entered_at: chrono::DateTime<chrono::Utc>,
+    #[diesel(sql_type = BigInt)]
+    notes_count: i64,
 }
 
 #[derive(QueryableByName)]
@@ -104,25 +136,62 @@ struct CountRow {
 /// if the filter keeps the items of the list (`true`) or the other items
 /// (`false`).
 const CARDS_SQL: &str = "\
-    SELECT card.kind, card.id, card.short_code, c.position, c.id AS column_id \
+    SELECT card.kind, card.id, card.short_code, card.created_at, c.position, \
+           c.is_done, c.id AS column_id \
     FROM ( \
-        SELECT 0::smallint AS kind, id, short_code, column_id FROM strategies \
+        SELECT 0::smallint AS kind, id, short_code, column_id, created_at FROM strategies \
          WHERE board_id = $1 AND ($2 OR deleted_at IS NULL) \
            AND ($5::uuid[] IS NULL OR (id = ANY($5)) = $6) \
         UNION ALL \
-        SELECT 1::smallint, id, short_code, column_id FROM initiatives \
+        SELECT 1::smallint, id, short_code, column_id, created_at FROM initiatives \
          WHERE board_id = $1 AND ($2 OR deleted_at IS NULL) \
            AND ($5::uuid[] IS NULL OR (id = ANY($5)) = $6) \
         UNION ALL \
-        SELECT 2::smallint, id, short_code, column_id FROM tasks \
+        SELECT 2::smallint, id, short_code, column_id, created_at FROM tasks \
          WHERE board_id = $1 AND ($2 OR deleted_at IS NULL) \
            AND ($3::uuid IS NULL OR repository_id = $3) \
         UNION ALL \
-        SELECT 3::smallint, id, short_code, column_id FROM adrs \
+        SELECT 3::smallint, id, short_code, column_id, created_at FROM adrs \
          WHERE board_id = $1 AND ($2 OR deleted_at IS NULL) \
     ) card \
     JOIN board_columns c ON c.id = card.column_id \
     WHERE card.column_id = ANY($4)";
+
+/// The time that the row `alias` (with `id` and `created_at`) entered its
+/// column, as SQL: the time of its last move in `activity_log`, or its
+/// creation (KAIROS-T-0649). The index `(entity_id, occurred_at)` serves
+/// it.
+fn entered_sql(alias: &str) -> String {
+    format!(
+        "COALESCE((SELECT max(a.occurred_at) FROM activity_log a \
+          WHERE a.entity_id = {alias}.id \
+            AND a.action IN ('transition', 'cancel', 'board_move')), \
+         {alias}.created_at)"
+    )
+}
+
+/// The cards of [`CARDS_SQL`] after the done limit (`$8`) and the code
+/// filter (`$7`). A card of a done column has its rank by the time of
+/// entry when `$8` is set; the time is read for those cards only. The code
+/// filter comes after the limit: a card that the limit cuts is not in the
+/// page of its code.
+fn filtered_sql() -> String {
+    let entered = entered_sql("cards");
+    format!(
+        "SELECT * FROM ( \
+           SELECT cards.*, \
+                  CASE WHEN cards.is_done AND $8::bigint IS NOT NULL THEN \
+                    ROW_NUMBER() OVER ( \
+                      PARTITION BY cards.column_id \
+                      ORDER BY CASE WHEN cards.is_done AND $8::bigint IS NOT NULL \
+                                    THEN {entered} END DESC NULLS LAST, cards.id DESC) \
+                  END AS done_rank \
+           FROM ({CARDS_SQL}) cards \
+         ) ranked \
+         WHERE (ranked.done_rank IS NULL OR ranked.done_rank <= $8) \
+           AND ($7::text IS NULL OR ranked.short_code = $7)"
+    )
+}
 
 /// One page of the cards of a board: 2 queries (the count and the ids of
 /// the page), for a board of each size, and 1 more with a team filter.
@@ -165,25 +234,32 @@ pub fn board_item_page_of_code(
             }
         }
     };
-    // `$7` is the short code of one card, or NULL for each card.
-    let total = sql_query(format!(
-        "SELECT COUNT(*) AS count FROM ({CARDS_SQL}) cards \
-         WHERE ($7::text IS NULL OR short_code = $7)"
-    ))
-    .bind::<SqlUuid, _>(filter.board_id)
-    .bind::<Bool, _>(filter.include_archived)
-    .bind::<Nullable<SqlUuid>, _>(filter.repository_id)
-    .bind::<Array<SqlUuid>, _>(filter.column_ids)
-    .bind::<Nullable<Array<SqlUuid>>, _>(team_items.as_deref())
-    .bind::<Bool, _>(keep)
-    .bind::<Nullable<Text>, _>(code)
-    .get_result::<CountRow>(conn)?
-    .count;
+    // `$7` is the short code of one card, or NULL for each card. `$8` is
+    // the done limit, or NULL.
+    let filtered = filtered_sql();
+    let total = sql_query(format!("SELECT COUNT(*) AS count FROM ({filtered}) f"))
+        .bind::<SqlUuid, _>(filter.board_id)
+        .bind::<Bool, _>(filter.include_archived)
+        .bind::<Nullable<SqlUuid>, _>(filter.repository_id)
+        .bind::<Array<SqlUuid>, _>(filter.column_ids)
+        .bind::<Nullable<Array<SqlUuid>>, _>(team_items.as_deref())
+        .bind::<Bool, _>(keep)
+        .bind::<Nullable<Text>, _>(code)
+        .bind::<Nullable<BigInt>, _>(filter.done_limit)
+        .get_result::<CountRow>(conn)?
+        .count;
+    // The time in the column and the notes count of the cards of the page
+    // only: the outer query reads them after the limit.
     let rows: Vec<CardRow> = sql_query(format!(
-        "SELECT kind, id FROM ({CARDS_SQL}) cards \
-         WHERE ($7::text IS NULL OR short_code = $7) \
-         ORDER BY position, column_id, kind, short_code, id \
-         LIMIT $8 OFFSET $9"
+        "SELECT p.kind, p.id, {entered} AS entered_at, \
+                (SELECT COUNT(*) FROM item_notes n WHERE n.item_id = p.id) AS notes_count \
+         FROM ( \
+           SELECT kind, id, created_at, position, column_id, short_code FROM ({filtered}) f \
+           ORDER BY position, column_id, kind, short_code, id \
+           LIMIT $9 OFFSET $10 \
+         ) p \
+         ORDER BY p.position, p.column_id, p.kind, p.short_code, p.id",
+        entered = entered_sql("p"),
     ))
     .bind::<SqlUuid, _>(filter.board_id)
     .bind::<Bool, _>(filter.include_archived)
@@ -192,16 +268,63 @@ pub fn board_item_page_of_code(
     .bind::<Nullable<Array<SqlUuid>>, _>(team_items.as_deref())
     .bind::<Bool, _>(keep)
     .bind::<Nullable<Text>, _>(code)
+    .bind::<Nullable<BigInt>, _>(filter.done_limit)
     .bind::<BigInt, _>(limit)
     .bind::<BigInt, _>(offset)
     .load(conn)?;
+    let marks = rows
+        .iter()
+        .map(|row| {
+            (
+                row.id,
+                CardMarks {
+                    entered_column_at: row.entered_at,
+                    notes_count: row.notes_count,
+                },
+            )
+        })
+        .collect();
     Ok(BoardItemPage {
         total,
         cards: rows
             .into_iter()
             .filter_map(|row| CardKind::from_rank(row.kind).map(|kind| (kind, row.id)))
             .collect(),
+        marks,
     })
+}
+
+#[derive(QueryableByName)]
+struct DoneTaskRow {
+    #[diesel(sql_type = SqlUuid)]
+    id: Uuid,
+    #[diesel(sql_type = Text)]
+    short_code: String,
+}
+
+/// The live tasks of the done columns of the board `board_id`, as
+/// `(id, short_code)` in short-code order: the tasks that "Archive
+/// completed" archives (KAIROS-T-0363). With `older_than_days`, only the
+/// tasks that entered their column at least that many days ago
+/// (KAIROS-T-0649). 1 query.
+pub fn done_tasks(
+    conn: &mut PgConnection,
+    board_id: Uuid,
+    older_than_days: Option<i32>,
+) -> Result<Vec<(Uuid, String)>, DieselError> {
+    let rows: Vec<DoneTaskRow> = sql_query(format!(
+        "SELECT card.id, card.short_code FROM tasks card \
+         JOIN board_columns c ON c.id = card.column_id \
+         WHERE card.board_id = $1 AND card.deleted_at IS NULL AND c.is_done \
+           AND ($2::integer IS NULL \
+                OR {entered} <= now() - make_interval(days => $2::integer)) \
+         ORDER BY card.short_code",
+        entered = entered_sql("card"),
+    ))
+    .bind::<SqlUuid, _>(board_id)
+    .bind::<Nullable<Integer>, _>(older_than_days)
+    .load(conn)?;
+    Ok(rows.into_iter().map(|r| (r.id, r.short_code)).collect())
 }
 
 /// One live column of a board, with the number of live cards in it.

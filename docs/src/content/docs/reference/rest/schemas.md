@@ -106,8 +106,10 @@ An ADR on a board or in a search (KAIROS-T-0602).
 | `created_by` | `string`, nullable | no | Creator user id (UUID). Only with `fields=full` on the board route. |
 | `decision_date` | `string`, nullable | no | `YYYY-MM-DD`. |
 | `decision_maker` | `string`, nullable | no |  |
+| `entered_column_at` | `string`, nullable | no | When the card entered its column, RFC 3339: its last move, or its creation (KAIROS-T-0649). Present on the board route; absent on a search hit. |
 | `id` | `string` | yes | Entity id (UUID). |
 | `impacts` | array of [`Impact`](#impact) | no | The repositories that the ADR impacts (COLLIERY-T-0269). |
+| `notes_count` | `integer`, nullable | no | The number of the notes of the item (KAIROS-T-0649). Present on the board route; absent on a search hit. |
 | `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-A-{NNNN}`). |
 | `snippet` | `string`, nullable | no | About 200 characters of the content, near the first match of `q`. Only on a search hit. |
 | `title` | `string` | yes |  |
@@ -1344,8 +1346,10 @@ An initiative on a board or in a search (KAIROS-T-0602).
 | `content` | `string`, nullable | no | Markdown content. Only with `fields=full` on the board route. A card has no notes (KAIROS-T-0630): the read of the item gives them. |
 | `created_at` | `string` | yes | RFC 3339. |
 | `created_by` | `string`, nullable | no | Creator user id (UUID). Only with `fields=full` on the board route. |
+| `entered_column_at` | `string`, nullable | no | When the card entered its column, RFC 3339: its last move, or its creation (KAIROS-T-0649). Present on the board route; absent on a search hit. |
 | `id` | `string` | yes | Entity id (UUID). |
 | `is_bucket` | `boolean` | yes | Whether this initiative is a bucket. |
+| `notes_count` | `integer`, nullable | no | The number of the notes of the item (KAIROS-T-0649). Present on the board route; absent on a search hit. |
 | `owner` | [`ItemOwner`](#itemowner), nullable | no |  |
 | `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-I-{NNNN}`). |
 | `snippet` | `string`, nullable | no | About 200 characters of the content, near the first match of `q`. Only on a search hit. |
@@ -2733,8 +2737,10 @@ A strategy on a board or in a search (KAIROS-T-0602).
 | `content` | `string`, nullable | no | Markdown content. Only with `fields=full` on the board route. A card has no notes (KAIROS-T-0630): the read of the item gives them. |
 | `created_at` | `string` | yes | RFC 3339. |
 | `created_by` | `string`, nullable | no | Creator user id (UUID). Only with `fields=full` on the board route. |
+| `entered_column_at` | `string`, nullable | no | When the card entered its column, RFC 3339: its last move, or its creation (KAIROS-T-0649). Present on the board route; absent on a search hit. |
 | `hypothesis` | `string`, nullable | no |  |
 | `id` | `string` | yes | Entity id (UUID). |
+| `notes_count` | `integer`, nullable | no | The number of the notes of the item (KAIROS-T-0649). Present on the board route; absent on a search hit. |
 | `owner` | [`ItemOwner`](#itemowner), nullable | no |  |
 | `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-S-{NNNN}`). |
 | `snippet` | `string`, nullable | no | About 200 characters of the content, near the first match of `q`. Only on a search hit. |
@@ -2825,7 +2831,9 @@ A task on a board or in a search (KAIROS-T-0602).
 | `content` | `string`, nullable | no | Markdown content. Only with `fields=full` on the board route. A card has no notes (KAIROS-T-0630): the read of the item gives them. |
 | `created_at` | `string` | yes | RFC 3339. |
 | `created_by` | `string`, nullable | no | Creator user id (UUID). Only with `fields=full` on the board route. |
+| `entered_column_at` | `string`, nullable | no | When the card entered its column, RFC 3339: its last move, or its creation (KAIROS-T-0649). Present on the board route; absent on a search hit. |
 | `id` | `string` | yes | Entity id (UUID). |
+| `notes_count` | `integer`, nullable | no | The number of the notes of the item (KAIROS-T-0649). Present on the board route; absent on a search hit. |
 | `repository` | [`RepositoryRef`](#repositoryref), nullable | no |  |
 | `repository_id` | `string`, nullable | no | The repository this task is issued against (UUID), if bound. |
 | `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-T-{NNNN}`). |

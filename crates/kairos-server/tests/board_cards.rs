@@ -297,7 +297,10 @@ async fn the_board_and_search_send_cards_without_content_against_live_stack() {
         "a full card has no notes: {first}"
     );
     for (key, value) in item.as_object().expect("the task") {
+        // KAIROS-T-0649: a card has the count of the notes, not the notes.
         if key == "notes" {
+            let notes = value.as_array().map_or(0, Vec::len);
+            assert_eq!(first["notes_count"], notes, "notes_count counts the notes");
             continue;
         }
         assert_eq!(&first[key], value, "fields=full has {key} as the item has");
