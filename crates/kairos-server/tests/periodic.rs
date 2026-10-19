@@ -318,10 +318,12 @@ async fn a_pass_that_dies_on_its_last_try_fails_and_the_next_run_is_added() {
 }
 
 // ===========================================================================
-// 4. A server that does not run a pass gives the run back
+// 4. A server does not take the run of a pass that it does not run
 // ===========================================================================
+// KAIROS-T-0466: the run of a pass of another server is not leased (and
+// so not given back 30 s later): it waits for its server.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_server_gives_back_a_pass_that_it_does_not_run() {
+async fn a_server_does_not_take_a_pass_that_it_does_not_run() {
     let url = scratch("kairos_periodic_t0376_not_here");
     let runs: Runs = Runs::default();
     let other = worker(&url, settings());
@@ -334,13 +336,7 @@ async fn a_server_gives_back_a_pass_that_it_does_not_run() {
         .await
         .expect("add")
         .expect("the first run");
-    let here = worker(
-        &url,
-        JobSettings {
-            retry_after: Duration::from_secs(3600),
-            ..settings()
-        },
-    );
+    let here = worker(&url, settings());
     here.add_periodic(
         "mine",
         Duration::from_secs(60),
@@ -352,15 +348,19 @@ async fn a_server_gives_back_a_pass_that_it_does_not_run() {
 
     let ran = runs.lock().unwrap().clone();
     assert_eq!(ran.len(), 1, "only the pass of this server ran");
-    let back = db::get(&mut conn(&url), theirs.id).unwrap().unwrap();
-    assert_eq!(back.state, "queued");
-    assert_eq!(back.tries, 0, "no try counted");
-    assert!(
-        back.last_error
-            .unwrap_or_default()
-            .contains("does not run the pass theirs")
-    );
-    assert!(back.run_after > chrono::Utc::now() + chrono::Duration::minutes(59));
+    assert_eq!(ran[0].1, here.instance());
+    let waiting = db::get(&mut conn(&url), theirs.id).unwrap().unwrap();
+    assert_eq!(waiting.state, "queued");
+    assert_eq!(waiting.tries, 0, "not leased");
+    assert_eq!(waiting.leased_by, None);
+    assert_eq!(waiting.last_error, None, "not given back");
+    assert_eq!(waiting.run_after, theirs.run_after, "not moved");
+
+    // And its own server takes it.
+    other.drain().await;
+    let done = db::get(&mut conn(&url), theirs.id).unwrap().unwrap();
+    assert_eq!(done.state, "done");
+    assert_eq!(done.leased_by, Some(other.instance()));
 }
 
 // ===========================================================================
