@@ -61,16 +61,18 @@ static QUERIES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// text of each query. It skips each query of the connection of the outbox
 /// emitter (KAIROS-T-0632): the emitter polls on a timer and sends the
 /// events of the writes before, so its queries would make the count depend
-/// on time (KAIROS-T-0664). That connection is the one that reads
-/// `event_outbox`: a write only adds rows to it.
+/// on time (KAIROS-T-0664). That connection is the one that reads, marks
+/// or prunes the rows of `event_outbox`: a write only adds rows to it.
 fn recorder() -> Option<Box<dyn Instrumentation>> {
     let mut emitter = false;
     Some(Box::new(move |event: InstrumentationEvent<'_>| {
         if let InstrumentationEvent::StartQuery { query, .. } = event {
             let sql = query.to_string();
-            // A write adds to the outbox (INSERT); only the emitter reads it.
+            // A write only adds rows to the outbox, also in a `WITH` in front
+            // of the INSERT. Only the emitter reads, marks and prunes them.
             emitter = emitter
-                || (sql.contains("event_outbox") && !sql.trim_start().starts_with("INSERT"));
+                || sql.contains("FROM public.event_outbox")
+                || sql.contains("UPDATE public.event_outbox");
             if !emitter {
                 QUERIES.lock().expect("the list of the queries").push(sql);
             }
