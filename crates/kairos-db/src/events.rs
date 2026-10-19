@@ -226,7 +226,7 @@ impl ClaimChange {
 impl EventKind {
     /// Each kind, in the order of the enum. A test checks that the list is
     /// complete.
-    pub const ALL: [EventKind; 14] = [
+    pub const ALL: [EventKind; 16] = [
         EventKind::ItemCreated,
         EventKind::ItemUpdated,
         EventKind::ItemTransitioned,
@@ -241,6 +241,8 @@ impl EventKind {
         EventKind::TaskCancelled,
         EventKind::ClaimChanged,
         EventKind::BoardConfigured,
+        EventKind::NoteAppended,
+        EventKind::NotePromoted,
     ];
 
     /// The kind of a wire name, or `None` for a name of no kind (the events
@@ -907,6 +909,8 @@ mod tests {
             EventKind::TaskCancelled => 11,
             EventKind::ClaimChanged => 12,
             EventKind::BoardConfigured => 13,
+            EventKind::NoteAppended => 14,
+            EventKind::NotePromoted => 15,
         };
         for (n, kind) in EventKind::ALL.into_iter().enumerate() {
             assert_eq!(position(kind), n, "{}", kind.as_str());

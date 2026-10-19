@@ -182,6 +182,12 @@ enum Command {
     Adrs(AdrsCommand),
     /// Search and traverse all entity types (POST /api/search)
     Search(Box<SearchArgs>),
+    /// The activity log of the organization, newest first: filter by item,
+    /// person, action, time or team
+    Activity(Box<commands::activity::ActivityArgs>),
+    /// Your notifications: list them, mark them read
+    #[command(subcommand)]
+    Notifications(commands::notifications::NotificationsCommand),
     /// Teams and their membership
     #[command(subcommand)]
     Teams(TeamsCommand),
@@ -327,6 +333,8 @@ async fn dispatch(command: Command) -> Result<(), CliError> {
         Command::Documents(command) => command.run().await,
         Command::Adrs(command) => command.run().await,
         Command::Search(args) => (*args).run().await,
+        Command::Activity(args) => (*args).run().await,
+        Command::Notifications(command) => command.run().await,
         Command::Teams(command) => command.run().await,
         Command::Grants(command) => command.run().await,
         Command::Repos(command) => command.run().await,

@@ -1396,7 +1396,8 @@ State of ACME-T-0012: branch acme-t-0012 at abc1234, pushed, PR https://github.c
 
 Refuses: `NOT_FOUND` for an unknown short code or an archived task.
 `VALIDATION` when the item is not a task, when no field has a value, and
-for an unknown argument. `FORBIDDEN` by the edit rule.
+for an unknown argument. `FORBIDDEN` by the edit rule. `CONFLICT` when the
+state changed after `expected_updated_at`.
 
 ### The teams of an initiative or a strategy
 
