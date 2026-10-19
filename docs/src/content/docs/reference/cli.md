@@ -303,6 +303,8 @@ differ.
 | `edit` | yes | yes | yes | yes | yes |
 | `note` | yes | yes | yes | yes | yes |
 | `promote-note` | yes | yes | yes | yes | yes |
+| `diff` | yes | yes | yes | yes | yes |
+| `links` | yes | yes | yes | yes | yes |
 | `transition` | yes | yes | yes | no | yes |
 | `move` | no | no | yes | yes | no |
 | `claim` | no | no | yes | no | no |
@@ -912,6 +914,7 @@ prints the metadata of the item after the call.
 
 ```
 kairos <noun> archive <SHORT_CODE> --confirm [OPTIONS]
+kairos <noun> archive <SHORT_CODE> --preview [OPTIONS]
 ```
 
 `delete` is an alias of `archive`: `kairos tasks delete ACME-T-0001 --confirm`
@@ -921,6 +924,7 @@ archives the task.
 |---|---|---|---|
 | `<SHORT_CODE>` | string | required | The item's short code. |
 | `--confirm` | flag | off | Required for the archive to happen. Without it, nothing is archived. |
+| `--preview` | flag | off | Archive nothing. Show the descendants that the archive takes, and the descendants that it cannot reach. Not with `--confirm`. |
 
 The archive is a soft delete and cascades to the item's children. Archived
 items are hidden from `list` unless `--include-deleted` is passed, and are
@@ -930,6 +934,19 @@ The cascade takes the descendants that you can edit
 ([the edit rule](../capabilities/#the-edit-rule)). It stops at a descendant that
 you cannot edit, and takes nothing below it. The command names each descendant
 that stays, and the reason. With `--json`, they are in `not_reached`.
+
+With `--preview`, the command asks the server for the
+[cascade preview](../glossary/#cascade) and archives nothing. The answer is
+for you: a person with other capabilities can get a different answer. The
+command prints the codes:
+
+```text
+An archive of ACME-I-0001 also takes 2 descendants: ACME-T-0001, ACME-T-0002. Kairos archived nothing.
+To archive, run the command again with --confirm in place of --preview.
+```
+
+With `--json`, the command prints the answer of
+`GET /api/{family}/{short_code}/cascade-preview`.
 
 ### `tasks purge`
 
@@ -961,6 +978,56 @@ kairos <noun> restore <SHORT_CODE> [OPTIONS]
 
 Puts an archived item back on its board. The item's own archived children stay
 archived: restore is per item, not a cascade.
+
+### `<noun> diff`
+
+```
+kairos <noun> diff <SHORT_CODE> <VERSION> [<OTHER>] [OPTIONS]
+```
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `<SHORT_CODE>` | string | required | The item's short code. |
+| `<VERSION>` | integer | required | A version of the item. The first version is 1. |
+| `<OTHER>` | integer | the version before `<VERSION>` | A second version. The command compares `<VERSION>` with `<OTHER>`. |
+
+Compares two versions of the item. With one version, the command compares it
+with the version before it. The command compares version 1 with no content. The output
+names the two versions and their times. A changed title gets one line. Then a
+unified diff of the content comes, with 3 lines of context:
+
+```text
+--- ACME-T-0001 v1 (2026-10-17T09:00:00Z)
++++ ACME-T-0001 v2 (2026-10-17T10:00:00Z)
+title: "Sweep old history" -> "Sweep history older than 90 days"
+@@ -1,2 +1,2 @@
+ The sweeper runs each night.
+-It removes history older than 30 days.
++It removes history older than 90 days.
+```
+
+When the content is the same, the command prints the line `The content did not
+change.`. The versions are arguments, not options. `--to` names a column or a
+person. With `--json`, the command prints one object. It has `short_code`,
+`from` and `to` (the two versions of
+`GET /api/{family}/{short_code}/history?version=N`), and `diff` (the text).
+`from` is null for version 1.
+
+### `<noun> links`
+
+```
+kairos <noun> links <SHORT_CODE> [OPTIONS]
+```
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `<SHORT_CODE>` | string | required | The item's short code. |
+
+Lists the branches, the pull requests and the issues of the forge that link
+to the item. A branch or a pull request links to an item when its name, title
+or body has the short code. The columns are `KIND`, `REPOSITORY`, `REF`,
+`STATE`, `TITLE` and `URL`. With `--json`, the command prints the list
+envelope with the rows of `GET /api/{family}/{short_code}/links`.
 
 ### `kairos link`
 
@@ -1062,6 +1129,69 @@ Each row gives the code, the title, the board, the column, the claimant or
 the owner, and the open blockers. `--json` prints the answer of
 `GET /api/me/work`.
 
+### `kairos activity`
+
+```
+kairos activity [--item <CODE>] [--actor <USER>] [--action <ACTION>] [--since <TIME>] [--team <TEAM>] [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--item <CODE>` | short code | all | Only the activity of this item. |
+| `--actor <USER>` | UUID, `me` or email | all | Only the activity of this person. |
+| `--action <ACTION>` | string | all | Only this action, for example `transition`, `create`, `delete`, `claim` or `update`. |
+| `--since <TIME>` | `YYYY-MM-DD` or RFC 3339 | all | Only the activity at or after this time. A date is the start of the day in UTC. |
+| `--team <TEAM>` | slug or UUID | all | Only the activity of the members of this team. |
+| `--limit <LIMIT>` | integer | server default 50, maximum 200 | Page size. |
+| `--offset <OFFSET>` | integer | 0 | Rows to skip. |
+
+Shows the activity log of the organization, newest first: `GET
+/api/activity`. The filters combine. Each member can read the log. The columns
+are `WHEN`, `ACTION`, `ITEM`, `DETAILS` and `BY`. `BY` is the name of the
+person when you can read the members, else the id. The mark `(agent)` shows a
+change that an agent key made.
+
+The count of the log stops at 1000 rows, so the command has no `--all`. Use
+`--offset` for the next page. For the activity of one item with the names of
+the people, use `<noun> history`. With `--json`, the command prints the list
+envelope.
+
+### `kairos notifications list`
+
+```
+kairos notifications list [--before <ID> | --read-before <ID>] [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--before <ID>` | notification id | none | The next page of the unread notifications: those older than this one. |
+| `--read-before <ID>` | notification id | none | The next page of the read notifications: those read before this one. Not with `--before`. |
+
+Lists your notifications: each unread one, newest first, 100 at most. Then the
+20 newest read ones come. The first line gives the count of the unread ones.
+The last lines give the option for the next page. An agent key has a read
+state of its own.
+
+With `--json`, the command prints the list envelope. The object also has
+`unread`, the count of the unread notifications. `next_offset` is null:
+these pages use `--before` and `--read-before`.
+
+### `kairos notifications read`
+
+```
+kairos notifications read <ID>... [OPTIONS]
+kairos notifications read --all [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<ID>...` | notification ids | required without `--all` | The notifications to mark read. |
+| `--all` | flag | off | Mark each unread notification read, up to the newest one now. Not with `<ID>`. |
+
+Marks notifications read, and prints the count that changed and the count
+that stays unread. With `--all`, a notification that comes after the command
+stays unread.
+
 ### `kairos search`
 
 One command, no subcommands. Covers full-text search and relationship traversal
@@ -1160,6 +1290,7 @@ kairos boards show <BOARD> [OPTIONS]
 | `<BOARD>` | slug or UUID | required | Board to show. |
 | `--limit <LIMIT>` | integer | server default 200, maximum 1000 | Page size. |
 | `--offset <OFFSET>` | integer | 0 | Items to skip. |
+| `--all` | flag | off | Read each page. The CLI asks for one page after the other and shows each item. Not with `--limit` or `--offset`. |
 | `--team <TEAM>` | slug or UUID | all | Show only the strategies and the initiatives of this team, from tasks or set by hand. Tasks and ADRs do not change. Do not use with `--no-team`. |
 | `--no-team` | flag | off | Show only the strategies and the initiatives that have no team. |
 | `--details` | flag | off | Show more on each item: the date of its last change, the claim of a task, and the metadata values, for example `{updated 2026-10-08; claimed by Alice; priority: high}`. |
@@ -1174,6 +1305,9 @@ and they tell you when the page is a part of the board:
 total: 340 (limit 200, offset 0)
 The board has 340 items. This result shows 200 (limit 200, offset 0). To read the next part, use --offset 200.
 ```
+
+With `--all`, the command shows each item of the board, and the last line is
+`total: N`.
 
 To give or revoke a capability on a board, use
 [`kairos grants`](#kairos-grants). See
@@ -1373,6 +1507,51 @@ kairos boards create --name <NAME> --slug <SLUG> --level <LEVEL> --code-prefix <
 `POST /api/boards`. The board gets the default columns and transitions of its
 level. You need the organization admin role or `manage_structure` on the
 organization.
+
+### `kairos boards members`
+
+```
+kairos boards members <BOARD> [OPTIONS]
+```
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `<BOARD>` | slug or UUID | required | The board. |
+
+Lists the members of the board that have a board capability. The columns are
+`EMAIL`, `NAME` and `CAPABILITIES`. With `--json`, the command prints the
+list envelope with the rows of `GET /api/boards/{id}/members`. To change a
+capability, use [`kairos grants`](#kairos-grants).
+
+### `kairos boards update`
+
+```
+kairos boards update <BOARD> [--name <NAME>] [--slug <SLUG>] [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<BOARD>` | slug or UUID | required | The board. |
+| `--name <NAME>` | string | unchanged | The new name. |
+| `--slug <SLUG>` | string | unchanged | The new slug. It must match `^[a-z][a-z0-9_-]{1,62}$`. |
+
+Changes the name or the slug of a board. Give one option at least. You need
+`configure_boards` on the board. The short-code prefix and the team of a board
+do not change. For the policies, use `kairos boards policy`.
+
+### `kairos boards delete`
+
+```
+kairos boards delete <BOARD> --confirm [OPTIONS]
+```
+
+| Argument / Option | Type | Default | Description |
+|---|---|---|---|
+| `<BOARD>` | slug or UUID | required | The board. |
+| `--confirm` | flag | off | Required for the delete to happen. Without it, the command exits 1. |
+
+Deletes an empty board. The server refuses a board that has items. You need
+`configure_boards` on the board.
 
 ## Organization
 
@@ -2121,6 +2300,34 @@ the same line. No command shows the token. See
 Repositories are the codebases that tasks link to. See
 [Repositories as execution scope](../../explanation/repositories-as-execution-scope/).
 
+### `kairos repos webhook`
+
+```
+kairos repos webhook add <REPOSITORY> [OPTIONS]
+kairos repos webhook list [<REPOSITORY>] [OPTIONS]
+kairos repos webhook rotate <REPOSITORY> [OPTIONS]
+kairos repos webhook remove <REPOSITORY> --confirm [OPTIONS]
+```
+
+Connects, lists, rotates or removes the webhook of a repository on GitHub or
+GitLab. With the webhook, Kairos links the branches and the pull requests to
+the items. `add`, `rotate` and `remove` need an organization admin.
+
+`add` prints the payload URL and the secret. Paste them into the webhook
+settings of the repository on the forge. **Kairos shows the secret only one
+time.** The server makes the secret from the connection and does not keep it.
+`list` shows no secret. With `--json`, `add` and `rotate` print the URL and
+the secret too.
+
+`rotate` makes a new connection, with a new URL and a new secret. The old URL
+and secret stop at once, so change both on the forge. `remove` needs
+`--confirm`. After it, Kairos refuses the deliveries of the forge.
+
+The server refuses `add` with 501 when the deployment has no
+`KAIROS_WEBHOOK_SIGNING_KEY` or no public URL. It refuses a second `add` with
+409. `kairos repos show` gives the id of the connection on the line
+`webhook:`.
+
 ### `kairos grants`
 
 ```
@@ -2460,6 +2667,49 @@ input, never from an argument:
 printf '%s' "$OLLAMA_KEY" | kairos admin code-index-settings set --summary-provider ollama-cloud --summary-url https://ollama.com/v1 --summary-model gemma4:31b --summary-secret-stdin
 ```
 
+## Read tokens of the organization
+
+A read token of the organization is for one forge host, for example
+`github.com`. The builder of the code index gives it to git. It does this for
+each repository on the host with no read token of its own. Only an organization admin can
+read and change them. No command shows a token.
+
+### `kairos admin read-tokens list`
+
+```
+kairos admin read-tokens list [OPTIONS]
+```
+
+Lists the hosts that have a token, who set each token and when. With
+`--json`, the command prints the list envelope.
+
+### `kairos admin read-tokens set`
+
+```
+kairos admin read-tokens set <HOST> [OPTIONS]
+```
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `<HOST>` | string | required | The forge host, with `:port` when the port is not the default. |
+
+Sets or replaces the token of the host. The command reads the token from
+standard input. When standard input is a terminal, the command asks for the
+token and does not show it:
+
+```sh
+printf '%s' "$TOKEN" | kairos admin read-tokens set github.com
+```
+
+### `kairos admin read-tokens remove`
+
+```
+kairos admin read-tokens remove <HOST> --confirm [OPTIONS]
+```
+
+Removes the token of the host. Without `--confirm`, the command exits 1. With
+`--json`, the command prints the tokens that stay.
+
 ## The job queue
 
 An organization admin reads the job queue. Another person gets `403`. See
@@ -2627,6 +2877,33 @@ kairos index references <SYMBOL> [--root <ROOT>] [--file <FILE>] [--line <LINE>]
 
 Shows each use of a symbol. In Rust, a use is a type, a field, an import or
 a call. In the other languages, a use is a call.
+
+### `kairos index upload`
+
+```
+kairos index upload [--root <ROOT>] [--url <URL>] [--tenant <TENANT>] [--repo <REPOSITORY>] [--ref <REF>] [--json]
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--repo <REPOSITORY>` | slug or UUID | as `kairos index update` | The repository in Kairos. |
+| `--ref <REF>` | string | the branch of the checkout | The branch, the pull request or the tag of the index, for example `main`, `pull/12` or `v1.0.0`. |
+| `--url`, `--tenant` | | as `kairos index update` | The deployment and the tenant. |
+
+Sends the index of the checkout to Kairos as the index of its HEAD commit:
+`PUT /api/repositories/{slug}/code-indexes/{commit}`. Use it when the
+deployment has no builder of the code index, for example in a CI job. Build
+or update the index first:
+
+```sh
+kairos index build
+kairos index upload --repo payments-api --ref main
+```
+
+The index describes the tree of the checkout. So the command refuses a tree
+with changes that have no commit. It also refuses a checkout with no index. You must be an organization admin or a member of the owner team. The
+command prints the commit, the ref and the counts of the summaries. With
+`--json`, it prints the answer of the server.
 
 ### `kairos index mcp`
 

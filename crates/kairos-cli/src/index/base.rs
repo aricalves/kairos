@@ -144,28 +144,9 @@ pub async fn find(root: &Path, args: &RemoteArgs) -> Found {
             return Found::NoBase(format!("Kairos refused the request ({why})"));
         }
     };
-    let wanted = args
-        .repository
-        .clone()
-        .or_else(|| settings.get("repository").cloned());
-    let repository = match &wanted {
-        Some(slug) => repositories
-            .iter()
-            .find(|r| &r.slug == slug || &r.id == slug),
-        None => git_output(root, &["remote", "get-url", "origin"]).and_then(|origin| {
-            let origin = normalized_remote(&origin);
-            repositories
-                .iter()
-                .find(|r| normalized_remote(&r.repo_url) == origin)
-        }),
-    };
-    let Some(repository) = repository else {
-        return Found::NoBase(match wanted {
-            Some(slug) => format!("Kairos has no repository {slug:?}"),
-            None => "no repository in Kairos has the `origin` remote of this checkout. \
-                     Give `--repo`"
-                .to_string(),
-        });
+    let repository = match pick_repository(root, args, &settings, &repositories) {
+        Ok(repository) => repository,
+        Err(why) => return Found::NoBase(why),
     };
 
     let point = branch_point(root, &repository.default_branch);
@@ -223,6 +204,65 @@ pub async fn find(root: &Path, args: &RemoteArgs) -> Found {
         ]
         .contains(&&kairos_client::types_repositories::CodeIndexSummaries::Hosted),
     })
+}
+
+/// The repository of the checkout at `root` in `repositories`: `--repo`,
+/// else `repository` in `.claude/kairos.local.md`, else the repository
+/// whose `repo_url` is the `origin` remote. The error says why none is.
+fn pick_repository<'a>(
+    root: &Path,
+    args: &RemoteArgs,
+    settings: &HashMap<String, String>,
+    repositories: &'a [kairos_client::types_repositories::Repository],
+) -> Result<&'a kairos_client::types_repositories::Repository, String> {
+    let wanted = args
+        .repository
+        .clone()
+        .or_else(|| settings.get("repository").cloned());
+    let repository = match &wanted {
+        Some(slug) => repositories
+            .iter()
+            .find(|r| &r.slug == slug || &r.id == slug),
+        None => git_output(root, &["remote", "get-url", "origin"]).and_then(|origin| {
+            let origin = normalized_remote(&origin);
+            repositories
+                .iter()
+                .find(|r| normalized_remote(&r.repo_url) == origin)
+        }),
+    };
+    repository.ok_or_else(|| match wanted {
+        Some(slug) => format!("Kairos has no repository {slug:?}"),
+        None => "no repository in Kairos has the `origin` remote of this checkout. \
+                 Give `--repo`"
+            .to_string(),
+    })
+}
+
+/// The client and the slug of the repository of the checkout at `root`,
+/// for `kairos index upload` (KAIROS-T-0592). The connection and the
+/// repository come as for [`find`]. The error says what is missing.
+pub async fn repository_of(
+    root: &Path,
+    args: &RemoteArgs,
+) -> Result<(KairosClient, String), String> {
+    let settings = settings(root);
+    let (client, url) = client(args, &settings)?.ok_or_else(|| {
+        format!(
+            "The CLI does not know the deployment. Use --url, set {}, or run `kairos login`",
+            auth::URL_VAR
+        )
+    })?;
+    let repositories = match within(client.list_repositories(None)).await {
+        Ok(list) => list,
+        Err(Failure::Unreachable(why)) => {
+            return Err(format!("The CLI cannot reach Kairos at {url} ({why})"));
+        }
+        Err(Failure::Refused(why)) => return Err(format!("Kairos refused the request ({why})")),
+    };
+    let slug = pick_repository(root, args, &settings, &repositories)?
+        .slug
+        .clone();
+    Ok((client, slug))
 }
 
 /// One nearest index that Kairos gave, and the files of the checkout that
