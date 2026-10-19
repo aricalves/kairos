@@ -17,10 +17,11 @@
 //! open). So the first start of a deployment runs each pass at once, and a
 //! later start changes nothing.
 //!
-//! A server that takes the run of a pass that it does not run (not yet: the
-//! tools of the code index are not ready; or not in its role, KAIROS-T-0394:
-//! an `api` server does not run the new-commits sweep, and a `worker` runs
-//! only that pass) gives it back with no try counted
+//! A server takes only the runs of the passes that it added (KAIROS-T-0466,
+//! [`kairos_db::jobs::Keyed`]): an `api` server does not take the
+//! new-commits sweep, and a `worker` takes only that pass (KAIROS-T-0394).
+//! A run of a pass that the server cannot run now (the worker of the code
+//! index stopped) is given back with no try counted
 //! ([`crate::jobs::JobError::not_here`]).
 
 use std::collections::HashMap;
@@ -87,6 +88,19 @@ impl Passes {
             .unwrap_or_else(|e| e.into_inner())
             .get(pass)
             .cloned()
+    }
+
+    /// The dedupe keys of the passes ([`key`]), sorted.
+    pub(crate) fn keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self
+            .passes
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .map(|pass| key(pass))
+            .collect();
+        keys.sort();
+        keys
     }
 
     fn insert(&self, pass: &str, run: PassFn) {

@@ -94,7 +94,8 @@ impl ServerRole {
 
     /// True: this server takes the jobs of `kind`. A build kind goes to a
     /// server that builds; the periodic passes go to each server, and each
-    /// server runs only its passes ([`Self::runs_pass`]); each other kind
+    /// server takes only the runs of its passes ([`Self::runs_pass`],
+    /// KAIROS-T-0466); each other kind
     /// goes to a server that serves the API.
     pub fn takes(self, kind: &str) -> bool {
         use crate::jobs::kinds;

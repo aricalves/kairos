@@ -622,10 +622,16 @@ impl Worker {
             let instance = self.instance;
             let lease = self.settings.lease.as_secs_f64();
             let no_retake = self.no_retake();
+            // KAIROS-T-0466: the runs of the periodic passes of this server
+            // only, so no run is leased to be given back.
+            let keyed = db::Keyed {
+                kinds: vec![crate::jobs::kinds::PERIODIC.to_string()],
+                keys: self.periodic.keys(),
+            };
             let taken = self
                 .blocking
                 .run_public(move |conn| {
-                    db::take_with(conn, instance, &kinds, &no_retake, lease)
+                    db::take_with(conn, instance, &kinds, &no_retake, &keyed, lease)
                         .map_err(ApiError::internal)
                 })
                 .await;

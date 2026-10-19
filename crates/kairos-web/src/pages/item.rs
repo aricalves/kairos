@@ -47,6 +47,7 @@ mod item_owner;
 mod live;
 pub(crate) use kairos_markdown as markdown;
 mod metadata;
+mod notes;
 mod owner;
 mod picker;
 mod relations;
@@ -78,6 +79,7 @@ use end::{CancelDialog, CancelledBanner, PurgeDialog, ReopenDialog};
 use external::ExternalRefsPanel;
 use item_owner::OwnerPanel;
 use metadata::MetadataPanel;
+use notes::NotesPanel;
 use owner::{ImpactsPanel, OwnerBoardPanel};
 use picker::{Picker, load_on_open, picker_state};
 use state::StatePanel;
@@ -282,11 +284,18 @@ fn ItemLoaded(item: ItemDetail, family: Family) -> impl IntoView {
     let current = RwSignal::new(item);
     // Show a new copy, unless it is older than the copy on the page. The
     // `try_` reads: the copy can come after the page is gone.
-    let show = move |next: ItemDetail| {
-        let Some(shown) = current.try_with_untracked(|item| item.version) else {
+    let show = move |mut next: ItemDetail| {
+        let Some((shown, notes)) =
+            current.try_with_untracked(|item| (item.version, item.notes.clone()))
+        else {
             return;
         };
         if takes_copy(shown, next.version) {
+            // KAIROS-T-0630: the answer of a write has no notes. The page
+            // keeps the notes that it shows.
+            if next.notes.is_none() {
+                next.notes = notes;
+            }
             let _ = current.try_set(next);
         }
     };
@@ -333,6 +342,7 @@ fn ItemLoaded(item: ItemDetail, family: Family) -> impl IntoView {
         Memo::new(move |_| current.with(|item| item.repository.as_ref().map(|r| r.slug.clone())));
     let claim = Memo::new(move |_| current.with(|item| item.claim.clone()));
     let state = Memo::new(move |_| current.with(|item| item.state.clone()));
+    let notes = Memo::new(move |_| current.with(|item| item.notes.clone().unwrap_or_default()));
     let owner = Memo::new(move |_| current.with(|item| item.owner.clone()));
     let impacts = Memo::new(move |_| current.with(|item| item.impacts.clone()));
     let lifecycle = Memo::new(move |_| current.with(|item| item.lifecycle.clone()));
@@ -383,6 +393,14 @@ fn ItemLoaded(item: ItemDetail, family: Family) -> impl IntoView {
             if reads.item
                 && let Ok(next) = api::fetch_item(auth, family, code.clone()).await
             {
+                // KAIROS-T-0579: the Notes panel takes new notes at once.
+                // No draft holds them, so they need no banner.
+                let takes = current.try_with_untracked(|shown| {
+                    notes::takes_notes(shown.notes.as_deref(), next.notes.as_deref())
+                });
+                if takes == Some(true) {
+                    let _ = current.try_update(|shown| shown.notes.clone_from(&next.notes));
+                }
                 let _ = pending.try_set(Some(next));
             }
             if reads.metadata
@@ -616,17 +634,29 @@ fn ItemLoaded(item: ItemDetail, family: Family) -> impl IntoView {
         })}
         <ChildrenProgressBar family code=code.get_value()/>
         <div class="kairos-item__grid">
-            <ContentEditor
-                family
-                code=code.get_value()
-                initial_title
-                initial_content
-                initial_version
-                read_only=edit_read_only
-                read_only_reason=edit_reason
-                server
-                on_saved
-            />
+            <Stack gap="sm">
+                <ContentEditor
+                    family
+                    code=code.get_value()
+                    initial_title
+                    initial_content
+                    initial_version
+                    read_only=edit_read_only
+                    read_only_reason=edit_reason
+                    server
+                    on_saved
+                />
+                // KAIROS-T-0630: the notes are not part of the content.
+                // KAIROS-T-0579: add a note, its anchor, promote it.
+                <NotesPanel
+                    family
+                    code=code.get_value()
+                    notes
+                    read_only=edit_read_only
+                    read_only_reason=edit_reason
+                    on_changed=refresh
+                />
+            </Stack>
             <Stack gap="sm">
                 // COLLIERY-T-0269: the board of a document is its owner,
                 // and not a placement. The document has no column, no

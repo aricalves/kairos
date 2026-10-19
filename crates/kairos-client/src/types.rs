@@ -62,6 +62,12 @@ pub struct Strategy {
     /// a response of an older server has no `owner`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<ItemOwner>,
+    /// The notes of the item, in the order of their ids (KAIROS-T-0630).
+    /// Present on the read of one item (`GET /api/{family}/{short_code}`),
+    /// empty when the item has none. Absent from lists and from the answers
+    /// of writes. A note is not part of `content`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<Vec<ItemNote>>,
 }
 
 /// An initiative (Flight Level 2), as returned by `/api/initiatives`.
@@ -106,6 +112,12 @@ pub struct Initiative {
     /// a response of an older server has no `owner`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<ItemOwner>,
+    /// The notes of the item, in the order of their ids (KAIROS-T-0630).
+    /// Present on the read of one item (`GET /api/{family}/{short_code}`),
+    /// empty when the item has none. Absent from lists and from the answers
+    /// of writes. A note is not part of `content`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<Vec<ItemNote>>,
 }
 
 /// A task/bug/tech-debt item (Flight Level 1), as returned by `/api/tasks`.
@@ -173,6 +185,12 @@ pub struct Task {
     /// has no `state`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<TaskState>,
+    /// The notes of the item, in the order of their ids (KAIROS-T-0630).
+    /// Present on the read of one item (`GET /api/{family}/{short_code}`),
+    /// empty when the item has none. Absent from lists and from the answers
+    /// of writes. A note is not part of `content`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<Vec<ItemNote>>,
 }
 
 /// The live state of a task (KAIROS-T-0506): one current state, separate
@@ -393,6 +411,12 @@ pub struct Document {
     /// auditor never mistakes it for live work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<String>,
+    /// The notes of the item, in the order of their ids (KAIROS-T-0630).
+    /// Present on the read of one item (`GET /api/{family}/{short_code}`),
+    /// empty when the item has none. Absent from lists and from the answers
+    /// of writes. A note is not part of `content`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<Vec<ItemNote>>,
 }
 
 /// An Architecture Decision Record, as returned by `/api/adrs`. Board
@@ -433,6 +457,12 @@ pub struct Adr {
     /// auditor never mistakes it for live work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<String>,
+    /// The notes of the item, in the order of their ids (KAIROS-T-0630).
+    /// Present on the read of one item (`GET /api/{family}/{short_code}`),
+    /// empty when the item has none. Absent from lists and from the answers
+    /// of writes. A note is not part of `content`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<Vec<ItemNote>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -899,7 +929,7 @@ pub struct NotReached {
 }
 
 /// Body of `POST /api/{entity_type}/{short_code}/notes` (KAIROS-T-0367):
-/// the text of a note to append at the end of the item's content.
+/// the text of a note. A note is a row of its own (KAIROS-T-0630).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AppendNoteRequest {
@@ -939,18 +969,42 @@ pub struct PromoteNoteResponse {
     pub supports: bool,
 }
 
+/// One note of an item (KAIROS-T-0630): a row of its own, not part of the
+/// content of the item.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ItemNote {
+    /// The id of the note in its item: `n-3`. Cite it as `note n-3 on
+    /// ACME-T-0012`.
+    pub id: String,
+    /// The user that wrote the note (UUID). Absent for an old note whose
+    /// name is no user of the organization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_id: Option<String>,
+    /// The name of the author: the display name of the user, or the name
+    /// of an old note as written.
+    pub author: String,
+    /// RFC 3339.
+    pub created_at: String,
+    /// The markdown text. It can have headings.
+    pub text: String,
+    /// The short code of the draft ADR or document that a promote made from
+    /// the note. Absent until then. A note is promoted once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promoted_to: Option<String>,
+}
+
 /// Response of `POST /api/{entity_type}/{short_code}/notes`
-/// (KAIROS-T-0367): the version that the note made, and the id of the note
-/// (KAIROS-T-0504).
+/// (KAIROS-T-0367): the id of the note (KAIROS-T-0504). A note writes no
+/// version of the content (KAIROS-T-0630).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct AppendNoteResponse {
     /// The item's short code.
     pub short_code: String,
-    /// The new version of the item.
+    /// The version of the content of the item. A note does not change it.
     pub version: i32,
-    /// The id of the note: `n-3`. The heading of the note carries it, and
-    /// the item page anchors it (`#n-3`). The default is for the client
-    /// only: a response of an older server has no `note_id`.
+    /// The id of the note: `n-3`. The item page anchors it (`#n-3`). The
+    /// default is for the client only: a response of an older server has
+    /// no `note_id`.
     #[serde(default)]
     pub note_id: String,
 }

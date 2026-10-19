@@ -92,6 +92,11 @@
 //! only the coarse kinds keeps working. A subscriber that wants to know
 //! what changed reads the precise kind. Both come in the same transaction.
 //!
+//! KAIROS-T-0630: `note_appended` and `note_promoted` come after the
+//! `item_updated` of a note, with the id of the note as `change`. A note
+//! writes no version of the content, so a client that shows the notes
+//! reads the item again for them.
+//!
 //! `claim_changed` and `board_configured` carry the field `change`
 //! ([`emit_event_with_change`]): what changed. For `claim_changed` it is
 //! a [`ClaimChange`]; for `board_configured` it is the setting
@@ -183,6 +188,13 @@ pub enum EventKind {
     /// its transitions, a flag or a setting. `entity_type` is `board`,
     /// `short_code` is the slug of the board, `change` names the setting.
     BoardConfigured,
+    /// A note was added to the item (KAIROS-T-0630). `change` is the id of
+    /// the note (`n-3`). Comes after the `item_updated` of the same write.
+    NoteAppended,
+    /// A note of the item became a draft ADR or document (KAIROS-T-0630).
+    /// `change` is the id of the note. Comes after the `item_updated` of
+    /// the same write.
+    NotePromoted,
 }
 
 /// What happened to a claim: the `change` of a `claim_changed` event.
@@ -214,7 +226,7 @@ impl ClaimChange {
 impl EventKind {
     /// Each kind, in the order of the enum. A test checks that the list is
     /// complete.
-    pub const ALL: [EventKind; 14] = [
+    pub const ALL: [EventKind; 16] = [
         EventKind::ItemCreated,
         EventKind::ItemUpdated,
         EventKind::ItemTransitioned,
@@ -229,6 +241,8 @@ impl EventKind {
         EventKind::TaskCancelled,
         EventKind::ClaimChanged,
         EventKind::BoardConfigured,
+        EventKind::NoteAppended,
+        EventKind::NotePromoted,
     ];
 
     /// The kind of a wire name, or `None` for a name of no kind (the events
@@ -273,6 +287,8 @@ impl EventKind {
             EventKind::TaskCancelled => "task_cancelled",
             EventKind::ClaimChanged => "claim_changed",
             EventKind::BoardConfigured => "board_configured",
+            EventKind::NoteAppended => "note_appended",
+            EventKind::NotePromoted => "note_promoted",
         }
     }
 }
@@ -836,6 +852,8 @@ mod tests {
         assert_eq!(EventKind::TaskCancelled.as_str(), "task_cancelled");
         assert_eq!(EventKind::ClaimChanged.as_str(), "claim_changed");
         assert_eq!(EventKind::BoardConfigured.as_str(), "board_configured");
+        assert_eq!(EventKind::NoteAppended.as_str(), "note_appended");
+        assert_eq!(EventKind::NotePromoted.as_str(), "note_promoted");
         let changes: Vec<&str> = [
             ClaimChange::Taken,
             ClaimChange::HandedOff,
@@ -855,6 +873,8 @@ mod tests {
             EventKind::TaskCancelled,
             EventKind::ClaimChanged,
             EventKind::BoardConfigured,
+            EventKind::NoteAppended,
+            EventKind::NotePromoted,
         ] {
             assert!(!kind.changes_blocks_counts(), "{}", kind.as_str());
         }
@@ -889,6 +909,8 @@ mod tests {
             EventKind::TaskCancelled => 11,
             EventKind::ClaimChanged => 12,
             EventKind::BoardConfigured => 13,
+            EventKind::NoteAppended => 14,
+            EventKind::NotePromoted => 15,
         };
         for (n, kind) in EventKind::ALL.into_iter().enumerate() {
             assert_eq!(position(kind), n, "{}", kind.as_str());

@@ -405,7 +405,9 @@ pub(crate) async fn get_task(
         .blocking
         .run(&tenant.slug, move |conn| {
             let task = load(conn, &short_code, Liveness::IncludeArchived)?.into_dto();
-            embed(conn, task)
+            let mut task = embed(conn, task)?;
+            task.notes = crate::api::item_notes(conn, &task.id)?;
+            Ok(task)
         })
         .await?;
     Ok(Json(task))

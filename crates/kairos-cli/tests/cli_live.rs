@@ -31,6 +31,7 @@ use diesel::prelude::*;
 use diesel::sql_query;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
+use kairos_client::types::CreateTaskRequest;
 use kairos_client::types_org::{AddTeamMemberRequest, CreateTeamRequest};
 use kairos_client::{Error, KairosClient};
 use kairos_db::models::{NewOrganizationMember, OrgRole};
@@ -440,6 +441,68 @@ async fn cli_login_whoami_refresh_logout_live() {
     assert!(
         stdout.contains(&format!("credential: login cached for {base_url}")),
         "{stdout}"
+    );
+
+    // --- phase B1: KAIROS-T-0630, a note and `get` -------------------------
+    let task = alice
+        .create_task(&CreateTaskRequest {
+            board_id: Some("platform-delivery".into()),
+            column_id: None,
+            title: "Notes in the CLI".into(),
+            content: "# Notes\n\nThe body.\n".into(),
+            task_type: None,
+            work_class: None,
+            team_id: None,
+            repository: None,
+            from_team: None,
+            parent: None,
+        })
+        .await
+        .expect("creating a task");
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &[
+            "tasks",
+            "note",
+            &task.short_code,
+            "--text",
+            "Found it.\n\n## Findings\n\nA heading in a note.",
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "tasks note failed: {stderr}");
+    assert_eq!(
+        stdout.trim(),
+        format!(
+            "Kairos appended note n-1 to {}. The content stays at version 1.",
+            task.short_code
+        )
+    );
+    let (code, stdout, stderr) =
+        run_cli(config_dir.path(), &["tasks", "get", &task.short_code]).await;
+    assert_eq!(code, 0, "tasks get failed: {stderr}");
+    let today = chrono::Utc::now()
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string();
+    assert!(
+        stdout.contains(&format!(
+            "# Notes\n\nThe body.\n\n## Note n-1 ({today}, alice"
+        )) && stdout.contains("Found it.\n\n## Findings\n\nA heading in a note.\n"),
+        "the note follows the content: {stdout}"
+    );
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["tasks", "get", &task.short_code, "--json"],
+    )
+    .await;
+    assert_eq!(code, 0, "tasks get --json failed: {stderr}");
+    let got: serde_json::Value = serde_json::from_str(&stdout).expect("task JSON");
+    assert_eq!(got["content"], "# Notes\n\nThe body.\n", "{got}");
+    assert_eq!(got["notes"][0]["id"], "n-1", "{got}");
+    assert_eq!(
+        got["notes"][0]["text"], "Found it.\n\n## Findings\n\nA heading in a note.",
+        "{got}"
     );
 
     // --- phase B2: an agent key in KAIROS_KEY stands in for the login ------

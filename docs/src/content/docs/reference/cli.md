@@ -433,7 +433,10 @@ kairos <noun> show <SHORT_CODE> [OPTIONS]
 |---|---|---|---|
 | `<SHORT_CODE>` | string | required | The item's short code, e.g. `ACME-T-0001`. |
 
-Prints the item including its markdown content.
+Prints the item including its markdown content. The notes of the item
+follow the content, each one under its heading: `## Note n-3 (2026-10-11,
+Robin)`. With `--json`, the item has the array `notes`, and `content` has no
+note.
 
 A retired short code finds the item. Then the command writes a notice on
 stderr. The notice names the current code, for example `The code
@@ -570,14 +573,17 @@ kairos <noun> note <SHORT_CODE> (--text <TEXT> | --text-file <FILE>) [OPTIONS]
 | `--text <TEXT>` | string | required without `--text-file` | The markdown text of the note. Must not be empty. |
 | `--text-file <FILE>` | path | — | Read the text of the note from a file. `-` reads standard input. Conflicts with `--text`. |
 
-Appends a note at the end of the item's content. The note gets a title with
-its id, the date and your name: `## Note n-3 (2026-10-11, Robin)`. Send no
-version: the server locks the item and writes one new version. Two notes at
-the same time both stay. The edit rule applies, as for `edit`.
+Appends a note to the item. The note is a row of its own with the next id,
+not part of the content. `get` shows it after the content, under a heading
+with its id, the date and your name: `## Note n-3 (2026-10-11, Robin)`.
 
-The output names the id: `Kairos appended note n-3 to ACME-T-0012 (version
-4).` Cite the note by its id: "note n-3 on ACME-T-0012". With `--json`, the
-response has `note_id`.
+Send no version: a note writes no version of the content. Two notes at the
+same time both stay. The text can have headings. The edit rule applies, as
+for `edit`.
+
+The output names the id: `Kairos appended note n-3 to ACME-T-0012. The
+content stays at version 4.` Cite the note by its id: "note n-3 on
+ACME-T-0012". With `--json`, the response has `note_id`.
 
 ### `<noun> promote-note`
 
@@ -595,8 +601,11 @@ kairos <noun> promote-note <SHORT_CODE> <NOTE_ID> --kind <KIND> --board <BOARD> 
 
 Turns a note into a draft ADR or document. The new item has the text of the
 note. A line names the note, its author and its date. The new item
-supports the item when the item is a strategy, an initiative or a task. The
-note gets a trailing line that names the new item.
+supports the item when the item is a strategy, an initiative or a task.
+
+The note gets the mark of the new item, and `get` shows it after the note. Kairos
+promotes a note one time only. A second promote gets 409 `CONFLICT`, which
+names the item.
 
 You need the edit rule on the item, and `manage_adrs` or `manage_documents`
 on the board. The command prints one line:

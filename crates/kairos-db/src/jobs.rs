@@ -13,6 +13,7 @@
 //!   `run_after` is past. `FOR UPDATE SKIP LOCKED`: 2 servers never lease
 //!   one job. The lease counts a try. A `leased` job whose lease ran out is
 //!   taken as a `queued` one: its server stopped or stalled.
+//!   [`take_with`] takes some kinds only by their dedupe key ([`Keyed`]).
 //! - [`heartbeat`] moves the lease of a job forward, when the job made
 //!   progress.
 //! - [`complete`], [`release`] and [`fail`] end a lease. [`release`] queues
@@ -181,17 +182,31 @@ pub fn take(
     kinds: &[String],
     lease_secs: f64,
 ) -> QueryResult<Option<Job>> {
-    take_with(conn, instance, kinds, &[], lease_secs)
+    take_with(conn, instance, kinds, &[], &Keyed::default(), lease_secs)
+}
+
+/// The kinds whose jobs a server takes only by their dedupe key
+/// (KAIROS-T-0466): a job of one of `kinds` is taken only when its
+/// `dedupe_key` is one of `keys`. The periodic passes: a server takes only
+/// the runs of the passes that it runs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Keyed {
+    /// The kinds that are taken by key.
+    pub kinds: Vec<String>,
+    /// The dedupe keys of those kinds that the server takes.
+    pub keys: Vec<String>,
 }
 
 /// [`take`], but a `leased` job of one of `no_retake` whose lease ran out
 /// is not taken again: [`fail_expired_with`] fails it (KAIROS-T-0399, a
-/// code index build that took its server down).
+/// code index build that took its server down). A job of a kind of `keyed`
+/// is taken only when its key is one of the keys of `keyed`.
 pub fn take_with(
     conn: &mut PgConnection,
     instance: Uuid,
     kinds: &[String],
     no_retake: &[String],
+    keyed: &Keyed,
     lease_secs: f64,
 ) -> QueryResult<Option<Job>> {
     if kinds.is_empty() {
@@ -212,6 +227,7 @@ pub fn take_with(
                AND (state = 'queued' \
                     OR (state = 'leased' AND lease_until < now() AND tries < max_tries \
                         AND NOT (kind = ANY($4)))) \
+               AND (NOT (kind = ANY($5)) OR dedupe_key = ANY($6)) \
              ORDER BY priority DESC, run_after, created_at \
              LIMIT 1 \
              FOR UPDATE SKIP LOCKED) \
@@ -221,6 +237,8 @@ pub fn take_with(
     .bind::<Double, _>(lease_secs)
     .bind::<Array<Text>, _>(kinds)
     .bind::<Array<Text>, _>(no_retake)
+    .bind::<Array<Text>, _>(&keyed.kinds)
+    .bind::<Array<Text>, _>(&keyed.keys)
     .get_result(conn)
     .optional()
 }
