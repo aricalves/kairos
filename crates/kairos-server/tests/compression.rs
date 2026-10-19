@@ -4,6 +4,10 @@
 //! out of `KAIROS_WEB_DIST`. A body under the floor (`/healthz`, two bytes)
 //! stays as it is. Every asset says `Vary: Accept-Encoding`.
 //!
+//! KAIROS-T-0662: a dist asset over 64 KB comes from a copy that is
+//! compressed once, not on each request, and a new copy is made when the
+//! file changes.
+//!
 //! The pre-compressed copies of the EMBEDDED assets need the `embed-web`
 //! feature and a built dist, so they are not exercised here; the unit tests
 //! of `web.rs` cover the negotiation and the headers.
@@ -99,6 +103,16 @@ async fn answers_come_compressed_when_asked() {
         .chain(std::iter::repeat_n(0u8, 4096))
         .collect();
     std::fs::write(dist.path().join("kairos-web-abc_bg.wasm"), &wasm).expect("wasm");
+    // Over the 64 KB of the pre-compressed copies.
+    let large = |seed: u8| -> Vec<u8> {
+        b"\0asm"
+            .iter()
+            .copied()
+            .chain((0..200_000u32).map(|i| (i % 251) as u8 ^ seed))
+            .collect()
+    };
+    let big = large(0);
+    std::fs::write(dist.path().join("kairos-web-big_bg.wasm"), &big).expect("big wasm");
 
     let mut config = base_config(&scratch_url);
     config.web_dist = Some(dist.path().to_path_buf());
@@ -143,6 +157,37 @@ async fn answers_come_compressed_when_asked() {
     assert_eq!(encoding.as_deref(), Some("br"));
     assert_eq!(vary.as_deref(), Some("Accept-Encoding"));
     assert_eq!(unbrotli(&bytes), wasm);
+
+    // A dist asset over 64 KB: its copy, in each encoding, the same bytes
+    // on the second request.
+    for (accept, decode) in [
+        ("br", unbrotli as fn(&[u8]) -> Vec<u8>),
+        ("gzip", gunzip as fn(&[u8]) -> Vec<u8>),
+    ] {
+        let (status, encoding, vary, first) =
+            raw_get(&router, "/kairos-web-big_bg.wasm", Some(accept)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(encoding.as_deref(), Some(accept));
+        assert_eq!(vary.as_deref(), Some("Accept-Encoding"));
+        assert_eq!(decode(&first), big, "{accept} round-trips");
+        assert!(first.len() < big.len(), "{accept} is smaller");
+        let (_, _, _, second) = raw_get(&router, "/kairos-web-big_bg.wasm", Some(accept)).await;
+        assert_eq!(second, first, "{accept}: the second request gets the copy");
+    }
+    // Nothing asked: the file as it is.
+    let (status, encoding, _, bytes) = raw_get(&router, "/kairos-web-big_bg.wasm", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(encoding, None);
+    assert_eq!(bytes, big);
+    // A rebuild writes the file again: the next request gets the new body.
+    let mut rebuilt = large(7);
+    rebuilt.extend_from_slice(b"rebuilt");
+    std::fs::write(dist.path().join("kairos-web-big_bg.wasm"), &rebuilt).expect("rebuilt wasm");
+    let (status, encoding, _, bytes) =
+        raw_get(&router, "/kairos-web-big_bg.wasm", Some("br")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(encoding.as_deref(), Some("br"));
+    assert_eq!(unbrotli(&bytes), rebuilt, "the copy follows the file");
 
     // The SPA index: gzip, and still its CSP.
     let (status, encoding, _, bytes) = raw_get(&router, "/boards/acme", Some("gzip")).await;

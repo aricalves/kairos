@@ -12,6 +12,9 @@
 #                for each of the two suites
 #   web          Gate 7: the GUI wasm build (release with the size budget in
 #                the queue and on main, debug on a PR)
+#   e2e          tier 4 (`angreal test e2e --down`): the API and MCP golden
+#                path and the Playwright GUI suite, in the queue only, split
+#                over 2 shards, each with its own compose stack (KAIROS-T-0662)
 #   ci           the one required check: it fails when a gate failed
 #
 # A change to the docs only runs lint. On a pull request a new push cancels
@@ -24,7 +27,8 @@
 #   pr     a pull request: lint, unit (with the Python tests) and web. The
 #          fast gates; the agent ran the integration tests it needs.
 #   queue  the merge queue, on the merge commit of a group of pull
-#          requests: every gate, integration and bdd included. It checks
+#          requests: every gate, integration, bdd and e2e included. e2e
+#          runs beside build-tests and integration, not after them. It checks
 #          the parts that the group changes against main. The web gate
 #          builds in release, so the size budget is checked before main
 #          moves (KAIROS-T-0656).
@@ -73,6 +77,7 @@ jobs:
       helm: ${{ steps.filter.outputs.helm }}
       python: ${{ steps.filter.outputs.python }}
       image: ${{ steps.filter.outputs.image }}
+      e2e: ${{ steps.filter.outputs.e2e }}
       stage: ${{ steps.filter.outputs.stage }}
     steps:
       - name: Checkout
@@ -93,6 +98,8 @@ jobs:
             for part in rust web helm python; do echo "${part}=true" >> "$GITHUB_OUTPUT"; done
             # The release workflow builds the images of a tag.
             echo "image=false" >> "$GITHUB_OUTPUT"
+            # e2e runs in the merge queue only (KAIROS-T-0662).
+            echo "e2e=false" >> "$GITHUB_OUTPUT"
             # The merge queue tested this commit (KAIROS-T-0650).
             echo "stage=push" >> "$GITHUB_OUTPUT"
             exit 0
@@ -114,12 +121,16 @@ jobs:
           helm="$(has "${all}|^deploy/helm/")"
           python="$(has "${all}|^plugin/|^\.claude-plugin/|^scripts/")"
           image="$(has '^(Dockerfile|\.dockerignore|scripts/image-smoke\.sh)$')"
+          # The specs and their helpers. A change to Rust or the GUI runs
+          # e2e too (the e2e job reads rust and web).
+          e2e="$(has "${all}|^e2e/")"
           {
             echo "rust=${rust}"
             echo "web=${web}"
             echo "helm=${helm}"
             echo "python=${python}"
             echo "image=${image}"
+            echo "e2e=${e2e}"
           } | tee -a "$GITHUB_OUTPUT"
 
   lint:
@@ -408,6 +419,13 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     steps:
+      # The compose stack and the test servers bind host ports 41080-41900,
+      # inside the default ephemeral range (32768-60999). An outbound
+      # connection of an earlier step can hold one of them, and compose up
+      # then fails with "address already in use" (KAIROS-T-0662).
+      - name: Keep the ports of the stack out of the ephemeral range
+        run: sudo sysctl -w net.ipv4.ip_local_port_range="42000 65000"
+
       - name: Checkout
         uses: actions/checkout@v5
 
@@ -446,6 +464,13 @@ jobs:
           - { name: kairos-index, dir: crates/kairos-index, bin: bdd }
           - { name: kairos-cli, dir: crates/kairos-cli, bin: index_bdd }
     steps:
+      # The compose stack and the test servers bind host ports 41080-41900,
+      # inside the default ephemeral range (32768-60999). An outbound
+      # connection of an earlier step can hold one of them, and compose up
+      # then fails with "address already in use" (KAIROS-T-0662).
+      - name: Keep the ports of the stack out of the ephemeral range
+        run: sudo sysctl -w net.ipv4.ip_local_port_range="42000 65000"
+
       - name: Checkout
         uses: actions/checkout@v5
 
@@ -536,6 +561,111 @@ jobs:
             angreal web build
           fi
 
+  # Tier 4 (KAIROS-A-0012), in the merge queue only (KAIROS-T-0662): the
+  # same steps as e2e.yml, which still runs on a release tag and on
+  # dispatch. It needs only `changes`, so it runs beside build-tests and
+  # integration. The Playwright suite runs one spec at a time on the shared
+  # demo tenant, so it is split over 2 shards of the spec files. Each shard
+  # has its own runner, compose stack and seed, and runs the golden path too
+  # (about one second). A shard takes about 7 minutes of setup (the server
+  # and wasm builds, the browsers) and a few minutes of Playwright. Add a
+  # shard here when the suite grows.
+  e2e:
+    name: e2e (${{ matrix.shard }}/2)
+    needs: changes
+    if: >-
+      needs.changes.outputs.stage == 'queue' && (
+      needs.changes.outputs.rust == 'true' ||
+      needs.changes.outputs.web == 'true' ||
+      needs.changes.outputs.e2e == 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      # The compose stack and the test servers bind host ports 41080-41900,
+      # inside the default ephemeral range (32768-60999). An outbound
+      # connection of an earlier step can hold one of them, and compose up
+      # then fails with "address already in use" (KAIROS-T-0662).
+      - name: Keep the ports of the stack out of the ephemeral range
+        run: sudo sysctl -w net.ipv4.ip_local_port_range="42000 65000"
+
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain (from rust-toolchain.toml)
+        run: |
+          rustup toolchain install
+          rustup show
+
+      # The debug build of build-tests; a queue run saves no cache.
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: tests
+          save-if: false
+
+      - name: Verify Docker is available
+        run: |
+          docker version
+          docker compose version
+
+      - name: Install libpq (diesel postgres backend links against it)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libpq-dev
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install angreal
+        run: |
+          pip install "angreal==2.8.8"
+          angreal --version
+
+      # The GUI leg runs Playwright from e2e/; the angreal task installs the
+      # npm packages and the browsers itself.
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      # The release binary of trunk, where `angreal web build` looks first.
+      # Without it the task runs `cargo install trunk`: about 6 minutes.
+      - name: Install trunk (release binary)
+        env:
+          TRUNK_VERSION: "0.21.14"
+          TRUNK_SHA256: f2b4680cd239693a646a2795e4633c625328d7b2a044fbe749fa3a2fe9e7036b
+        run: |
+          set -euo pipefail
+          curl -sSfL -o trunk.tar.gz \
+            "https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${TRUNK_SHA256}  trunk.tar.gz" | sha256sum -c -
+          mkdir -p target/tools/bin
+          tar -xzf trunk.tar.gz -C target/tools/bin trunk
+          rm trunk.tar.gz
+          target/tools/bin/trunk --version
+
+      # Compose up, the server and wasm builds, the seed, the API and MCP
+      # golden path, then this shard of the Playwright GUI suite; compose
+      # down after.
+      - name: Tier 4 — angreal test e2e, shard ${{ matrix.shard }} of 2
+        run: angreal test e2e --down --shard ${{ matrix.shard }}/2
+
+      # The trace, screenshot and video of each failed spec.
+      - name: Upload the Playwright results
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: e2e-results-${{ matrix.shard }}
+          path: e2e/test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
   # A pull request that changes the Dockerfile builds the hosted image for
   # amd64 (no push) and runs its smoke check, so a release does not find
   # the fault. It shares the build cache of the release workflow.
@@ -572,7 +702,7 @@ jobs:
   ci:
     name: ci
     if: always()
-    needs: [changes, lint, python, build-tests, unit, integration, bdd, web, image]
+    needs: [changes, lint, python, build-tests, unit, integration, bdd, web, e2e, image]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

@@ -1,14 +1,15 @@
 # Kairos E2E smoke — KAIROS-A-0012 tier 4 (`angreal test e2e`), the API + MCP
 # golden path plus the KAIROS-T-0045 GUI Playwright smoke leg.
 #
-# CI decision (KAIROS-A-0012 + KAIROS-T-0045): the e2e tier "gates releases,
-# not every task." It is deliberately NOT in the per-push `ci` gate (ci.yml,
-# gates 1-6) — it cycles the full compose stack, builds the wasm bundle, boots
-# two servers, and drives a real browser, which is far heavier than the
-# per-push feedback loop should carry. Instead it runs:
+# CI decision (KAIROS-A-0012, amended by KAIROS-T-0662 on 2026-10-19): the
+# e2e tier runs in the merge queue. The `e2e` job of ci.yml runs it in the
+# queue stage, not in the PR stage (it cycles the full compose stack, builds
+# the wasm bundle, boots two servers, and drives a real browser), and the
+# required check `ci` counts its result. So a change does not reach main
+# with a failed e2e. It also runs:
 #   - locally / in agent completion, on demand: `angreal test e2e`
-#   - here, manually (workflow_dispatch) and on release tags, so a release is
-#     never cut without the GUI critical paths having been exercised.
+#   - here, manually (workflow_dispatch) and on release tags, so a release
+#     tag runs it again.
 #
 # When the server OCI image job lands (KAIROS-T-0047 anchor in release.yml),
 # this job is the natural pre-publish gate to wire as a dependency.
@@ -33,6 +34,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
+      # The compose stack and the test servers bind host ports 41080-41900,
+      # inside the default ephemeral range (32768-60999). An outbound
+      # connection of an earlier step can hold one of them, and compose up
+      # then fails with "address already in use" (KAIROS-T-0662).
+      - name: Keep the ports of the stack out of the ephemeral range
+        run: sudo sysctl -w net.ipv4.ip_local_port_range="42000 65000"
+
       - name: Checkout
         uses: actions/checkout@v5
 

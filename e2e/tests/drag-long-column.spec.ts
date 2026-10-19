@@ -136,13 +136,26 @@ test('drag and drop: a card at the bottom of a long column moves with no scroll,
       expect(await todoCards.evaluate((el) => el.scrollTop)).toBe(0);
       expect(await page.evaluate(() => window.scrollY)).toBe(pageY);
       // Each column of a lane is as tall as the others (COLLIERY-T-0253):
-      // a card drops at its own height in each column.
-      for (const name of columns) {
-        const box = await column(page, name).boundingBox();
-        if (!box) throw new Error(`${name} has no bounding box`);
-        expect(Math.abs(box.y - backlogBox.y), `top of ${name}`).toBeLessThan(1);
-        expect(Math.abs(box.height - backlogBox.height), `height of ${name}`).toBeLessThan(1);
-      }
+      // a card drops at its own height in each column. The columns are
+      // read together, and again until the layout settles: a panel above
+      // the board can still move the lane down by a few pixels
+      // (KAIROS-T-0662: a page now loads in a fraction of a second).
+      await expect
+        .poll(
+          async () => {
+            const boxes = await Promise.all(
+              columns.map((name) => column(page, name).boundingBox()),
+            );
+            if (boxes.some((box) => !box)) return Number.POSITIVE_INFINITY;
+            const spread = (values: number[]) => Math.max(...values) - Math.min(...values);
+            return Math.max(
+              spread(boxes.map((box) => box!.y)),
+              spread(boxes.map((box) => box!.height)),
+            );
+          },
+          { message: 'the columns of the lane have one top and one height' },
+        )
+        .toBeLessThan(1);
     });
 
     await test.step('drag the card at the bottom of Backlog to Todo — the card lands', async () => {
@@ -158,9 +171,14 @@ test('drag and drop: a card at the bottom of a long column moves with no scroll,
       await expect(card('Backlog')).toHaveCount(0);
       // The drop is in the lane that the pointer was over.
       await expect(card('Todo', 'support')).toHaveCount(0);
-      const task = await readTask(GUI, alice, code);
-      expect(task.column_id).toBe(board.columnId.get('Todo'));
-      expect(task.work_class).toBe('planned');
+      // The card moves before the server answers the drop, so the read
+      // waits for the transition.
+      await expect
+        .poll(async () => {
+          const task = await readTask(GUI, alice, code);
+          return [task.column_id, task.work_class];
+        })
+        .toEqual([board.columnId.get('Todo'), 'planned']);
     });
 
     await test.step('drag a card to Backlog of the support lane — the card lands', async () => {
@@ -173,9 +191,12 @@ test('drag and drop: a card at the bottom of a long column moves with no scroll,
       await dragTo(page, card('planned'), column(page, 'Backlog', 'support'));
       await expect(card('support')).toBeVisible({ timeout: 15_000 });
       await expect(card('planned')).toHaveCount(0);
-      const task = await readTask(GUI, alice, code);
-      expect(task.column_id).toBe(board.columnId.get('Backlog'));
-      expect(task.work_class).toBe('support');
+      await expect
+        .poll(async () => {
+          const task = await readTask(GUI, alice, code);
+          return [task.column_id, task.work_class];
+        })
+        .toEqual([board.columnId.get('Backlog'), 'support']);
     });
   } finally {
     // Clean-up is not a step of the journey: it runs after a failure also.

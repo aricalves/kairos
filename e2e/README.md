@@ -64,17 +64,37 @@ Env knobs: `E2E_GUI_BASE_URL` (default `http://localhost:41080`), `E2E_ISSUER`
 
 ## Runtime
 
-The suite itself runs in **~1 second** (3.8 MB wasm bundle is loaded once; all
-services are local). Measured across repeated reseed+run cycles it is stable at
-~1.0–1.2 s. The dominant cost of `angreal test e2e` as a whole is the Rust
-build + compose lifecycle + wasm build, not this suite.
+The suite runs one spec at a time, because the specs change the shared demo
+tenant. It has about 90 tests. On a developer machine it takes about 4
+minutes. Most of the time of `angreal test e2e` is the Rust build, the wasm
+build and the compose stack.
+
+Each full load of a page gets the debug wasm bundle (about 50 MB). The server
+compresses a large asset once and keeps the copy (KAIROS-T-0662). Before, it
+compressed the bundle again for each load, and each load took about 5
+seconds.
+
+To run a part of the spec files, give a shard (KAIROS-T-0662):
+
+```sh
+angreal test e2e --shard 2/4   # part 2 of 4 of the spec files
+```
+
+The other steps of `angreal test e2e` run in each shard. The golden path
+takes about 1 second.
 
 ## CI decision
 
-Per KAIROS-A-0012 the e2e tier **gates releases, not every task**, so it is
-**not** in the per-push `ci` gate (`.github/workflows/ci.yml`). It runs:
+KAIROS-A-0012 said the e2e tier **gates releases, not every task**. On
+2026-10-19 that changed (KAIROS-T-0662): e2e runs in the **merge queue**. The
+`e2e` job of `.github/workflows/ci.yml` runs `angreal test e2e --down` in the
+queue stage, not in the PR stage. The required check `ci` fails when e2e
+fails. The job runs when the change touches Rust, the GUI or `e2e/`.
+
+The job has 2 shards (`--shard 1/2` and `--shard 2/2`). Each shard has its own
+runner and compose stack. The e2e tier runs:
 
 - locally / at agent completion, on demand (`angreal test e2e`);
+- in the merge queue, before a change reaches main;
 - in CI via `.github/workflows/e2e.yml` — **manually** (`workflow_dispatch`)
-  and on **release tags** (`push: tags: v*`), so no release is cut without the
-  GUI critical paths having been exercised.
+  and on **release tags** (`push: tags: v*`).
