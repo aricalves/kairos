@@ -24,7 +24,8 @@
 //! event shape for create/update/transition/delete/relationship/metadata,
 //! two-tenant isolation (acme socket never sees widgets events), the
 //! `board_id` subscribe filter (set and cleared), the precise kinds
-//! `claim_changed`, `task_state_changed`, `task_cancelled` and
+//! `claim_changed`, `task_state_changed`, `note_appended` (KAIROS-T-0630),
+//! `task_cancelled` and
 //! `board_configured` next to their coarse kinds, one `item_deleted` for
 //! each item of an archive cascade and one `item_restored` for a restore
 //! (KAIROS-T-0574), and clean disconnect/reconnect — every await
@@ -814,6 +815,24 @@ async fn ws_events_against_live_stack() {
     assert_event_shape(event, raw, "task_state_changed", "task");
     assert_eq!(event.short_code, code6);
     assert!(raw.get("change").is_none(), "{raw}");
+
+    // KAIROS-T-0630: a note is a row: item_updated, then note_appended with
+    // the id of the note.
+    let noted = alice
+        .append_note(kairos_client::EntityKind::Task, code6, "A note row.")
+        .await
+        .expect("appending a note");
+    assert_eq!(noted.note_id, "n-1");
+    let events = recv_item_events(&mut stream, 2).await;
+    of_kind(&events, "item_updated");
+    let (event, raw) = of_kind(&events, "note_appended");
+    assert_event_shape(event, raw, "note_appended", "task");
+    assert_eq!(event.short_code, code6);
+    assert_eq!(event.change.as_deref(), Some("n-1"), "{raw}");
+    assert_eq!(
+        event.board_id.as_deref(),
+        Some(acme_delivery.to_string().as_str())
+    );
 
     // A hand-off: the claim goes to svc, and the next step is cleared.
     kairos_db::task_claims::hand_off(&mut acme, task6.id, svc_id, alice_id).expect("hand-off");

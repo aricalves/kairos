@@ -46,6 +46,7 @@ impl IntoDto<dto::Strategy> for Strategy {
             created_at: timestamp(self.created_at),
             updated_at: timestamp(self.updated_at),
             archived_at: self.deleted_at.map(timestamp),
+            notes: None,
             owner: None,
         }
     }
@@ -69,6 +70,7 @@ impl IntoDto<dto::Initiative> for Initiative {
             created_at: timestamp(self.created_at),
             updated_at: timestamp(self.updated_at),
             archived_at: self.deleted_at.map(timestamp),
+            notes: None,
             owner: None,
         }
     }
@@ -96,6 +98,7 @@ impl IntoDto<dto::Task> for Task {
             created_at: timestamp(self.created_at),
             updated_at: timestamp(self.updated_at),
             archived_at: self.deleted_at.map(timestamp),
+            notes: None,
             // The same: [`crate::claims::attach_claims`] fills it
             // (KAIROS-T-0359).
             claim: None,
@@ -127,6 +130,7 @@ impl IntoDto<dto::Document> for Document {
             created_at: timestamp(self.created_at),
             updated_at: timestamp(self.updated_at),
             archived_at: self.deleted_at.map(timestamp),
+            notes: None,
         }
     }
 }
@@ -150,6 +154,7 @@ impl IntoDto<dto::Adr> for Adr {
             created_at: timestamp(self.created_at),
             updated_at: timestamp(self.updated_at),
             archived_at: self.deleted_at.map(timestamp),
+            notes: None,
         }
     }
 }
@@ -497,6 +502,18 @@ pub fn external_ref(
         label: row.label,
         created_by: row.created_by.to_string(),
         created_at: timestamp(row.created_at),
+    }
+}
+
+/// One note of an item as its DTO (KAIROS-T-0630).
+pub fn note(row: kairos_db::item_notes::ItemNote) -> dto::ItemNote {
+    dto::ItemNote {
+        id: row.note_id(),
+        author_id: row.author_id.map(|id| id.to_string()),
+        author: row.author,
+        created_at: timestamp(row.created_at),
+        text: row.text,
+        promoted_to: row.promoted_to,
     }
 }
 

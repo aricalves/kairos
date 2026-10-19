@@ -149,7 +149,9 @@ pub(crate) async fn get_strategy(
         .blocking
         .run(&tenant.slug, move |conn| {
             let item = load(conn, &short_code, Liveness::IncludeArchived)?.into_dto();
-            crate::owners::attach_owner(conn, item)
+            let mut item = crate::owners::attach_owner(conn, item)?;
+            item.notes = crate::api::item_notes(conn, &item.id)?;
+            Ok(item)
         })
         .await?;
     Ok(Json(strategy))

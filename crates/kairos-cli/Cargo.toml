@@ -10,6 +10,8 @@ path = "src/main.rs"
 
 [dependencies]
 kairos-client = { workspace = true }
+# The notes after the content in `get` (KAIROS-T-0630).
+kairos-markdown = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }

@@ -1,9 +1,11 @@
 //! KAIROS-T-0505 — `POST /api/{family}/{short_code}/notes/{note_id}/promote`:
 //! a note becomes a draft ADR or document in one call. The new item has the
 //! text of the note and a line that names the note; it `supports` the
-//! source item; the note gets the line `Promoted to <code>.` The edit rule
-//! and the right to create on the target board apply. The MCP tool
-//! `promote_note` is in `tests/mcp.rs`.
+//! source item; the note gets `promoted_to` (KAIROS-T-0630: a column of the
+//! note row; the content and its version do not change). A second promote
+//! is CONFLICT and names the item. The edit rule and the right to create on
+//! the target board apply. The MCP tool `promote_note` is in
+//! `tests/mcp.rs`.
 //!
 //! Runs against the LIVE compose stack (`angreal services up`). Owns the
 //! scratch database `kairos_promote_note_t0505_test`.
@@ -111,28 +113,34 @@ async fn a_note_becomes_a_draft_adr_or_document_against_live_stack() {
         Some(json!({
             "board_id": "payments-delivery",
             "title": "Pay",
-            "content": "# Pay\n\n## Note (2026-10-01, Robin)\n\nUse one ledger.\n\nOne table for each currency.\n",
+            "content": "# Pay\n",
         })),
     )
     .await;
     assert!(status.is_success(), "{status} {task}");
     let code = task["short_code"].as_str().expect("short code").to_string();
     let id: Uuid = task["id"].as_str().expect("id").parse().expect("uuid");
-    let (status, answer) = send(
-        Method::POST,
-        format!("/api/tasks/{code}/notes"),
-        token.clone(),
-        Some(json!({"text": "Proposal: keep the refund path.\n\nThe details."})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{answer}");
-    assert_eq!(answer["note_id"], "n-2", "{answer}");
+    for (text, note_id) in [
+        ("Use one ledger.\n\nOne table for each currency.", "n-1"),
+        ("Proposal: keep the refund path.\n\nThe details.", "n-2"),
+        ("A third note, for the refusals.", "n-3"),
+    ] {
+        let (status, answer) = send(
+            Method::POST,
+            format!("/api/tasks/{code}/notes"),
+            token.clone(),
+            Some(json!({ "text": text })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+        assert_eq!(answer["note_id"], note_id, "{answer}");
+    }
     let today = chrono::Utc::now()
         .date_naive()
         .format("%Y-%m-%d")
         .to_string();
 
-    // --- an old note (no id) becomes an ADR with a title --------------------
+    // --- a note becomes an ADR with a title ----------------------------------
     let (status, answer) = send(
         Method::POST,
         format!("/api/tasks/{code}/notes/n-1/promote"),
@@ -162,7 +170,7 @@ async fn a_note_becomes_a_draft_adr_or_document_against_live_stack() {
     assert_eq!(
         adr["content"],
         format!(
-            "Use one ledger.\n\nOne table for each currency.\n\nFrom note n-1 on {code} (Robin, 2026-10-01).\n"
+            "Use one ledger.\n\nOne table for each currency.\n\nFrom note n-1 on {code} ({svc_name}, {today}).\n"
         ),
         "{adr}"
     );
@@ -190,14 +198,30 @@ async fn a_note_becomes_a_draft_adr_or_document_against_live_stack() {
         None,
     )
     .await;
-    let content = got["content"].as_str().expect("content");
+    // KAIROS-T-0630: the mark is on the note; the content and its version
+    // do not change.
+    assert_eq!(got["content"], "# Pay\n", "{got}");
+    assert_eq!(got["version"], 1, "a promote writes no version: {got}");
+    assert_eq!(got["notes"][0]["promoted_to"], adr_code.as_str(), "{got}");
+    assert!(got["notes"][1].get("promoted_to").is_none(), "{got}");
+
+    // --- KAIROS-T-0551: a second promote is CONFLICT and names the item -------
+    let (status, answer) = send(
+        Method::POST,
+        format!("/api/tasks/{code}/notes/n-1/promote"),
+        token.clone(),
+        Some(json!({"kind": "document", "board": "payments-delivery"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{answer}");
+    assert_eq!(answer["error"]["code"], "CONFLICT", "{answer}");
+    assert_eq!(answer["error"]["details"]["promoted_to"], adr_code.as_str());
     assert!(
-        content.contains(&format!(
-            "One table for each currency.\n\nPromoted to {adr_code}.\n\n## Note n-2 ("
-        )),
-        "the note has the trailing line, before the next note: {content}"
+        answer["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains(&adr_code) && m.contains("n-1")),
+        "{answer}"
     );
-    assert_eq!(got["version"], 3, "the line is one version: {got}");
 
     // --- the new note becomes a document; the title is its first line --------
     let (status, answer) = send(
@@ -251,10 +275,10 @@ async fn a_note_becomes_a_draft_adr_or_document_against_live_stack() {
         None,
     )
     .await;
-    let content = got["content"].as_str().expect("content");
-    assert!(
-        content.ends_with(&format!("The details.\n\nPromoted to {doc_code}.")),
-        "{content}"
+    assert_eq!(got["notes"][1]["promoted_to"], doc_code.as_str(), "{got}");
+    assert_eq!(
+        got["notes"][1]["text"],
+        "Proposal: keep the refund path.\n\nThe details."
     );
 
     // --- a note on a document: no supports edge ---------------------------------
@@ -288,7 +312,7 @@ async fn a_note_becomes_a_draft_adr_or_document_against_live_stack() {
     assert!(
         answer["error"]["message"]
             .as_str()
-            .is_some_and(|m| m.contains("n-1, n-2")),
+            .is_some_and(|m| m.contains("n-1, n-2, n-3")),
         "the refusal lists the notes: {answer}"
     );
     let (status, answer) = send(
@@ -310,7 +334,7 @@ async fn a_note_becomes_a_draft_adr_or_document_against_live_stack() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
     let (status, answer) = send(
         Method::POST,
-        format!("/api/tasks/{code}/notes/n-1/promote"),
+        format!("/api/tasks/{code}/notes/n-3/promote"),
         bob_token.clone(),
         Some(json!({"kind": "adr", "board": "adrs"})),
     )
@@ -318,7 +342,7 @@ async fn a_note_becomes_a_draft_adr_or_document_against_live_stack() {
     assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
     let (status, answer) = send(
         Method::POST,
-        format!("/api/tasks/{code}/notes/n-1/promote"),
+        format!("/api/tasks/{code}/notes/n-3/promote"),
         token.clone(),
         Some(json!({"kind": "adr", "board": "no-such-board"})),
     )
@@ -331,7 +355,11 @@ async fn a_note_becomes_a_draft_adr_or_document_against_live_stack() {
         None,
     )
     .await;
-    assert_eq!(got["version"], 4, "a refused promote writes nothing: {got}");
+    assert_eq!(got["version"], 1, "{got}");
+    assert!(
+        got["notes"][2].get("promoted_to").is_none(),
+        "a refused promote writes nothing: {got}"
+    );
 
     drop(pool);
     drop(conn);

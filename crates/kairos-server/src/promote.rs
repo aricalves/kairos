@@ -7,18 +7,24 @@
 //! its author and its date. The new item `supports` the source item when
 //! the source is a strategy, an initiative or a task (the type rule of a
 //! `supports` edge, [`kairos_core::graph::check_link`]); a note on a
-//! document or an ADR gets no edge. The note gets a trailing line
-//! `Promoted to KAIROS-A-0029.`
+//! document or an ADR gets no edge. The note gets `promoted_to`, the code
+//! of the new item (KAIROS-T-0630: a column of the note row, not a line of
+//! the content). Each answer shows it as the line
+//! `Promoted to KAIROS-A-0029.` after the note.
 //!
-//! Who may: the edit rule of the source item (the trailing line is an
-//! edit), and the right to create on the target board (`manage_adrs`, or
+//! A note is promoted once: a second promote is refused with `CONFLICT`,
+//! and the refusal names the item that the note became. The read of the
+//! note locks its row, so two promotes at the same time make one item.
+//!
+//! Who may: the edit rule of the source item (the mark is an edit), and the
+//! right to create on the target board (`manage_adrs`, or
 //! `manage_documents` through [`crate::api::documents::create`]). Each
 //! check runs before the first write; the caller runs this in one
 //! transaction ([`crate::api::atomically`]).
 
 use diesel::pg::PgConnection;
 use kairos_core::short_code::ItemType;
-use kairos_db::items::{self, ContentUpdate};
+use kairos_db::items;
 use kairos_db::models::RelationshipType;
 use uuid::Uuid;
 
@@ -91,13 +97,20 @@ pub(crate) fn promote_note(
         ))
         .with_details(serde_json::json!({ wording.details_key: "board" })));
     }
-    // The trailing line on the note is an edit of the source item.
+    // The mark on the note is an edit of the source item.
     require_item_edit(conn, role, user, source_id, source_type)?;
-    let (version, content) =
-        items::lock_item_content(conn, source_type, source_id).map_err(map_item_error)?;
-    let notes = kairos_core::items::notes(&content);
-    let Some(note) = notes.iter().find(|note| note.id == input.note_id) else {
-        let ids: Vec<&str> = notes.iter().map(|note| note.id.as_str()).collect();
+    let found = match kairos_markdown::notes::parse_note_id(input.note_id) {
+        Some(seq) => {
+            kairos_db::item_notes::lock_note(conn, source_id, seq).map_err(ApiError::internal)?
+        }
+        None => None,
+    };
+    let Some(note) = found else {
+        let ids: Vec<String> = kairos_db::item_notes::notes_of(conn, source_id)
+            .map_err(ApiError::internal)?
+            .iter()
+            .map(|note| note.note_id())
+            .collect();
         return Err(ApiError::not_found(if ids.is_empty() {
             format!("The item {source_code} has no note.")
         } else {
@@ -108,14 +121,25 @@ pub(crate) fn promote_note(
             )
         }));
     };
+    let note_id = note.note_id();
+    // KAIROS-T-0551, KAIROS-T-0630: a second promote would make a second
+    // item.
+    if let Some(promoted) = &note.promoted_to {
+        return Err(ApiError::conflict(format!(
+            "The note {note_id} on {source_code} became {promoted} already. Kairos promotes a \
+             note one time only. Read {promoted}, or promote a different note."
+        ))
+        .with_details(serde_json::json!({ "note_id": note_id, "promoted_to": promoted })));
+    }
     let title = match input.title.map(str::trim).filter(|title| !title.is_empty()) {
         Some(title) => title.to_string(),
-        None if !note.first_line.is_empty() => clip(&note.first_line, 120),
-        None => format!("Note {} of {source_code}", note.id),
+        None if !note.first_line().is_empty() => clip(note.first_line(), 120),
+        None => format!("Note {note_id} of {source_code}"),
     };
     let from = format!(
-        "From note {} on {source_code} ({}, {}).",
-        note.id, note.author, note.date
+        "From note {note_id} on {source_code} ({}, {}).",
+        note.author,
+        note.date()
     );
     let new_content = if note.text.is_empty() {
         format!("{from}\n")
@@ -184,25 +208,12 @@ pub(crate) fn promote_note(
         _ => unreachable!("parse_kind gives an adr or a document"),
     };
 
-    let line = format!("Promoted to {created_code}.");
-    let with_line = kairos_core::items::content_with_note_line(&content, &note.id, &line)
-        .ok_or_else(|| ApiError::internal("the note was found a moment ago"))?;
-    items::update_item_content(
-        conn,
-        source_type,
-        source_id,
-        ContentUpdate {
-            new_title: None,
-            new_content: &with_line,
-            expected_version: version,
-        },
-        user,
-    )
-    .map_err(map_item_error)?;
+    kairos_db::item_notes::mark_promoted(conn, source_type, &note, &created_code, user)
+        .map_err(ApiError::internal)?;
 
     Ok(Promoted {
         source_code: source_code.to_string(),
-        note_id: note.id.clone(),
+        note_id,
         kind,
         created_code,
         created_id,

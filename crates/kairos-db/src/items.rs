@@ -220,7 +220,7 @@ pub fn next_short_code(
 }
 
 /// The table of the items of `item_type`.
-fn table_of(item_type: ItemType) -> &'static str {
+pub(crate) fn table_of(item_type: ItemType) -> &'static str {
     match item_type {
         ItemType::Strategy => "strategies",
         ItemType::Initiative => "initiatives",
@@ -1537,120 +1537,6 @@ pub fn update_item_content(
                 })
             }
         }
-    })
-}
-
-/// Why [`append_note`] wrote nothing (KAIROS-T-0367).
-#[derive(Debug, thiserror::Error)]
-pub enum NoteError {
-    /// The text is empty or only white space.
-    #[error("The text of the note is empty. Send the text to append.")]
-    EmptyText,
-    /// The item is not there, or the database failed.
-    #[error(transparent)]
-    Item(#[from] ItemError),
-}
-
-impl From<DieselError> for NoteError {
-    fn from(e: DieselError) -> Self {
-        NoteError::Item(ItemError::Database(e))
-    }
-}
-
-/// What [`append_note`] wrote (KAIROS-T-0504).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AppendedNote {
-    /// The new version of the item.
-    pub version: i32,
-    /// The id of the note: `n-3`.
-    pub note_id: String,
-}
-
-/// The version and the content of a live item, with its row locked
-/// (`SELECT … FOR UPDATE`) until the end of the transaction of `conn`
-/// (KAIROS-T-0367, KAIROS-T-0505). The caller runs in a transaction.
-pub fn lock_item_content(
-    conn: &mut PgConnection,
-    item_type: ItemType,
-    item_id: Uuid,
-) -> Result<(i32, String), ItemError> {
-    macro_rules! lock_row {
-        ($table:ident) => {{
-            use crate::schema::$table::dsl;
-            dsl::$table
-                .filter(dsl::id.eq(item_id))
-                .filter(dsl::deleted_at.is_null())
-                .select((dsl::version, dsl::content))
-                .for_update()
-                .first::<(i32, String)>(conn)
-                .optional()
-        }};
-    }
-    let locked = match item_type {
-        ItemType::Strategy => lock_row!(strategies),
-        ItemType::Initiative => lock_row!(initiatives),
-        ItemType::Task => lock_row!(tasks),
-        ItemType::Document => lock_row!(documents),
-        ItemType::Adr => lock_row!(adrs),
-    }?;
-    locked.ok_or(ItemError::ItemNotFound {
-        entity_type: item_type.entity_type(),
-        id: item_id,
-    })
-}
-
-/// Append a note at the end of an item's content (KAIROS-T-0367): a heading
-/// with the id of the note, the UTC date of `today` and the display name of
-/// `actor` ([`kairos_core::items::note_heading`]), then the text. One new
-/// version, one history row, one `item.updated` event.
-///
-/// No version and no anchor: the transaction locks the item row
-/// (`SELECT … FOR UPDATE`) before it reads the content, so two notes at the
-/// same time are written one after the other, and the second one reads the
-/// content that the first one wrote. No note is lost, and each note gets
-/// its own id (KAIROS-T-0504: one after the count of the note headings).
-/// Returns the new version and the id of the note.
-pub fn append_note(
-    conn: &mut PgConnection,
-    item_type: ItemType,
-    item_id: Uuid,
-    text: &str,
-    actor: Uuid,
-    today: chrono::NaiveDate,
-) -> Result<AppendedNote, NoteError> {
-    if text.trim().is_empty() {
-        return Err(NoteError::EmptyText);
-    }
-    conn.transaction::<_, NoteError, _>(|conn| {
-        let (version, content) = lock_item_content(conn, item_type, item_id)?;
-        let author: Option<String> = crate::schema::users::table
-            .filter(crate::schema::users::id.eq(actor))
-            .select(crate::schema::users::display_name)
-            .first(conn)
-            .optional()
-            .map_err(ItemError::from)?;
-        let author = author
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| actor.to_string());
-        let position = kairos_core::items::next_note_position(&content);
-        let heading = kairos_core::items::note_heading(position, today, &author);
-        let new_content = kairos_core::items::content_with_note(&content, &heading, text)
-            .ok_or(NoteError::EmptyText)?;
-        let version = update_item_content(
-            conn,
-            item_type,
-            item_id,
-            ContentUpdate {
-                new_title: None,
-                new_content: &new_content,
-                expected_version: version,
-            },
-            actor,
-        )?;
-        Ok(AppendedNote {
-            version,
-            note_id: kairos_core::items::note_id(position),
-        })
     })
 }
 

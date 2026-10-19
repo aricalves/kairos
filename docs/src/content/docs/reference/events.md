@@ -68,7 +68,7 @@ One JSON object per WebSocket text message
 | `short_code` | The affected item — re-fetch it via the REST API. For `repository` and `board`, the slug |
 | `board_id` | The item's board (UUID); `null` for off-board items (documents, unplaced ADRs) |
 | `column_id` | The item's (new) column (UUID); omitted when not applicable |
-| `change` | What changed, for `claim_changed` and `board_configured`; omitted for each other kind |
+| `change` | What changed, for `claim_changed` and `board_configured`; the id of the note for `note_appended` and `note_promoted`; omitted for each other kind |
 | `actor` | The acting user's id (UUID). For a change that an agent made with the agent key of a person, the person |
 | `agent_key_id` | The agent key (UUID) of the change, when an agent made it with the agent key of a person; omitted otherwise |
 | `occurred_at` | RFC 3339 timestamp |
@@ -96,11 +96,14 @@ ignore it.
 | `task_cancelled` | A person cancelled a task. `column_id` is the done column of the board |
 | `claim_changed` | The claim of a task changed. `change` tells what changed (see below) |
 | `board_configured` | The configuration of a board changed: a column, a transition, a flag or a setting. `entity_type` is `board`, `short_code` is the slug of the board, `board_id` is the board. `change` names the setting (see below). Read the board again |
+| `note_appended` | A person or an agent added a note to the item. `change` is the id of the note (`n-3`). A note writes no version of the content: read the item again for its `notes` |
+| `note_promoted` | A note of the item became a draft ADR or document. `change` is the id of the note |
 
 ### The precise kinds
 
-The kinds `task_state_changed`, `task_cancelled` and `claim_changed` come
-**in addition** to the kind that Kairos sent before:
+The kinds `task_state_changed`, `task_cancelled`, `claim_changed`,
+`note_appended` and `note_promoted` come **in addition** to the kind that
+Kairos sent before:
 
 | Write | Events |
 |---|---|
@@ -111,6 +114,8 @@ The kinds `task_state_changed`, `task_cancelled` and `claim_changed` come
 | A cancel | `item_transitioned`, `task_cancelled`, and `claim_changed` (`ended`) when the task had a claim |
 | A move into Active by a person | `item_transitioned`, `claim_changed` (`taken`) |
 | A move out of Active | `item_transitioned`, `claim_changed` (`ended`) |
+| A note | `item_updated`, `note_appended` (the id of the note) |
+| A promote of a note | `item_updated`, `note_promoted` (the id of the note) for the item of the note, and `item_created` for the new item |
 
 Thus a client that knows only the older kinds keeps working. A client that
 must know what changed reads the precise kind. The events of one write come

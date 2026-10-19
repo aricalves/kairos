@@ -424,6 +424,20 @@ diesel::table! {
 }
 
 diesel::table! {
+    item_notes (id) {
+        id -> Uuid,
+        item_id -> Uuid,
+        seq -> Int4,
+        author_id -> Nullable<Uuid>,
+        author_name -> Nullable<Text>,
+        created_at -> Timestamptz,
+        text -> Text,
+        promoted_to -> Nullable<Text>,
+        agent_key_id -> Nullable<Uuid>,
+    }
+}
+
+diesel::table! {
     item_owners (item_id) {
         item_id -> Uuid,
         user_id -> Uuid,
@@ -847,6 +861,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     item_impacts,
     item_links,
     item_metadata,
+    item_notes,
     item_owners,
     item_relationships,
     metadata_definition_scopes,
