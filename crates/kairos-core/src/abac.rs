@@ -397,7 +397,7 @@ pub fn structure_covers(required: &str) -> bool {
 /// What the server knows about one principal and one item when it decides
 /// an edit (COLLIERY-T-0228). The server loads the four facts; the
 /// decision is [`may_edit_item`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct EditFacts {
     /// The principal created the item (`created_by`).
     pub created_item: bool,

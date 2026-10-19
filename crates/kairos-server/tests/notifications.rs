@@ -538,6 +538,7 @@ async fn the_five_events_reach_the_right_person() {
                 name: "k".into(),
                 expires_at: None,
                 no_expiry: false,
+                scope: None,
             },
         )
         .await

@@ -94,6 +94,11 @@ pub fn router() -> Router<AppState> {
         .merge(activity::router())
 }
 
+/// The name of the admin role in a refusal of [`require_org_admin`] for the
+/// scope of an agent key (KAIROS-T-0536). It is not a capability: the scope
+/// reads it as `manage_structure`.
+pub const ORGANIZATION_ADMIN: &str = "organization_admin";
+
 /// The A-0006 gate for tenant-wide configuration (metadata definitions,
 /// templates): org admins only. The role was resolved from
 /// `public.organization_members` by the tenant middleware.
@@ -101,6 +106,11 @@ pub fn router() -> Router<AppState> {
 /// Relationships left this gate with COLLIERY-T-0228: an edge takes the
 /// link rule ([`crate::api::require_edge_write`]).
 pub fn require_org_admin(tenant: &TenantContext) -> Result<(), ApiError> {
+    // KAIROS-T-0536: the work of the admin role needs `manage_structure` in
+    // the scope of an agent key.
+    if let Some(refusal) = ApiError::outside_key_scope(ORGANIZATION_ADMIN, None) {
+        return Err(refusal);
+    }
     if tenant.role == OrgRole::Admin {
         Ok(())
     } else {
