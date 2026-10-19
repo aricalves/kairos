@@ -614,8 +614,8 @@ caller creates the document. So the link rule lets the caller link it to the
 parent. The caller needs no capability on the board of the parent.
 
 A create with no `board`, or with a null or empty `board`, gets `VALIDATION`,
-with status 422. The refusal names `board`: `details.field` on REST,
-`details.argument` on MCP.
+with status 422. The refusal names `board` in `details.field`, on REST and
+on MCP.
 
 ### Who can change the owner
 
