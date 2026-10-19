@@ -1472,7 +1472,7 @@ pub fn map_rename_error(e: RenameError) -> ApiError {
             }
             .to_string(),
         )
-        .with_details(json!({ "argument": "rename", "short_code": code, "code_prefix": prefix })),
+        .with_details(json!({ "field": "rename", "short_code": code, "code_prefix": prefix })),
         RenameError::Item(e) => map_item_error(e),
         RenameError::Retire(e) => ApiError::internal(e),
         RenameError::Database(e) => ApiError::internal(e),

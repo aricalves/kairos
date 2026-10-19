@@ -1153,6 +1153,8 @@ async fn mcp_endpoint_against_live_stack() {
     assert!(text.contains("type: task (bug)"), "{text}");
     assert!(text.contains("version: 1"), "{text}");
     assert!(text.contains("board: platform-delivery"), "{text}");
+    // KAIROS-T-0561: the creator, because the edit rule names the creator.
+    assert!(text.contains("- created by: "), "{text}");
     assert!(text.contains("kondensator drifts"), "{text}");
     assert!(text.contains(&initiative_code), "parent chain: {text}");
 
@@ -1220,7 +1222,20 @@ async fn mcp_endpoint_against_live_stack() {
     // --- search: full-text finds the task (compact listing) -----------------
     let text = session.call_ok("search", json!({"q": "kondensator"})).await;
     assert!(text.contains(&task_code), "{text}");
-    assert!(text.contains("[bug]"), "{text}");
+    // KAIROS-T-0561: the board and the column, from the search itself.
+    assert!(
+        text.contains(&format!("[bug] platform-delivery/{valid_target}")),
+        "{text}"
+    );
+    // A cut result says how many more and the next offset.
+    let text = session
+        .call_ok(
+            "search",
+            json!({"filter": {"created_by": "me"}, "limit": 1}),
+        )
+        .await;
+    assert!(text.contains("shown (limit 1, offset 0). "), "{text}");
+    assert!(text.contains(" more; offset 1."), "{text}");
     assert!(
         !text.contains("drifts under load"),
         "search must stay compact (no content): {text}"
@@ -1234,6 +1249,33 @@ async fn mcp_endpoint_against_live_stack() {
     assert!(text.contains("- v2 —"), "{text}");
     assert!(text.contains("- v1 —"), "{text}");
     assert!(text.contains("by alice"), "{text}");
+    // KAIROS-T-0561: a cut history says how many more and the next offset.
+    let text = session
+        .call_ok("get_history", json!({"short_code": task_code, "limit": 1}))
+        .await;
+    assert!(
+        text.contains("- v2 —") && !text.contains("- v1 —"),
+        "{text}"
+    );
+    assert!(text.contains("- 1 more; offset 1.\n"), "{text}");
+    let text = session
+        .call_ok(
+            "get_history",
+            json!({"short_code": task_code, "limit": 1, "offset": 1}),
+        )
+        .await;
+    assert!(
+        text.contains("- v1 —") && !text.contains("- v2 —"),
+        "{text}"
+    );
+    assert!(!text.contains("more; offset"), "{text}");
+    let text = session
+        .call_err(
+            "get_history",
+            json!({"short_code": task_code, "version": 1, "offset": 1}),
+        )
+        .await;
+    assert!(text.contains("\"field\":\"offset\""), "{text}");
 
     // ...and one full snapshot by version.
     let text = session
@@ -1334,6 +1376,13 @@ async fn mcp_endpoint_against_live_stack() {
         )
         .await;
     assert!(text.contains("Linked"), "{text}");
+    // KAIROS-T-0561: the search line counts the open blocker.
+    let text = session.call_ok("search", json!({"q": "kondensator"})).await;
+    let line = text
+        .lines()
+        .find(|line| line.starts_with(&format!("- {task_code} ")))
+        .expect("the task line");
+    assert!(line.contains(", blocked by 1"), "{text}");
     let text = session
         .call_ok(
             "unlink_items",
@@ -1469,10 +1518,12 @@ async fn mcp_endpoint_against_live_stack() {
     let text = session.call_ok("list_repositories", json!({})).await;
     assert!(text.contains("payments-api"), "{text}");
     assert!(text.contains("owner: platform"), "{text}");
+    // KAIROS-T-0561: the board by its slug, as `board_items` takes it.
     assert!(
-        text.contains(&delivery.id.to_string()),
+        text.contains("owner's board: platform-delivery ·"),
         "board named: {text}"
     );
+    assert!(!text.contains(&delivery.id.to_string()), "{text}");
     let text = session
         .call_ok("list_repositories", json!({"team": "platform"}))
         .await;
@@ -1515,6 +1566,112 @@ async fn mcp_endpoint_against_live_stack() {
         .call_err("get_repository", json!({"repository": "nope"}))
         .await;
     assert!(text.contains("NOT_FOUND"), "{text}");
+
+    // KAIROS-T-0561: "In flight" and "Not linked to an item" show 50 rows
+    // each, and a cut list says how many more and the next offset. 51 pull
+    // requests link to a live item; 52 branches link to nothing. The rows
+    // go after the check, so the rest of the test does not see them.
+    sql_query("SET search_path TO org_acme, public")
+        .execute(&mut conn)
+        .expect("pinning search_path");
+    let connection: Uuid = {
+        #[derive(QueryableByName)]
+        struct Row {
+            #[diesel(sql_type = SqlUuid)]
+            id: Uuid,
+        }
+        sql_query(
+            "INSERT INTO forge_connections (forge, created_by, repository_id) \
+             VALUES ('github', $1, $2) RETURNING id",
+        )
+        .bind::<SqlUuid, _>(alice)
+        .bind::<SqlUuid, _>(payments.id)
+        .get_result::<Row>(&mut conn)
+        .expect("a forge connection")
+        .id
+    };
+    sql_query(
+        "INSERT INTO item_links (item_id, connection_id, kind, external_id, title, url, \
+                                 state, forge_updated_at) \
+         SELECT d.id, $1, 'pull_request', n::text, 'PR ' || n, \
+                'https://example.test/pr/' || n, 'open', now() - n * interval '1 minute' \
+           FROM (SELECT id FROM entity_directory WHERE deleted_at IS NULL \
+                  ORDER BY short_code LIMIT 1) AS d, \
+                generate_series(1, 51) AS n",
+    )
+    .bind::<SqlUuid, _>(connection)
+    .execute(&mut conn)
+    .expect("51 linked pull requests");
+    sql_query(
+        "INSERT INTO forge_refs (repository_id, kind, external_id, title, url, state, \
+                                 forge_updated_at) \
+         SELECT $1, 'branch', 'b-' || n, 'Branch ' || n, 'https://example.test/b/' || n, \
+                'open', now() - n * interval '1 minute' \
+           FROM generate_series(1, 52) AS n",
+    )
+    .bind::<SqlUuid, _>(payments.id)
+    .execute(&mut conn)
+    .expect("52 branches with no item");
+    sql_query("SET search_path TO public")
+        .execute(&mut conn)
+        .expect("resetting search_path");
+    let text = session
+        .call_ok("get_repository", json!({"repository": "payments-api"}))
+        .await;
+    let in_flight = text
+        .split("\n## In flight\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+        .expect("In flight");
+    assert_eq!(in_flight.matches("pull_request").count(), 50, "{text}");
+    assert!(in_flight.ends_with("- 1 more; offset 50.\n"), "{text}");
+    let not_linked = text
+        .split("\n## Not linked to an item\n")
+        .nth(1)
+        .expect("Not linked");
+    assert_eq!(not_linked.matches("branch b-").count(), 50, "{text}");
+    assert!(not_linked.ends_with("- 2 more; offset 50.\n"), "{text}");
+    let text = session
+        .call_ok(
+            "get_repository",
+            json!({"repository": "payments-api", "offset": 50}),
+        )
+        .await;
+    assert!(text.contains("PR 51"), "{text}");
+    assert!(
+        text.contains("branch b-51") && text.contains("branch b-52"),
+        "{text}"
+    );
+    assert!(!text.contains("more; offset"), "the last part: {text}");
+    let text = session
+        .call_ok(
+            "get_repository",
+            json!({"repository": "payments-api", "offset": 100}),
+        )
+        .await;
+    assert!(
+        text.contains("(none at offset 100: the list has 51)")
+            && text.contains("(none at offset 100: the list has 52)"),
+        "{text}"
+    );
+    sql_query("SET search_path TO org_acme, public")
+        .execute(&mut conn)
+        .expect("pinning search_path");
+    sql_query("DELETE FROM item_links WHERE connection_id = $1")
+        .bind::<SqlUuid, _>(connection)
+        .execute(&mut conn)
+        .expect("removing the links");
+    sql_query("DELETE FROM forge_connections WHERE id = $1")
+        .bind::<SqlUuid, _>(connection)
+        .execute(&mut conn)
+        .expect("removing the connection");
+    sql_query("DELETE FROM forge_refs WHERE repository_id = $1")
+        .bind::<SqlUuid, _>(payments.id)
+        .execute(&mut conn)
+        .expect("removing the branches");
+    sql_query("SET search_path TO public")
+        .execute(&mut conn)
+        .expect("resetting search_path");
 
     // create_item with `repository` and no `board`: the board is the single
     // delivery board of the tenant, the same default a task with no
@@ -2361,7 +2518,7 @@ async fn mcp_endpoint_against_live_stack() {
         "{text}"
     );
     let details: Value = serde_json::from_str(details).expect("the details are JSON");
-    assert_eq!(details["argument"], "column", "{text}");
+    assert_eq!(details["field"], "column", "{text}");
     assert_eq!(details["allowed"][0], "item_type", "{text}");
     let tasks_after: i64 = {
         use kairos_db::schema::tasks::dsl;
@@ -2391,7 +2548,7 @@ async fn mcp_endpoint_against_live_stack() {
          accept that argument. The arguments of this tool are: board, column, repository, \
          include_deleted, limit, offset, team, no_team, details.\n\
          details: {\"allowed\":[\"board\",\"column\",\"repository\",\"include_deleted\",\
-         \"limit\",\"offset\",\"team\",\"no_team\",\"details\"],\"argument\":\"no_such_argument\"}"
+         \"limit\",\"offset\",\"team\",\"no_team\",\"details\"],\"field\":\"no_such_argument\"}"
     );
     let full = session
         .call_ok(
@@ -4023,7 +4180,7 @@ async fn repository_tools_against_live_stack() {
         ),
         "{text}"
     );
-    assert!(text.contains("\"argument\":\"code_index_build\""), "{text}");
+    assert!(text.contains("\"field\":\"code_index_build\""), "{text}");
     assert_eq!(
         kairos_db::jobs::get(&mut conn, waiting.id)
             .unwrap()

@@ -854,7 +854,7 @@ impl NeighborRow {
 /// reported as both. Callers LEFT JOIN it, and `board_columns` after it,
 /// so an item with no row here or no column row is treated as not done
 /// rather than dropped.
-const ITEM_COLUMNS_SQL: &str = "SELECT id, column_id FROM strategies \
+pub(crate) const ITEM_COLUMNS_SQL: &str = "SELECT id, column_id FROM strategies \
      UNION ALL SELECT id, column_id FROM initiatives \
      UNION ALL SELECT id, column_id FROM tasks \
      UNION ALL SELECT id, column_id FROM adrs";
@@ -1650,4 +1650,58 @@ pub fn repository_link_rollup(
     .bind::<Array<Text>, _>(states.iter().map(|s| s.to_string()).collect::<Vec<_>>())
     .bind::<diesel::sql_types::BigInt, _>(limit)
     .load(conn)
+}
+
+/// The SQL of [`repository_link_page`]: the rows of
+/// [`repository_link_rollup`] with the count of all of them.
+const REPOSITORY_LINKS_SQL: &str = "\
+    SELECT l.id, l.kind, l.external_id, l.title, l.url, l.state, l.author, \
+           l.forge_updated_at, \
+           r.forge, r.repo_full_name, \
+           d.short_code AS item_short_code, d.title AS item_title, \
+           count(*) OVER () AS total \
+      FROM item_links l \
+      JOIN forge_connections c ON c.id = l.connection_id AND c.deleted_at IS NULL \
+      JOIN repositories r ON r.id = c.repository_id \
+      JOIN entity_directory d ON d.id = l.item_id AND d.deleted_at IS NULL \
+     WHERE r.id = $1 AND l.state = ANY($2) AND l.kind <> 'issue' \
+     ORDER BY l.forge_updated_at DESC, l.id \
+     LIMIT $3 OFFSET $4";
+
+/// A row of [`REPOSITORY_LINKS_SQL`].
+#[derive(QueryableByName)]
+struct PagedLinkRow {
+    #[diesel(embed)]
+    item: TeamLinkRow,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    total: i64,
+}
+
+/// One page of [`repository_link_rollup`] (KAIROS-T-0561): at most `limit`
+/// rows after `offset`, and the count of all rows, so that `get_repository`
+/// says when there are more. A page past the end runs the query once more
+/// for the count.
+pub fn repository_link_page(
+    conn: &mut PgConnection,
+    repository_id: Uuid,
+    states: &[&str],
+    limit: i64,
+    offset: i64,
+) -> Result<(Vec<TeamLinkRow>, i64), DieselError> {
+    let states: Vec<String> = states.iter().map(|s| s.to_string()).collect();
+    let mut page = |limit: i64, offset: i64| -> Result<Vec<PagedLinkRow>, DieselError> {
+        sql_query(REPOSITORY_LINKS_SQL)
+            .bind::<SqlUuid, _>(repository_id)
+            .bind::<Array<Text>, _>(&states)
+            .bind::<diesel::sql_types::BigInt, _>(limit)
+            .bind::<diesel::sql_types::BigInt, _>(offset)
+            .load(conn)
+    };
+    let rows = page(limit, offset)?;
+    let total = match rows.first() {
+        Some(row) => row.total,
+        None if offset > 0 => page(1, 0)?.first().map_or(0, |row| row.total),
+        None => 0,
+    };
+    Ok((rows.into_iter().map(|r| r.item).collect(), total))
 }
