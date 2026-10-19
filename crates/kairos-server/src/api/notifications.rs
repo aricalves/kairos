@@ -114,7 +114,7 @@ pub(crate) fn list_for(
                     "The notification {id} is unread for you. `read_before` takes a read \
                          notification. Use `before` for the next page of the unread ones."
                 ))
-                .with_details(serde_json::json!({ "argument": "read_before" }))
+                .with_details(serde_json::json!({ "field": "read_before" }))
             })?;
         let unread =
             kairos_db::notifications::unread_count(conn, reader).map_err(ApiError::internal)?;

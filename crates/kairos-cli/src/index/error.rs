@@ -377,8 +377,8 @@ impl ToolError {
             ToolError::Ambiguous { candidates, .. } => Some(json!({ "candidates": candidates })),
             ToolError::UnknownArgument {
                 argument, allowed, ..
-            } => Some(json!({ "argument": argument, "allowed": allowed })),
-            ToolError::MissingArgument { argument, .. } => Some(json!({ "argument": argument })),
+            } => Some(json!({ "field": argument, "allowed": allowed })),
+            ToolError::MissingArgument { argument, .. } => Some(json!({ "field": argument })),
             _ => None,
         }
     }
@@ -562,7 +562,7 @@ mod tests {
         };
         let text = e.text_with(Some(&StillOpen::Nothing));
         assert!(
-            text.contains("succeeds.\ndetails: {\"argument\":\"root\"}"),
+            text.contains("succeeds.\ndetails: {\"field\":\"root\"}"),
             "{text}"
         );
     }

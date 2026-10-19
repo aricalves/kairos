@@ -166,6 +166,10 @@ pub struct Repository {
     /// decides that (COLLIERY-T-0219, COLLIERY-A-0023). `None` only in a
     /// misconfigured tenant (team without a delivery board).
     pub delivery_board_id: Option<String>,
+    /// The slug of that delivery board (KAIROS-T-0561), `None` when
+    /// `delivery_board_id` is `None`.
+    #[serde(default)]
+    pub delivery_board_slug: Option<String>,
     /// Live tasks that link to this repository and are not in a done
     /// column, on all boards of all teams (COLLIERY-T-0219).
     pub open_tasks: i64,

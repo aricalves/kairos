@@ -484,7 +484,7 @@ async fn a_task_in_active_has_a_claim() {
             && text.starts_with("VALIDATION:")
             && text.contains("transition_items")
             && text.contains(&detail.board.slug)
-            && text.contains("\"argument\":\"to\""),
+            && text.contains("\"field\":\"to\""),
         "{text}"
     );
     let unchanged = alice.get_task(&task.short_code).await.expect("task");

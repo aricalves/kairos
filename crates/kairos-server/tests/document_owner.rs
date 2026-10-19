@@ -976,7 +976,7 @@ async fn a_document_names_its_board_and_impacts_a_repository_against_live_stack(
         (
             true,
             format!(
-                "VALIDATION: {}\ndetails: {{\"argument\":\"board\"}}",
+                "VALIDATION: {}\ndetails: {{\"field\":\"board\"}}",
                 no_board_text("call", "`board`")
             ),
         ),
@@ -1298,7 +1298,7 @@ async fn a_document_names_its_board_and_impacts_a_repository_against_live_stack(
         (
             true,
             format!(
-                "VALIDATION: {}\ndetails: {{\"argument\":\"to_board\"}}",
+                "VALIDATION: {}\ndetails: {{\"field\":\"to_board\"}}",
                 board_stays_text("to_board")
             ),
         ),
@@ -2509,7 +2509,7 @@ async fn a_document_names_its_board_and_impacts_a_repository_against_live_stack(
             true,
             "VALIDATION: The call has the argument \"column\". This tool does not accept \
              that argument. The arguments of this tool are: short_code, to_board, rename.\n\
-             details: {\"allowed\":[\"short_code\",\"to_board\",\"rename\"],\"argument\":\"column\"}"
+             details: {\"allowed\":[\"short_code\",\"to_board\",\"rename\"],\"field\":\"column\"}"
                 .to_string(),
         ),
     );

@@ -625,7 +625,7 @@ pub fn list_deliveries_as(
         return Err(ApiError::validation(format!(
             "The limit {limit} is out of range. Send a limit from 1 to {MAX_LOG_LIMIT}."
         ))
-        .with_details(json!({ "argument": "limit" })));
+        .with_details(json!({ "field": "limit" })));
     }
     let targets: Vec<Uuid> = match given(&query.target_id) {
         Some(id) => vec![target_of(conn, &board, &id)?.id],
@@ -649,7 +649,7 @@ pub fn list_deliveries_as(
                         "The log of the board {} has no delivery with the id {id}.",
                         board.slug
                     ))
-                    .with_details(json!({ "argument": "before" })));
+                    .with_details(json!({ "field": "before" })));
                 }
             }
         }

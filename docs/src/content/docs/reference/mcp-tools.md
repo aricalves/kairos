@@ -72,7 +72,8 @@ These hold for every tool.
 | Retired codes | When an item gets a new short code, its old code is retired. Kairos does not issue a retired code again. A read tool (`get_item`, `get_history`, `search`) finds the item from a retired code and shows the current code. A write tool refuses a retired code for the item that it changes. The refusal is `NOT_FOUND`, and it gives the current code. A reference in a write follows a retired code: the `source` and the `target` of `link_items` and `unlink_items`, and the `parent` of `create_item`. The answer then has a line such as `COLLIERY-T-2430 is now SKADI-T-0577.` |
 | Board and team references | A `board`, `to_board`, `team` or `repository` argument accepts either a slug or a UUID. A `column` or `to_column` argument accepts either a column name, case-insensitively, or a UUID. |
 | Listing weight | Listings are compact: short code, title and key fields. Full markdown content arrives only from `get_item` and from `get_history` with a `version`. |
-| Errors | A refusal comes back as an MCP tool error whose text is `CODE: message`, the code being the same stable one as the REST API's error envelope. Where that code has structured `details`, a second line follows: `details: ` and the JSON object. See [Errors](../errors/) for what each code's `details` carries. |
+| Parts of a list | A list can show a part of its rows. Then the list says how many rows come after it, and the `offset` of the next part: `2 more; offset 50.` Send that `offset` to get the next part. `search`, `get_history`, and the two lists of open work of `get_repository` say it this way. |
+| Errors | A refusal comes back as an MCP tool error whose text is `CODE: message`, the code being the same stable one as the REST API's error envelope. Where that code has structured `details`, a second line follows: `details: ` and the JSON object. See [Errors](../errors/) for what each code's `details` carries. The key `field` names the argument that the refusal is about, as it names the field of a REST body. |
 | Audit | Writes are recorded in the activity log by the same code path as the REST API. |
 | Notifications | While the caller has unread [notifications](#your-notifications), each answer (not a refusal) ends with a block: the 5 newest, then `More: call get_events` when there are more. The block stops when the caller marks them read. An agent key keeps its own read state, apart from the person. `get_events` itself has no block, because it lists them. A service account gets no notifications. |
 | Claims | A task in Active has a [claim](../glossary/#claim): the person who works on it. A write to a task that a different person has the claim on succeeds and is recorded. The text of the tool then ends with a line: `Warning: Alice (agent) has the claim on ACME-T-0012 (since 2026-10-09T10:00:00Z). Your change is recorded.` A write by the person who has the claim, also with the agent key of the person, gets no warning. |
@@ -117,7 +118,7 @@ argument and gives the arguments of the tool:
 
 ```text
 VALIDATION: The call has the argument "column". This tool does not accept that argument. The arguments of this tool are: item_type, title, board, …
-details: {"allowed":["item_type","title","board", …],"argument":"column"}
+details: {"allowed":["item_type","title","board", …],"field":"column"}
 ```
 
 An argument can be in an object of the call, such as `filter` of `search`. Then
@@ -279,7 +280,8 @@ The repository directory. Each line of the output has these parts:
 
 - the slug, the forge and the full name
 - `owner`: the single owning team
-- `owner's board`: the delivery board of that team
+- `owner's board`: the slug of the delivery board of that team. Send it to
+  `board_items` as `board`.
 - `open tasks`: the open task count
 - `webhooks connected`, when a webhook connection exists
 
@@ -296,6 +298,9 @@ A result can be a part of the directory. Then its first line gives the count
 of the repositories and the `offset` of the next part:
 `Repositories in the directory: 120. Shown: 50 (limit 50, offset 0). Call
 again with offset 50 for the next part.`
+
+`GET /api/repositories` gives the slug of the board in `delivery_board_slug`,
+and its id in `delivery_board_id`.
 
 Refuses: `VALIDATION` for an unknown `team` — it is a filter value, not a
 path.
@@ -347,6 +352,21 @@ tasks that link to the repository.
 |---|---|---|---|---|
 | `repository` | string | yes | — | Slug or UUID. |
 | `include_deleted` | boolean | no | `false` | Add the archived documents and ADRs of the two sections, each with the mark `[archived]`. |
+| `offset` | integer | no | `0` | The number of rows to skip in `## In flight` and in `## Not linked to an item`. |
+
+The sections `## In flight` and `## Not linked to an item` show 50 rows each,
+newest first. When a section has more rows, its last line gives the count and
+the next `offset`. The same `offset` applies to the two sections. An `offset`
+after the end of a section shows the count of its rows:
+
+```text
+## In flight
+- pull_request 412 [open] Retry the webhook — ACME-T-0012 (Retry the webhook https://github.com/acme/payments-api/pull/412)
+- 3 more; offset 50.
+
+## Not linked to an item
+(none at offset 100: the list has 52)
+```
 
 The section `## Documents and ADRs that impact this repository` has one line
 for each item. The documents come first, in the order of the short code. A
@@ -671,7 +691,7 @@ Refuses: `NOT_FOUND` for an unknown board; `VALIDATION` for a date that is not
 
 Full detail of one item: type, board and column, version, full markdown
 content, metadata values, and relationships — parent chain, children, blockers,
-supporting documents.
+supporting documents. It also names the creator.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
@@ -683,6 +703,14 @@ transition from the column, it says `next: none`:
 
 ```text
 - board: platform-delivery / column: Todo · next: Active, Blocked
+```
+
+The line `created by` gives the person who created the item and the time. It
+gives the display name and the user name. The
+[edit rule](../capabilities/#the-edit-rule) lets the creator edit the item:
+
+```text
+- created by: Robin (robin) on 2026-10-16T22:04:24Z
 ```
 
 A document has no column. It shows its owner board in the line `owner board`,
@@ -810,7 +838,11 @@ An item's content version history — version, editor, timestamp, newest first.
 |---|---|---|---|---|
 | `short_code` | string | yes | — | The item's short code. |
 | `limit` | integer | no | `20` | Maximum versions to list. Clamped to 1–200. |
+| `offset` | integer | no | `0` | The number of versions to skip, newest first. |
 | `version` | integer | no | — | Return that snapshot's full title and content instead of the list. |
+
+The list can show a part of the versions. Then its last line gives the count
+of the older versions and the next `offset`: `- 18 more; offset 20.`
 
 Archived items' history is returned, marked archived.
 
@@ -826,7 +858,7 @@ line has the old code, the new code, the time and who did the move:
 ```
 
 Refuses: `NOT_FOUND` for an unknown short code, or for a `version` with no
-snapshot.
+snapshot. `VALIDATION` for `version` with `limit` or with `offset`.
 
 ### `list_metadata_definitions`
 
@@ -904,6 +936,23 @@ are compact and grouped by type.
 | `owned_by` | string | no | — | Strategies and initiatives that this person owns. Send `me`, a user id, an email or a user name. |
 | `created_by` | string | no | — | Items that this person created. Send `me`, a user id, an email or a user name. |
 | `include_deleted` | boolean | no | `false` | Include archived items, marked `[archived]`. Composes with everything, `q` and `traverse` included, and counts on its own as a constraining filter. |
+
+The first line gives the count and the part:
+`12 found, 10 shown (limit 10, offset 0). 2 more; offset 10.` The words
+`more; offset` show when more rows come.
+
+A task line gives the type, the board and the column. Then, as it applies, it
+gives who has the claim, the count of open blockers and the repository. The
+search reads these facts with the results. Thus you do not need `get_item`
+for each task:
+
+```text
+- KAIROS-T-0511 — Retry the webhook [bug] kairos/Active, claimed by Robin (agent), blocked by 1 [repo:kairos]
+- KAIROS-T-0512 — Write the guide [task] kairos/Todo
+```
+
+An open blocker is a live item that is not done, or a cancelled task. A task
+in a done column has no open blockers. `board_items` counts them the same way.
 
 `filter.repository` gives three types of item:
 
@@ -1959,6 +2008,10 @@ check rather than facts to act on — the reasoning is
 
 Items already joined by an edge are not returned: there is nothing to propose and
 nothing you cannot already see.
+
+Refuses: `NOT_FOUND` for an unknown short code. A fault of the server is
+`INTERNAL`, not `NOT_FOUND`. `GET /api/items/{short_code}/related` has the
+same codes.
 
 The response ends with the section `External references` when the item or a
 proposal has one. Each line has the short code, the label and the URI of one
