@@ -45,7 +45,7 @@ static SCRATCH_DB: scratch::ScratchName =
 /// The tenant tables (sorted): the 21 from the KAIROS-S-0004 DDL plus
 /// `scim_tokens` (KAIROS-T-0025 / A-0016) and `api_keys` (KAIROS-T-0057 /
 /// A-0017 service-account API keys).
-const EXPECTED_TABLES: [&str; 68] = [
+const EXPECTED_TABLES: [&str; 69] = [
     "activity_log",
     "adrs",
     "api_keys",
@@ -70,6 +70,8 @@ const EXPECTED_TABLES: [&str; 68] = [
     "documents",
     // KAIROS-T-0192 (A-0021 rule 6): edges an agent proposed, awaiting a human.
     "edge_proposals",
+    // KAIROS-T-0636: the marks of the embedding sweep.
+    "embedding_dirty",
     "forge_connections",
     // KAIROS-T-0482, KAIROS-T-0480 (COLLIERY-I-0623).
     "forge_issue_intake",

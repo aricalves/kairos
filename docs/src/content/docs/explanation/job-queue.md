@@ -104,8 +104,8 @@ again continues its work where it can:
   of the repository in the database when the model makes it, so the new
   server makes only the summaries that are not there (KAIROS-T-0378). The
   servers do not have to share `KAIROS_CODE_INDEX_DIR`.
-- An embedding batch embeds only the items of its page that are still
-  stale: an item whose vector is current gets no new vector.
+- An embedding batch reads the marked items again. An item whose vector is
+  current gets no new vector.
 
 ## Tries
 
@@ -165,9 +165,9 @@ Each connection of both pools has a `statement_timeout` of 30 seconds, a
 the reason in `last_error`.
 
 An embedding batch holds no connection while the model runs. It reads its
-page on one connection and gives the connection back. Then it calls the
-provider, and writes the vectors on a second connection. A remote provider
-that takes seconds holds no connection of the pool.
+marked items on one connection and gives the connection back. Then it calls
+the provider, and writes the vectors on a second connection. A remote
+provider that takes seconds holds no connection of the pool.
 
 ## Which work runs as jobs
 
@@ -176,7 +176,7 @@ that takes seconds holds no connection of the pool.
 | A requested code-index build | `embedded_build` or `hosted_build` | The API, when a person asks | repository |
 | A code-index update | `embedded_build` or `hosted_build` | The sweep, when the head of the default branch has no index | repository |
 | A first code-index build | `embedded_build` or `hosted_build` | The sweep, for a repository with no index | repository |
-| A batch of the embedding refresh | `embedding_batch` | Each server, at each `KAIROS_EMBED_REFRESH_SECS` | organization |
+| A batch of the embedding refresh | `embedding_batch` | Each server, for an organization with no row; then the row queues itself again after each run | organization (one row) |
 | A webhook delivery | `webhook_delivery` | The change that fires it, in its transaction | delivery |
 | A GitHub write-back | `github_writeback` | The change of a linked item, in its transaction | pull request (one queued job) |
 | An import of the open issues | `issue_import` | The API, when an organization admin asks | repository |
@@ -194,6 +194,10 @@ that runs goes back to the queue (a retry) and a job of its key waits, it
 ends `done`. The job that waits does the write.
 
 A periodic pass adds its next run in the transaction that writes its end.
+An embedding batch keeps one row for each organization (KAIROS-T-0636). When
+a run ends well, the worker puts the same row back in the queue, with its
+tries at 0. The row waits `KAIROS_EMBED_REFRESH_SECS`, or no time after a
+full page.
 The next run is due one interval after the run was due. So a pass has one
 open run at a time, and it runs one time for each interval on all the
 servers together.

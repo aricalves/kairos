@@ -364,6 +364,10 @@ pub fn update(
             .returning(Repository::as_returning())
             .get_result(conn)
             .map_err(|e| map_unique(e, &slug, current.forge, &current.repo_full_name))?;
+        // KAIROS-T-0636: the slug is in the embedded text of each task.
+        if updated.slug != current.slug {
+            crate::embeddings::mark_repository_dirty(conn, id)?;
+        }
         log_activity(
             conn,
             actor,

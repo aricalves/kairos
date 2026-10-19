@@ -39,8 +39,8 @@ use kairos_core::embed_text::{chunk_text, mask_import_footer};
 use kairos_core::primary::{PrimaryInputs, content_hash, primary_text};
 use kairos_core::short_code::ItemType;
 use kairos_db::embeddings::{
-    ChunkWrite, EmbeddingError, PendingItem, StoredModel, metadata_for, pending_primary,
-    store_primary, stored_chunk_hashes, sync_chunks,
+    ChunkWrite, EmbeddingError, PendingItem, StoredModel, metadata_for, pending_items,
+    pending_primary, store_primary, stored_chunk_hashes, sync_chunks,
 };
 use kairos_embed::{EmbedError, Embedding, EmbeddingProvider};
 
@@ -335,14 +335,33 @@ impl EmbeddingService {
         offset: i64,
     ) -> Result<Vec<ItemPlan>, RefreshError> {
         let items = pending_primary(conn, &self.model, limit, offset)?;
-        let ids: Vec<uuid::Uuid> = items.iter().map(|i| i.id).collect();
+        self.plan_all(conn, &items)
+    }
 
+    /// The plans of the items `ids` (KAIROS-T-0636: the marked items of one
+    /// run of the sweep): the reads of [`Self::plan_page`] for these items.
+    /// An id of no item gives no plan.
+    pub fn plan_items(
+        &self,
+        conn: &mut diesel::pg::PgConnection,
+        ids: &[uuid::Uuid],
+    ) -> Result<Vec<ItemPlan>, RefreshError> {
+        let items = pending_items(conn, &self.model, ids)?;
+        self.plan_all(conn, &items)
+    }
+
+    /// The plans of `items`, with one metadata query for all of them.
+    fn plan_all(
+        &self,
+        conn: &mut diesel::pg::PgConnection,
+        items: &[PendingItem],
+    ) -> Result<Vec<ItemPlan>, RefreshError> {
+        let ids: Vec<uuid::Uuid> = items.iter().map(|i| i.id).collect();
         // One metadata query for the page, not one per item.
         let mut by_item: HashMap<uuid::Uuid, Vec<(String, String)>> = HashMap::new();
         for (id, label, value) in metadata_for(conn, &ids)? {
             by_item.entry(id).or_default().push((label, value));
         }
-
         items
             .iter()
             .map(|item| {
@@ -459,67 +478,60 @@ pub fn batch_key(tenant: &str) -> String {
     format!("embedding-batch:{tenant}")
 }
 
-/// The payload of an embedding batch job: where its page starts, and, when
-/// it ended well, where the next page starts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct BatchPayload {
-    pub offset: i64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub next: Option<i64>,
-}
+/// How often the refresher checks that each organization has its batch row
+/// ([`enqueue_batches`]), when the interval of the sweep is shorter. The row
+/// queues itself again after each run, so this check only adds the row of a
+/// new organization, or of an organization whose row failed.
+pub const ENSURE_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// Add the next embedding batch of `tenant`, on a connection of the public
-/// schema (KAIROS-T-0375). Its page starts where the last batch that ended
-/// well stopped, so a failed batch leaves its items for the next one. It
-/// runs `interval` after that batch ended, on whichever server: a
-/// deployment with 2 servers runs one batch of an organization for each
-/// interval, not 2. The older ended batches of the organization are
-/// removed: one row of each organization keeps the cursor. `None`: a batch
-/// of the organization is open, and nothing was added.
+/// Add the embedding batch row of `tenant`, on a connection of the public
+/// schema (KAIROS-T-0375, KAIROS-T-0636). The row runs now, and then queues
+/// itself again after each run ([`crate::jobs::JobHandle::rearm_in`]): one
+/// row for each organization, not one row for each run. The ended rows of
+/// the key go: the rows of the sweep before KAIROS-T-0636, and a row that
+/// failed. `None`: the row of the organization is open, and nothing was
+/// added or removed.
 pub fn enqueue_batch(
     conn: &mut diesel::pg::PgConnection,
     tenant: &str,
-    interval: std::time::Duration,
     max_tries: i32,
 ) -> diesel::QueryResult<Option<kairos_db::jobs::Job>> {
     use diesel::Connection;
     use kairos_db::jobs as queue;
     let key = batch_key(tenant);
     conn.transaction(|conn| {
-        let last = queue::last_done(conn, &key)?;
-        let offset = last
-            .as_ref()
-            .and_then(|job| serde_json::from_str::<BatchPayload>(&job.payload).ok())
-            .and_then(|payload| payload.next)
-            .unwrap_or(0);
-        let run_after = last.as_ref().and_then(|job| job.finished_at).map(|at| {
-            at + chrono::Duration::from_std(interval).unwrap_or(chrono::Duration::zero())
-        });
         let added = queue::enqueue(
             conn,
             &queue::NewJob {
                 kind: crate::jobs::kinds::EMBEDDING_BATCH.to_string(),
                 tenant: Some(tenant.to_string()),
-                payload: serde_json::json!(BatchPayload { offset, next: None }),
+                payload: serde_json::json!({}),
                 priority: crate::jobs::priority::EMBEDDING_BATCH,
                 dedupe_key: Some(key.clone()),
-                run_after,
+                run_after: None,
                 max_tries,
             },
         )?;
-        if let (Some(_), Some(last)) = (&added, &last) {
-            queue::remove_done_except(conn, &key, last.id)?;
+        if let Some(added) = &added {
+            diesel::RunQueryDsl::execute(
+                diesel::sql_query(
+                    "DELETE FROM public.jobs \
+                     WHERE dedupe_key = $1 AND state IN ('done', 'failed') AND id <> $2",
+                )
+                .bind::<diesel::sql_types::Text, _>(&key)
+                .bind::<diesel::sql_types::Uuid, _>(added.id),
+                conn,
+            )?;
         }
         Ok(added)
     })
 }
 
-/// Add the next embedding batch of each organization
+/// Add the embedding batch row of each organization that has none
 /// ([`enqueue_batch`]), and wake the worker. The number added.
 pub async fn enqueue_batches(
     blocking: &crate::blocking::BlockingTenantPool,
     worker: &crate::jobs::Worker,
-    interval: std::time::Duration,
 ) -> usize {
     use crate::error::ApiError;
     let tenants = match blocking
@@ -538,7 +550,7 @@ pub async fn enqueue_batches(
         let slug = tenant.slug.clone();
         match blocking
             .run_public(move |conn| {
-                enqueue_batch(conn, &slug, interval, max_tries).map_err(ApiError::internal)
+                enqueue_batch(conn, &slug, max_tries).map_err(ApiError::internal)
             })
             .await
         {
@@ -555,26 +567,35 @@ pub async fn enqueue_batches(
     added
 }
 
-/// The handler of the embedding batch jobs (KAIROS-T-0375): one page of
-/// [`EmbeddingService::refresh_page_with`] in the organization of the job.
+/// The handler of the embedding batch jobs (KAIROS-T-0375, KAIROS-T-0636):
+/// one page of the marked items of the organization of the job.
 #[derive(Clone)]
 pub struct BatchHandler {
     blocking: crate::blocking::BlockingTenantPool,
     service: Arc<EmbeddingService>,
     batch: i64,
+    interval: std::time::Duration,
+    /// The organizations whose items with no vector of the model this
+    /// process marked ([`kairos_db::embeddings::mark_missing`]).
+    checked: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 impl BatchHandler {
-    /// A handler of pages of `batch` items.
+    /// A handler of pages of `batch` items. A run that leaves no marked item
+    /// queues the row again after `interval`; a run with a full page queues
+    /// it again at once.
     pub fn new(
         blocking: crate::blocking::BlockingTenantPool,
         service: Arc<EmbeddingService>,
         batch: i64,
+        interval: std::time::Duration,
     ) -> Self {
         BatchHandler {
             blocking,
             service,
             batch,
+            interval,
+            checked: Arc::default(),
         }
     }
 
@@ -583,49 +604,75 @@ impl BatchHandler {
         worker.register(crate::jobs::kinds::EMBEDDING_BATCH, Arc::new(self));
     }
 
+    fn checked(&self, tenant: &str) -> bool {
+        self.checked
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(tenant)
+    }
+
     async fn refresh(self, handle: crate::jobs::JobHandle) -> Result<(), crate::jobs::JobError> {
         use crate::error::ApiError;
         use crate::jobs::JobError;
+        use kairos_db::embeddings as store;
         let job = handle.job().clone();
         let tenant = job
             .tenant
             .clone()
             .ok_or_else(|| JobError::fail("The embedding batch has no tenant."))?;
-        let payload: BatchPayload = serde_json::from_str(&job.payload).map_err(|e| {
-            JobError::fail(format!("The payload of the embedding batch is wrong: {e}"))
-        })?;
-        let (service, batch, offset) = (Arc::clone(&self.service), self.batch, payload.offset);
+        let (service, batch) = (Arc::clone(&self.service), self.batch);
         let failed = |reason: String| {
             tracing::warn!(tenant = %tenant, job = %job.id, %reason, "embedding batch failed");
-            JobError::retry(format!(
-                "The embedding batch at item {offset} failed: {reason}"
-            ))
+            JobError::retry(format!("The embedding batch failed: {reason}"))
         };
         let no_database = |e: ApiError| {
             JobError::retry(format!(
-                "The embedding batch at item {offset} could not reach the database: {}",
+                "The embedding batch could not reach the database: {}",
                 e.message
             ))
         };
 
-        // KAIROS-T-0614: three steps. One checkout reads the page; the
-        // provider runs with no connection checked out; a second checkout
-        // writes. A remote provider that takes seconds pins no connection
-        // of the pool while it runs.
+        // KAIROS-T-0614, KAIROS-T-0636: three steps. One checkout reads the
+        // marked items; the provider runs with no connection checked out; a
+        // second checkout writes the vectors and clears the marks. A remote
+        // provider that takes seconds pins no connection of the pool while
+        // it runs.
         let planner = Arc::clone(&service);
-        let (total, plans) = self
+        let check_missing = !self.checked(&tenant);
+        let (marks, plans) = self
             .blocking
             .run(&tenant, move |conn| {
-                let total = kairos_db::embeddings::item_count(conn).map_err(ApiError::internal)?;
+                // The first run of the organization in this process: the
+                // items with no vector of the model get a mark (a new model,
+                // or an item that no write marked).
+                if check_missing {
+                    store::mark_missing(conn, planner.model()).map_err(ApiError::internal)?;
+                }
+                let marks = store::dirty_page(conn, batch).map_err(ApiError::internal)?;
+                if marks.is_empty() {
+                    return Ok(Ok((marks, Vec::new())));
+                }
+                let ids: Vec<uuid::Uuid> = marks.iter().map(|m| m.item_id).collect();
                 // The reason stays a text: the job keeps it in `last_error`.
                 Ok(planner
-                    .plan_page(conn, batch, offset)
-                    .map(|plans| (total, plans))
+                    .plan_items(conn, &ids)
+                    .map(|plans| (marks, plans))
                     .map_err(|e| e.to_string()))
             })
             .await
             .map_err(no_database)?
             .map_err(failed)?;
+        if check_missing {
+            self.checked
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(tenant.clone());
+        }
+        let full = marks.len() as i64 >= batch;
+        if marks.is_empty() {
+            handle.rearm_in(self.interval);
+            return Ok(());
+        }
 
         let embedder = Arc::clone(&service);
         let progress = handle.clone();
@@ -642,7 +689,7 @@ impl BatchHandler {
                 .collect::<Result<Vec<_>, RefreshError>>()
         })
         .await
-        .map_err(|e| JobError::retry(format!("The embedding batch at item {offset} stopped: {e}")))?
+        .map_err(|e| JobError::retry(format!("The embedding batch stopped: {e}")))?
         .map_err(|e| failed(e.to_string()))?;
 
         let writer = Arc::clone(&service);
@@ -660,16 +707,17 @@ impl BatchHandler {
                         Err(e) => return Ok(Err(e.to_string())),
                     }
                 }
+                // Each mark that is still the mark that the read saw. An
+                // item that a write changed after the read has a new mark:
+                // it stays, and the next run reads the new text. A mark of
+                // an item that is gone goes too.
+                store::clear_dirty(conn, &marks).map_err(ApiError::internal)?;
                 progress.progress();
                 Ok(Ok(outcome))
             })
             .await
             .map_err(no_database)?
             .map_err(failed)?;
-        // Wrap at the end, so the sweep keeps cycling: an edit to an item
-        // anywhere in the organization is seen on the next time round.
-        let next = offset + batch;
-        let next = if next >= total { 0 } else { next };
         if outcome.items_changed > 0 {
             tracing::info!(
                 tenant = %tenant,
@@ -678,16 +726,12 @@ impl BatchHandler {
                 "embedded"
             );
         }
-        // The cursor of the next batch.
-        let (id, instance) = (job.id, job.leased_by.unwrap_or_default());
-        let patch = serde_json::json!({ "next": next });
-        self.blocking
-            .run_public(move |conn| {
-                kairos_db::jobs::merge_payload(conn, id, instance, &patch)
-                    .map_err(ApiError::internal)
-            })
-            .await
-            .map_err(|e| JobError::retry(format!("The cursor was not written: {}", e.message)))?;
+        // A full page: more marks can wait, so the row runs again at once.
+        handle.rearm_in(if full {
+            std::time::Duration::ZERO
+        } else {
+            self.interval
+        });
         Ok(())
     }
 }
@@ -699,24 +743,28 @@ impl crate::jobs::JobHandler for BatchHandler {
 }
 
 /// Keep the vectors of every organization current, for ever (KAIROS-T-0190,
-/// KAIROS-T-0375): run the embedding batches on `worker`, and at each
-/// `interval` add the next batch of each organization ([`enqueue_batches`]).
-/// The worker of a server takes the batches of all servers, so 2 servers do
-/// not embed one item twice.
+/// KAIROS-T-0375, KAIROS-T-0636): run the embedding batches on `worker`, and
+/// make sure that each organization has its batch row ([`enqueue_batches`],
+/// at once and then each [`ENSURE_EVERY`] or `interval`, the longer). The
+/// worker of a server takes the batches of all servers, so 2 servers do not
+/// embed one item twice.
 ///
-/// # A cursor in a job, not a queue of items
+/// # A mark for each changed item, and the hash decides
 ///
 /// [[KAIROS-A-0021]] rule 7 requires embedding to happen **off** the write
 /// path: `create_item` must not wait on a model, and a failed embedding must
 /// leave the item created and retrievable lexically.
 ///
-/// Staleness here is **derived**, not recorded: an item needs work exactly when
-/// its stored content hash no longer matches the text it would compose now. A
-/// queue of items would be a second statement of the same fact, and second
-/// statements drift. So a job is a page of the sweep, not a list of items: it
-/// names where its page starts, and it asks the only source of truth there
-/// is. A batch that fails leaves its items stale, and the next batch starts
-/// at the same place.
+/// The write transaction marks the item (`embedding_dirty`, see
+/// [`kairos_db::embeddings`]). A run reads the oldest marks and nothing else
+/// when there is none, so an idle organization costs one small read for each
+/// interval. Before KAIROS-T-0636 each run read a page of every item, and a
+/// full cycle took minutes.
+///
+/// The mark says where to look; the hash still says what to embed. An item
+/// whose text hashes to what is stored goes to no model. A batch that fails
+/// leaves its marks, and the next run reads the same items. An item that a
+/// write changes while the provider runs keeps its new mark.
 ///
 /// The cost is latency rather than correctness. An item is embedded within one
 /// interval rather than immediately, and that is an acceptable trade for a
@@ -740,13 +788,13 @@ pub async fn run_refresher(
         model = %service.model_display(),
         "embedding refresher started"
     );
-    BatchHandler::new(blocking.clone(), Arc::clone(&service), batch).register(&worker);
-    let mut ticker = tokio::time::interval(interval);
+    BatchHandler::new(blocking.clone(), Arc::clone(&service), batch, interval).register(&worker);
+    let mut ticker = tokio::time::interval(interval.max(ENSURE_EVERY));
     // A slow pass must not cause a burst of catch-up ticks afterwards.
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         ticker.tick().await;
-        enqueue_batches(&blocking, &worker, interval).await;
+        enqueue_batches(&blocking, &worker).await;
     }
 }
 

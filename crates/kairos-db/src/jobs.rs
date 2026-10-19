@@ -23,6 +23,8 @@
 //!   not taken again after its lease ran out ([`take_with`]).
 //! - [`cancel_waiting`] fails the jobs of a dedupe key that wait for a
 //!   server.
+//! - [`rearm`] ends a lease well and queues the same row again: a job that
+//!   runs for ever as one row (KAIROS-T-0636).
 //!
 //! A kind can have a unique index of its own on the key of a `queued` job
 //! (the write-back of a pull request or an issue, KAIROS-T-0637): one job
@@ -545,6 +547,30 @@ pub fn remove_done_except(
         .bind::<Text, _>(dedupe_key)
         .bind::<SqlUuid, _>(keep)
         .execute(conn)
+}
+
+/// End the lease of job `id` of the server `instance` well, and queue the
+/// same row again to run after `after_secs` (KAIROS-T-0636): a job that runs
+/// for ever as one row, as the embedding sweep of an organization. Its tries
+/// start again at 0, and `last_error` is cleared. False: the server did not
+/// hold the lease.
+pub fn rearm(
+    conn: &mut PgConnection,
+    id: Uuid,
+    instance: Uuid,
+    after_secs: f64,
+) -> QueryResult<bool> {
+    let n = sql_query(
+        "UPDATE public.jobs SET state = 'queued', leased_by = NULL, lease_until = NULL, \
+             tries = 0, last_error = NULL, finished_at = NULL, \
+             run_after = now() + make_interval(secs => $3) \
+         WHERE id = $1 AND leased_by = $2 AND state = 'leased'",
+    )
+    .bind::<SqlUuid, _>(id)
+    .bind::<SqlUuid, _>(instance)
+    .bind::<Double, _>(after_secs)
+    .execute(conn)?;
+    Ok(n == 1)
 }
 
 /// Put the job `id` of the server `instance` back in the queue with no try

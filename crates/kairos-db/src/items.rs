@@ -1618,6 +1618,11 @@ fn write_content(
                 base.as_ref()
                     .and_then(|(v, text)| text.as_deref().map(|text| (*v, text))),
             )?;
+            // KAIROS-T-0636: the title of a parent is in the text of each
+            // child. The event below marks the item itself.
+            if update.new_title.is_some() {
+                crate::embeddings::mark_children_dirty(conn, item_id)?;
+            }
             if let Some(before) = before {
                 let names = kairos_core::notifications::new_mentions(&before, update.new_content);
                 crate::notifications::on_mentions(conn, item_id, &names, actor)?;

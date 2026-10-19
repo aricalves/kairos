@@ -270,6 +270,21 @@ impl EventKind {
         )
     }
 
+    /// Whether this kind can change the text that the vectors of the item
+    /// are made of (KAIROS-T-0636): its title or content (a create, an edit,
+    /// a note), its parent, or its metadata. [`emit_item_change_by_id`]
+    /// marks the item for the embedding sweep in its outbox statement (the
+    /// mark of [`crate::embeddings::mark_dirty`]).
+    pub fn changes_embedded_text(self) -> bool {
+        matches!(
+            self,
+            EventKind::ItemCreated
+                | EventKind::ItemUpdated
+                | EventKind::RelationshipChanged
+                | EventKind::MetadataChanged
+        )
+    }
+
     /// The wire name (`event` field).
     pub fn as_str(self) -> &'static str {
         match self {
@@ -461,6 +476,11 @@ pub fn emit_item_event_by_id(
 }
 
 /// [`emit_item_event_by_id`] with the field `change` (KAIROS-T-0574).
+///
+/// KAIROS-T-0636: a kind that can change the embedded text
+/// ([`EventKind::changes_embedded_text`]) also marks the item for the
+/// embedding sweep, in the same transaction. Each item write emits its event
+/// here, so each write path marks its item without a call of its own.
 pub fn emit_item_change_by_id(
     conn: &mut PgConnection,
     event: EventKind,
@@ -473,8 +493,15 @@ pub fn emit_item_change_by_id(
         return Ok(());
     };
     let payload = base_payload(event, entity_type, actor, change);
+    // KAIROS-T-0636: a kind that can change the embedded text also marks the
+    // item for the embedding sweep, in this statement.
+    let mark = if event.changes_embedded_text() {
+        format!("WITH {} ", crate::embeddings::mark_item_cte())
+    } else {
+        String::new()
+    };
     sql_query(format!(
-        "INSERT INTO public.event_outbox (schema_name, payload) \
+        "{mark}INSERT INTO public.event_outbox (schema_name, payload) \
          SELECT {SCHEMA_SQL}, $2::jsonb || {PLACEMENT_SQL} || {AGENT_KEY_SQL} \
          FROM ({placement}) p"
     ))
