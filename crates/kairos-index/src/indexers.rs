@@ -503,8 +503,66 @@ impl PythonRunner {
         sync.env("UV_PROJECT_ENVIRONMENT", venv)
             .env("UV_PYTHON_DOWNLOADS", "never")
             .env("UV_CACHE_DIR", deps.join("uv"));
-        run_step(&mut sync, "uv sync").map(|_| ())
+        run_step(&mut sync, "uv sync")
+            .map(|_| ())
+            .map_err(|reason| match python_mismatch(root, python, &uv) {
+                Some(hint) => {
+                    reason.replacen("uv sync failed", &format!("uv sync failed, {hint}"), 1)
+                }
+                None => reason,
+            })
     }
+}
+
+/// What the project asks for and what the runner has, in one line, for a
+/// failed `uv sync` (KAIROS-T-0668): its `requires-python`, `.python-version`
+/// and uv `required-version` against the interpreter and the uv of the
+/// runner. `None` when the project declares none of them.
+fn python_mismatch(root: &Path, python: &Path, uv: &Path) -> Option<String> {
+    let mut asks = Vec::new();
+    let pyproject = std::fs::read_to_string(root.join("pyproject.toml"))
+        .ok()
+        .and_then(|text| text.parse::<toml::Table>().ok());
+    if let Some(requires) = pyproject
+        .as_ref()
+        .and_then(|t| t.get("project")?.get("requires-python")?.as_str())
+    {
+        asks.push(format!("Python {requires}"));
+    }
+    if let Ok(pin) = std::fs::read_to_string(root.join(".python-version"))
+        && let Some(pin) = pin.lines().map(str::trim).find(|l| !l.is_empty())
+    {
+        asks.push(format!(".python-version {pin}"));
+    }
+    if let Some(required) = pyproject
+        .as_ref()
+        .and_then(|t| t.get("tool")?.get("uv")?.get("required-version")?.as_str())
+    {
+        asks.push(format!("uv {required}"));
+    }
+    if asks.is_empty() {
+        return None;
+    }
+    let version = |program: &Path| {
+        Command::new(program)
+            .arg("--version")
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    let mut has = Vec::new();
+    has.extend(version(python));
+    has.extend(version(uv));
+    Some(format!(
+        "the project asks for {}; the runner has {}",
+        asks.join(", "),
+        if has.is_empty() {
+            "unknown versions".to_string()
+        } else {
+            has.join(", ")
+        }
+    ))
 }
 
 impl ScipRunner for PythonRunner {
@@ -799,6 +857,31 @@ mod tests {
                 "scip-python-0.0.0",
                 "uv-0.0.0"
             ]
+        );
+    }
+
+    /// KAIROS-T-0668: a failed `uv sync` names what the project asks for.
+    #[test]
+    fn a_failed_uv_sync_names_the_versions_the_project_asks_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = python_project(dir.path(), &["uv.lock"]);
+        std::fs::write(
+            root.join("pyproject.toml"),
+            "[project]\nrequires-python = \"==3.11.*\"\n\n[tool.uv]\nrequired-version = \">=0.9.0,<0.13\"\n",
+        )
+        .unwrap();
+        std::fs::write(root.join(".python-version"), "3.11\n").unwrap();
+        let report = run_python(dir.path(), &root, fake_python_tools(dir.path(), FAILING_UV));
+        let reason = &report.scip_warnings[0].reason;
+        assert!(
+            reason.starts_with(
+                "uv sync failed, the project asks for Python ==3.11.*, .python-version 3.11, uv >=0.9.0,<0.13; the runner has "
+            ),
+            "{reason}"
+        );
+        assert!(
+            reason.contains("the lock file needs to be updated"),
+            "{reason}"
         );
     }
 
