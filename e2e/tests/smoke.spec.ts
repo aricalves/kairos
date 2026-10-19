@@ -246,9 +246,8 @@ test('GUI smoke: login → boards → create → move → live WS → edit/409 �
     const token = await mintToken({ server: GUI });
     const saved = await getTask(GUI, token, 'PLATFORM-T-0001');
     await expect(editor.getByText(`editing v${saved.version}`)).toBeVisible();
-    // After the save the content shows in Preview again.
-    await expect(contentArea).toHaveCount(0);
-    await editor.getByRole('button', { name: 'Edit', exact: true }).click();
+    // KAIROS-T-0618: the editor stays mounted after a save, in Edit.
+    await expect(contentArea).toBeVisible();
 
     // --- force a 409 via API mid-edit ---
     await contentArea.fill(`My conflicting edit ${Date.now()}`);

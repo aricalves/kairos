@@ -42,6 +42,12 @@ function probeWord(): string {
 const field = (page: Page, label: string, control = 'input') =>
   page.locator('.cl-field', { has: page.locator('label', { hasText: label }) }).locator(control).first();
 
+/** The group of the task-type chips, under its caption "Task types". */
+const taskTypeChips = (page: Page) =>
+  page
+    .locator('.cl-stack', { has: page.getByText('Task types', { exact: true }) })
+    .last();
+
 test('search keeps its state in the URL, and the top bar opens it', async ({ page }) => {
   const token = await mintToken();
   const probe = probeWord();
@@ -66,7 +72,9 @@ test('search keeps its state in the URL, and the top bar opens it', async ({ pag
 
   await test.step('Search writes the filters, the sort and the page size', async () => {
     await field(page, 'Board', 'select').selectOption(BOARD_SLUG);
-    await page.locator('.cl-chip', { hasText: /^task$/ }).first().click();
+    // The chip "task" of the task types; the entity types have a chip
+    // "task" too.
+    await taskTypeChips(page).locator('.cl-chip', { hasText: /^task$/ }).click();
     await field(page, 'Sort', 'select').selectOption('title:asc');
     await field(page, 'Page size', 'select').selectOption('5');
     await page.getByRole('button', { name: 'Search', exact: true }).click();
@@ -87,7 +95,9 @@ test('search keeps its state in the URL, and the top bar opens it', async ({ pag
     await expect(field(page, 'Board', 'select')).toHaveValue(BOARD_SLUG);
     await expect(field(page, 'Sort', 'select')).toHaveValue('title:asc');
     await expect(field(page, 'Page size', 'select')).toHaveValue('5');
-    await expect(page.locator('.cl-chip--active', { hasText: /^task$/ }).first()).toBeVisible();
+    await expect(
+      taskTypeChips(page).locator('.cl-chip--active', { hasText: /^task$/ }),
+    ).toBeVisible();
     await expect(page.locator('tr', { hasText: task.short_code })).toBeVisible({ timeout: 20_000 });
   });
 

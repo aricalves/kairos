@@ -210,6 +210,8 @@ test('the initiative create dialog makes a bucket', async ({ page }) => {
   let code: string | undefined;
   try {
     await login(page);
+    // The landing page is For me (KAIROS-T-0490); this test starts at the boards.
+    await page.goto('/boards');
     await page.locator('.kairos-board-tile', { hasText: 'Initiatives' }).click();
     await page.waitForURL(/\/boards\/initiatives/);
     await page.getByRole('button', { name: 'New initiative', exact: true }).click();
