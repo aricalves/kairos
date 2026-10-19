@@ -149,7 +149,9 @@ endpoints in the OpenAPI spec.
 
 A notification is for one person (KAIROS-T-0381). Its 2 events go only to the
 connections of that person, in the tenant of the notification. A connection of
-a different person never gets them.
+a different person never gets them. One write can tell many persons, for
+example the team of a board. Then the server sends one event, and each person
+of the write gets it.
 
 | `event` | Emitted when |
 |---|---|
@@ -259,9 +261,46 @@ shows no event that the member cannot get without it.
   second to 15 seconds, and adds or removes up to 50 % of that time. Thus
   the clients do not all connect again in the same second after a restart
   of the server.
-- Fan-out is PostgreSQL `LISTEN/NOTIFY` on the `kairos_events` channel,
-  emitted inside the mutating transaction, so PostgreSQL delivers the
-  notification on commit and drops it on rollback.
+- An event comes at most about 100 ms after the commit of its write. See
+  [How the server sends the events](#how-the-server-sends-the-events).
+
+## How the server sends the events
+
+A write puts its events into the table `public.event_outbox`. It does this
+in its own transaction. Thus a write that rolls back sends no event.
+
+Each server process has one emitter. The emitter is part of the owner of
+the `LISTEN` connection. Every 100 ms, the emitter does these steps in one
+transaction:
+
+1. It takes the unsent rows in order, with `FOR UPDATE SKIP LOCKED`.
+2. It finds the boards across the `blocks` edges, with one query for each
+   tenant.
+3. It sends the events with PostgreSQL `NOTIFY` on the channel
+   `kairos_events`. One `NOTIFY` holds a JSON array of events, under 8000
+   bytes.
+4. It marks the rows as sent.
+
+Every 10 seconds, the emitter deletes the rows that it sent more than one
+minute ago.
+
+Each server listens on the channel. It sends each event to the
+connections of the tenant of the event.
+
+The design has these results:
+
+- A write does not send `NOTIFY`. Thus the writes of different tenants do
+  not wait for one database lock at commit.
+- With two server processes, `SKIP LOCKED` gives each row to one emitter.
+  The `NOTIFY` of that emitter reaches the listeners of the two processes.
+  Thus each connection gets each event one time.
+- A process can stop after the commit of a write and before the
+  `NOTIFY`. The row stays unsent. The next pass of an emitter sends it.
+  Thus the event comes late, but it does not go.
+- An emitter can stop before its commit. Then PostgreSQL rolls back its
+  marks and its `NOTIFY`. The next pass sends the rows again.
+- An event of a person goes to many persons in one event. The event holds
+  a list of at most 100 persons. A longer list makes more events.
 
 ## Related reading
 
