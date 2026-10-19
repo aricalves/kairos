@@ -813,6 +813,9 @@ pub(crate) async fn set_repository(
 /// value. `null` clears the field. A field that you do not send keeps its
 /// value. Send at least one field. `expected_updated_at` refuses a write
 /// over a state that changed since.
+///
+/// A write that changes a field writes one activity row with the names of
+/// the fields (KAIROS-T-0557).
 #[utoipa::path(
     put,
     path = "/api/tasks/{short_code}/state",

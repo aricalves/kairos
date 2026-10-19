@@ -319,6 +319,73 @@ pub fn validated_metadata_ops(
     Ok(ops)
 }
 
+/// Apply validated metadata ops to an item: upsert each value, delete each
+/// `None`. The caller's transaction. The shared phase 2 of the REST PATCH
+/// and of MCP `set_metadata`.
+///
+/// A value that changes writes one `update` row to the activity log
+/// (KAIROS-T-0557): `metadata:<slug>=<value>`, and an empty value for a
+/// cleared one. So the activity of the item says who changed it and when.
+/// A value that stays the same writes no row. Metadata has no versions.
+pub fn apply_metadata_ops(
+    conn: &mut PgConnection,
+    item_id: Uuid,
+    entity_type: &str,
+    ops: &[(Uuid, Option<String>)],
+    actor: Uuid,
+) -> Result<(), diesel::result::Error> {
+    use kairos_db::models::templates::NewItemMetadata;
+    use kairos_db::schema::{item_metadata, metadata_definitions};
+    for (definition_id, value) in ops {
+        let before: Option<String> = item_metadata::table
+            .filter(item_metadata::item_id.eq(item_id))
+            .filter(item_metadata::metadata_definition_id.eq(*definition_id))
+            .select(item_metadata::value)
+            .first(conn)
+            .optional()?;
+        match value {
+            Some(value) => {
+                diesel::insert_into(item_metadata::table)
+                    .values(NewItemMetadata {
+                        item_id,
+                        metadata_definition_id: *definition_id,
+                        value: value.clone(),
+                    })
+                    .on_conflict((
+                        item_metadata::item_id,
+                        item_metadata::metadata_definition_id,
+                    ))
+                    .do_update()
+                    .set(item_metadata::value.eq(value))
+                    .execute(conn)?;
+            }
+            None => {
+                diesel::delete(
+                    item_metadata::table
+                        .filter(item_metadata::item_id.eq(item_id))
+                        .filter(item_metadata::metadata_definition_id.eq(*definition_id)),
+                )
+                .execute(conn)?;
+            }
+        }
+        if before.as_deref() != value.as_deref() {
+            let slug: String = metadata_definitions::table
+                .filter(metadata_definitions::id.eq(*definition_id))
+                .select(metadata_definitions::slug)
+                .first(conn)?;
+            kairos_db::item_activity::log_metadata(
+                conn,
+                actor,
+                item_id,
+                entity_type,
+                &slug,
+                value.as_deref(),
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// An item's metadata values hydrated with their definitions, ordered by
 /// definition slug — the shared payload of the metadata GET and PATCH.
 pub fn item_metadata_response(

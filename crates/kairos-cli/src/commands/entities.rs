@@ -12,12 +12,12 @@ use clap::Args;
 use kairos_client::types::{
     Adr, AppendNoteResponse, CreateAdrRequest, CreateDocumentRequest, CreateInitiativeRequest,
     CreateStrategyRequest, CreateTaskRequest, DeleteResponse, Document, ImpactListQuery,
-    Initiative, ItemNote, ListQuery, Pagination, PromoteNoteRequest, PromoteNoteResponse,
-    RestoreResponse, Strategy, Task, UpdateContentRequest,
+    Initiative, ItemNote, ListEnvelope, ListQuery, Pagination, PromoteNoteRequest,
+    PromoteNoteResponse, RestoreResponse, Strategy, Task, UpdateContentRequest,
 };
 use kairos_client::types_meta::{
-    ItemMetadataResponse, ItemRelationshipsResponse, MetadataValue, RelatedItem, SetParentResponse,
-    UpdateMetadataRequest,
+    HistoryVersion, ItemActivityEntry, ItemMetadataResponse, ItemRelationshipsResponse,
+    MetadataValue, RelatedItem, SetParentResponse, UpdateMetadataRequest,
 };
 use kairos_client::types_repositories::Impact;
 use kairos_client::{EntityKind, KairosClient};
@@ -164,6 +164,19 @@ impl ImpactListArgs {
 pub struct GetArgs {
     /// The item's short code (e.g. ACME-T-0001)
     pub short_code: String,
+    #[command(flatten)]
+    pub common: Common,
+}
+
+/// Arguments of the `history` verbs (KAIROS-T-0557).
+#[derive(Args, Debug)]
+pub struct HistoryArgs {
+    /// The item's short code (e.g. ACME-T-0001)
+    pub short_code: String,
+    /// The most rows of each list, the versions and the activity (default
+    /// 20, max 200)
+    #[arg(long)]
+    pub limit: Option<i64>,
     #[command(flatten)]
     pub common: Common,
 }
@@ -620,6 +633,111 @@ pub fn emit_lane(common: &Common, task: &Task) -> Result<(), CliError> {
 /// first, so it does not say whether the lane changed.
 fn lane_line(short_code: &str, work_class: &str) -> String {
     format!("{short_code} is in the {work_class} lane.")
+}
+
+/// The rows of each list of `<noun> history` when `--limit` is not given:
+/// the default of MCP `get_history`.
+const HISTORY_LIMIT: i64 = 20;
+
+/// `<noun> history` output (KAIROS-T-0557): the lines of MCP `get_history`.
+/// `--json` prints the two lists in the list shape of the CLI
+/// (KAIROS-T-0644): `items`, `total` and `next_offset`, under `versions`
+/// and `activity`.
+pub fn emit_history(
+    common: &Common,
+    short_code: &str,
+    versions: &ListEnvelope<HistoryVersion>,
+    activity: &ListEnvelope<ItemActivityEntry>,
+) -> Result<(), CliError> {
+    if common.json {
+        return print_json(&serde_json::json!({
+            "versions": list_json(versions),
+            "activity": list_json(activity),
+        }));
+    }
+    print!("{}", history_text(short_code, versions, activity));
+    Ok(())
+}
+
+/// One server page in the list shape of the CLI (KAIROS-T-0644).
+fn list_json<T: utoipa::ToSchema>(page: &ListEnvelope<T>) -> crate::listing::ListJson<'_, T> {
+    crate::listing::ListJson {
+        items: &page.items,
+        total: page.total,
+        next_offset: crate::listing::next_offset(page.total, page.offset, page.items.len()),
+    }
+}
+
+/// The text of [`emit_history`]. Pure.
+fn history_text(
+    short_code: &str,
+    versions: &ListEnvelope<HistoryVersion>,
+    activity: &ListEnvelope<ItemActivityEntry>,
+) -> String {
+    let who = |name: Option<&str>, id: &str, agent: bool| {
+        let name = name.unwrap_or(id);
+        if agent {
+            format!("{name} (agent)")
+        } else {
+            name.to_string()
+        }
+    };
+    let mut out = format!("# History of {short_code}\n");
+    for version in &versions.items {
+        out.push_str(&format!(
+            "- v{} — {} by {}\n",
+            version.version,
+            seconds(&version.edited_at),
+            who(
+                version.edited_by_name.as_deref(),
+                &version.edited_by,
+                version.agent_key_id.is_some()
+            )
+        ));
+    }
+    out.push_str(&older_line(versions.total, versions.items.len()));
+    out.push_str("\n## Activity\n");
+    if activity.items.is_empty() {
+        out.push_str("No activity is recorded for this item.\n");
+        return out;
+    }
+    for row in &activity.items {
+        out.push_str(&format!(
+            "- {} — {} by {}\n",
+            row.text,
+            seconds(&row.occurred_at),
+            who(
+                row.actor_name.as_deref(),
+                &row.actor_id,
+                row.agent_key_id.is_some()
+            )
+        ));
+    }
+    out.push_str(&older_line(activity.total, activity.items.len()));
+    out
+}
+
+/// The line under a list that does not show each row, or nothing.
+fn older_line(total: i64, shown: usize) -> String {
+    let older = total.saturating_sub(i64::try_from(shown).unwrap_or(i64::MAX));
+    match older {
+        ..=0 => String::new(),
+        1 => "- 1 older row is not shown. Use a larger --limit to see it.\n".to_string(),
+        _ => format!("- {older} older rows are not shown. Use a larger --limit to see them.\n"),
+    }
+}
+
+/// An RFC 3339 time to the second, as MCP `get_history` writes it. A text
+/// that is not a time stays as it is.
+fn seconds(rfc3339: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(rfc3339).map_or_else(
+        |_| rfc3339.to_string(),
+        |time| {
+            time.with_timezone(&chrono::Utc)
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string()
+        },
+    )
 }
 
 /// `set-parent` output (KAIROS-T-0572).
@@ -1872,6 +1990,10 @@ macro_rules! entity_family_cli {
                                       ", including its markdown content"),
                       alias = "get")]
             Show(GetArgs),
+            #[command(about = concat!("Show the history of a ", $noun,
+                                      ": its versions and its activity (moves, claims, ",
+                                      "lane, metadata, state, links), newest first"))]
+            History(HistoryArgs),
             #[command(about = concat!("Compare two versions of a ", $noun,
                                       ": the title and a unified diff of the content. ",
                                       "With one version, compare it with the version before"))]
@@ -1993,6 +2115,15 @@ macro_rules! entity_family_cli {
                             item_context(&client, $kind, &item.short_code).await?
                         };
                         emit_get(&args.common, &item, &context)
+                    }
+                    Self::History(args) => {
+                        let client = client(&args.common)?;
+                        let limit = Some(args.limit.unwrap_or(HISTORY_LIMIT));
+                        let versions =
+                            client.history($kind, &args.short_code, limit, None).await?;
+                        let activity =
+                            client.item_activity($kind, &args.short_code, limit, None).await?;
+                        emit_history(&args.common, &args.short_code, &versions, &activity)
                     }
                     Self::Diff(args) => {
                         let client = client(&args.common)?;
@@ -2562,6 +2693,64 @@ mod tests {
         let err = require_purge_confirm(false, "ACME-T-0001").expect_err("must refuse");
         assert!(err.to_string().contains("cannot undo"), "{err}");
         require_purge_confirm(true, "ACME-T-0001").expect("confirmed passes");
+    }
+
+    /// KAIROS-T-0557: `history` prints the versions, then the activity,
+    /// with names, the agent mark, the time to the second, and a line for
+    /// the rows that the list does not show.
+    #[test]
+    fn history_prints_the_versions_and_the_activity_with_names() {
+        let versions = ListEnvelope {
+            items: vec![HistoryVersion {
+                version: 2,
+                edited_by: "u-1".to_string(),
+                edited_by_name: Some("Robin".to_string()),
+                edited_at: "2026-10-17T10:00:00.123456Z".to_string(),
+                agent_key_id: Some("k-1".to_string()),
+            }],
+            total: 2,
+            limit: 1,
+            offset: 0,
+        };
+        let row = |text: &str, name: Option<&str>| ItemActivityEntry {
+            id: "a".to_string(),
+            action: "transition".to_string(),
+            details: String::new(),
+            text: text.to_string(),
+            actor_id: "u-2".to_string(),
+            actor_name: name.map(str::to_string),
+            agent_key_id: None,
+            occurred_at: "2026-10-17T11:00:00Z".to_string(),
+        };
+        let activity = ListEnvelope {
+            items: vec![
+                row("claim taken: Sam", Some("Sam")),
+                row("moved from Todo to Active", None),
+            ],
+            total: 2,
+            limit: 20,
+            offset: 0,
+        };
+        assert_eq!(
+            history_text("ACME-T-0001", &versions, &activity),
+            "# History of ACME-T-0001\n\
+             - v2 — 2026-10-17T10:00:00Z by Robin (agent)\n\
+             - 1 older row is not shown. Use a larger --limit to see it.\n\
+             \n## Activity\n\
+             - claim taken: Sam — 2026-10-17T11:00:00Z by Sam\n\
+             - moved from Todo to Active — 2026-10-17T11:00:00Z by u-2\n"
+        );
+
+        let none = ListEnvelope {
+            items: Vec::new(),
+            total: 0,
+            limit: 20,
+            offset: 0,
+        };
+        assert!(
+            history_text("ACME-T-0001", &versions, &none)
+                .ends_with("## Activity\nNo activity is recorded for this item.\n")
+        );
     }
 
     /// A task from the JSON of the server, with `extra` fields.

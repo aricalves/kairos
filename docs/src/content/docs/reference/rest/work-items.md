@@ -592,6 +592,9 @@ value. `null` clears the field. A field that you do not send keeps its
 value. Send at least one field. `expected_updated_at` refuses a write
 over a state that changed since.
 
+A write that changes a field writes one activity row with the names of
+the fields (KAIROS-T-0557).
+
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
 | `short_code` | path | yes | `string` | Task short code |

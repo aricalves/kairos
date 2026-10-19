@@ -1265,6 +1265,7 @@ One row of `GET /api/{entity_type}/{short_code}/history`.
 | `agent_key_id` | `string`, nullable | no | The agent key (UUID) of the request that made this change, when an agent made it with the agent key of a person (KAIROS-T-0359). The actor is still the person: show "Alice (agent)". Null for a change made without an agent key, and for each change made before Kairos recorded the key. |
 | `edited_at` | `string` | yes | RFC 3339. |
 | `edited_by` | `string` | yes | Editor user id (UUID). |
+| `edited_by_name` | `string`, nullable | no | The display name of the editor (KAIROS-T-0557). Null for an editor that Kairos does not know. |
 | `version` | `integer` | yes | The content version this snapshot captured. |
 
 ## Impact
@@ -1386,6 +1387,21 @@ The counts of an import of the open issues (KAIROS-T-0483). The job writes them 
 | `message` | `string` | yes | A sentence for a person. |
 | `not_taken` | `integer` | yes | Issues that no task could be made for; `message` says why. |
 | `skipped` | `integer` | yes | Issues that were taken before (by a webhook or an earlier import). |
+
+## ItemActivityEntry
+
+One row of the activity of one item, as returned by `GET /api/{entity_type}/{short_code}/activity` (KAIROS-T-0557).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `action` | `string` | yes | The action of the row, as in [`ActivityEntry::action`]. |
+| `actor_id` | `string` | yes | Who did it (user UUID). |
+| `actor_name` | `string`, nullable | no | The display name of the actor. Null for an actor that Kairos does not know. |
+| `agent_key_id` | `string`, nullable | no | The agent key (UUID) of the request, when an agent made the change with the agent key of a person (KAIROS-T-0359). Show "Alice (agent)". |
+| `details` | `string` | yes | The details of the row, as they are stored. |
+| `id` | `string` | yes | Row id (UUID). |
+| `occurred_at` | `string` | yes | RFC 3339. |
+| `text` | `string` | yes | The row as one line of text, with the names of the people, the boards, the columns and the repositories instead of their ids, for example `moved from Todo to Active` or `claim taken: Alice`. |
 
 ## ItemExternalRefsResponse
 
@@ -1636,6 +1652,17 @@ The S-0005 list envelope: `{items, total, limit, offset}`.
 | `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
 
 ## ListEnvelope_Initiative
+
+The S-0005 list envelope: `{items, total, limit, offset}`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `items` | array of `object` | yes |  |
+| `limit` | `integer` | yes | The applied limit. |
+| `offset` | `integer` | yes | The applied offset. |
+| `total` | `integer` | yes | Rows matching the request, ignoring pagination. Live rows only unless the request asked for archived work as well â `total` and `items` always answer the same question (KAIROS-T-0159). The activity feed counts at most past the larger of 1000 and `offset + limit` (KAIROS-T-0627): a `total` above that bound means "more than the bound". |
+
+## ListEnvelope_ItemActivityEntry
 
 The S-0005 list envelope: `{items, total, limit, offset}`.
 
