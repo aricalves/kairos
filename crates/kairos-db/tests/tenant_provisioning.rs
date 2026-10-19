@@ -45,7 +45,7 @@ static SCRATCH_DB: scratch::ScratchName =
 /// The tenant tables (sorted): the 21 from the KAIROS-S-0004 DDL plus
 /// `scim_tokens` (KAIROS-T-0025 / A-0016) and `api_keys` (KAIROS-T-0057 /
 /// A-0017 service-account API keys).
-const EXPECTED_TABLES: [&str; 68] = [
+const EXPECTED_TABLES: [&str; 69] = [
     "activity_log",
     "adrs",
     "api_keys",
@@ -89,6 +89,8 @@ const EXPECTED_TABLES: [&str; 68] = [
     "item_impacts",
     "item_links",
     "item_metadata",
+    // KAIROS-T-0630: the notes of an item, a row each.
+    "item_notes",
     // KAIROS-T-0411: the owner of a strategy or an initiative.
     "item_owners",
     "item_relationships",
@@ -564,10 +566,33 @@ fn tenant_provisioning_lifecycle() {
             &mut conn,
             "SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace \
              WHERE n.nspname = 'org_acme' AND p.proname = 'item_search_write' \
-               AND p.prosrc LIKE '%setweight%'"
+               AND p.prosrc LIKE '%item_search_vector%'"
         ),
         1,
-        "the trigger function writes the weighted vector in a freshly provisioned tenant"
+        "the trigger function writes the vector of item_search_vector in a freshly provisioned tenant"
+    );
+    // KAIROS-T-0630: the vector is weighted, and it has the text of the
+    // notes; a trigger on item_notes writes it again.
+    assert_eq!(
+        count(
+            &mut conn,
+            "SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace \
+             WHERE n.nspname = 'org_acme' AND p.proname = 'item_search_vector' \
+               AND p.prosrc LIKE '%setweight%' AND p.prosrc LIKE '%item_notes%'"
+        ),
+        1,
+        "the vector is weighted and has the notes in a freshly provisioned tenant"
+    );
+    assert_eq!(
+        count(
+            &mut conn,
+            "SELECT count(*) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             WHERE n.nspname = 'org_acme' AND c.relname = 'item_notes' \
+               AND t.tgname = 'item_notes_search'"
+        ),
+        1,
+        "a note writes the vector of its item again"
     );
     assert_eq!(
         count(

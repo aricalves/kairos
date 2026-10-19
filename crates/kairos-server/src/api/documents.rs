@@ -306,7 +306,9 @@ pub(crate) async fn get_document(
         .blocking
         .run(&tenant.slug, move |conn| {
             let document = load(conn, &short_code, Liveness::IncludeArchived)?;
-            render(conn, document)
+            let mut document = render(conn, document)?;
+            document.notes = crate::api::item_notes(conn, &document.id)?;
+            Ok(document)
         })
         .await?;
     Ok(Json(document))
@@ -320,8 +322,8 @@ pub(crate) async fn get_document(
 pub(crate) struct CreateWording {
     /// `request` or `call`.
     pub request: &'static str,
-    /// The key of `details` that names an input in a refusal: `field` for
-    /// a body, `argument` for a tool.
+    /// The key of `details` that names an input in a refusal: `field`, for
+    /// a body and for a tool (KAIROS-T-0561).
     pub details_key: &'static str,
     /// The name of the board input.
     pub board: &'static str,
@@ -585,8 +587,8 @@ pub(crate) struct BoardChange {
 
 /// The refusal of a change of the owner board with no board
 /// (COLLIERY-T-3109): each document has an owner board, so the board
-/// cannot be removed. `details_key` is `field` for a body and `argument`
-/// for a tool, and `name` is the name of the input on that surface
+/// cannot be removed. `details_key` is `field` (KAIROS-T-0561), and
+/// `name` is the name of the input on that surface
 /// (`board`, or `to_board` for `move_item`).
 pub(crate) fn board_is_required(details_key: &str, name: &str) -> ApiError {
     ApiError::validation(format!(
@@ -660,7 +662,7 @@ pub(crate) fn change_board(
                         document.short_code
                     ),
                 )
-                .with_details(json!({ "argument": "rename" })));
+                .with_details(json!({ "field": "rename" })));
             }
             renamed = Some(
                 kairos_db::code_rename::rename_item(

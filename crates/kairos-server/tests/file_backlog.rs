@@ -104,6 +104,29 @@ fn forbidden<T: std::fmt::Debug>(result: Result<T, Error>, what: &str) {
     assert!(matches!(err, Error::Forbidden { .. }), "{what}: {err}");
 }
 
+/// KAIROS-T-0566: a task starts in the entry column, for every caller. Any
+/// other column is a 422 on `column_id` that names the entry column.
+fn not_the_entry_column<T: std::fmt::Debug>(result: Result<T, Error>, what: &str) {
+    let err = rejection(result);
+    match &err {
+        Error::Validation {
+            status: 422,
+            message,
+            field,
+            details,
+        } => {
+            assert_eq!(field.as_deref(), Some("column_id"), "{what}: {err}");
+            assert!(
+                message.contains("entry column of its board (Backlog)")
+                    && message.contains("move the task"),
+                "{what}: {message}"
+            );
+            assert_eq!(details["entry_column"], "Backlog", "{what}: {details}");
+        }
+        other => panic!("{what}: expected 422 VALIDATION, got {other}"),
+    }
+}
+
 /// Minimal MCP session over HTTP (initialize → initialized → tools/call).
 struct McpSession {
     http: reqwest::Client,
@@ -469,23 +492,37 @@ async fn file_backlog_against_live_stack() {
         .expect("second column")
         .id
         .clone();
+    // KAIROS-T-0566: a manager of the board does not create into the
+    // second column either. The task starts in the entry column, and a
+    // move takes it further.
+    not_the_entry_column(
+        alice
+            .create_task(&CreateTaskRequest {
+                board_id: Some(web_board.clone()),
+                column_id: Some(web_second_column.clone()),
+                work_class: Some("planned".into()),
+                ..filing.clone()
+            })
+            .await,
+        "a manager into the second column",
+    );
     let own_planned = alice
         .create_task(&CreateTaskRequest {
             board_id: Some(web_board.clone()),
-            column_id: Some(web_second_column.clone()),
             work_class: Some("planned".into()),
             ..filing.clone()
         })
         .await
-        .expect("her own board, planned, second column");
+        .expect("her own board, planned");
     assert_eq!(own_planned.work_class, "planned");
-    assert_eq!(own_planned.column_id, web_second_column);
+    assert_ne!(own_planned.column_id, web_second_column);
 
     // =======================================================================
     // The negative suite: nothing else opens up
     // =======================================================================
-    // Not into any other column — 403, never silently re-routed.
-    forbidden(
+    // Not into any other column — never silently re-routed. Since
+    // KAIROS-T-0566 a 422 for every caller, a manager too.
+    not_the_entry_column(
         alice
             .create_task(&CreateTaskRequest {
                 column_id: Some(todo.clone()),
@@ -496,7 +533,7 @@ async fn file_backlog_against_live_stack() {
     );
     // The same with no repository: the repository never was what let the
     // column through.
-    forbidden(
+    not_the_entry_column(
         alice
             .create_task(&CreateTaskRequest {
                 column_id: Some(todo.clone()),

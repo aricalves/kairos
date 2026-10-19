@@ -551,6 +551,7 @@ async fn adr_by(client: &KairosClient, board: &str, title: &str) -> Adr {
             content: "original content".into(),
             decision_maker: None,
             decision_date: None,
+            parent: None,
         })
         .await
         .unwrap_or_else(|e| panic!("creating ADR {title:?}: {e}"))
@@ -975,7 +976,7 @@ async fn a_document_names_its_board_and_impacts_a_repository_against_live_stack(
         (
             true,
             format!(
-                "VALIDATION: {}\ndetails: {{\"argument\":\"board\"}}",
+                "VALIDATION: {}\ndetails: {{\"field\":\"board\"}}",
                 no_board_text("call", "`board`")
             ),
         ),
@@ -1297,7 +1298,7 @@ async fn a_document_names_its_board_and_impacts_a_repository_against_live_stack(
         (
             true,
             format!(
-                "VALIDATION: {}\ndetails: {{\"argument\":\"to_board\"}}",
+                "VALIDATION: {}\ndetails: {{\"field\":\"to_board\"}}",
                 board_stays_text("to_board")
             ),
         ),
@@ -2448,8 +2449,9 @@ async fn a_document_names_its_board_and_impacts_a_repository_against_live_stack(
     // KAIROS-T-0385 added the 3 tools of the dispatch rules. KAIROS-T-0434
     // added the 5 tools of the team page. KAIROS-T-0489 added my_work.
     // KAIROS-T-0555 added set_lifecycle. KAIROS-T-0556 added list_members.
-    // KAIROS-T-0572 added set_parent.
-    checks.same("H1: the number of tools", tools.len(), 75);
+    // KAIROS-T-0572 added set_parent. KAIROS-T-0558 added the 3 tools of
+    // the webhook targets.
+    checks.same("H1: the number of tools", tools.len(), 78);
     let schema_of = |name: &str| -> Value {
         tools
             .iter()
@@ -2507,7 +2509,7 @@ async fn a_document_names_its_board_and_impacts_a_repository_against_live_stack(
             true,
             "VALIDATION: The call has the argument \"column\". This tool does not accept \
              that argument. The arguments of this tool are: short_code, to_board, rename.\n\
-             details: {\"allowed\":[\"short_code\",\"to_board\",\"rename\"],\"argument\":\"column\"}"
+             details: {\"allowed\":[\"short_code\",\"to_board\",\"rename\"],\"field\":\"column\"}"
                 .to_string(),
         ),
     );

@@ -13,6 +13,7 @@
 //!   `run_after` is past. `FOR UPDATE SKIP LOCKED`: 2 servers never lease
 //!   one job. The lease counts a try. A `leased` job whose lease ran out is
 //!   taken as a `queued` one: its server stopped or stalled.
+//!   [`take_with`] takes some kinds only by their dedupe key ([`Keyed`]).
 //! - [`heartbeat`] moves the lease of a job forward, when the job made
 //!   progress.
 //! - [`complete`], [`release`] and [`fail`] end a lease. [`release`] queues
@@ -25,12 +26,20 @@
 //! - [`rearm`] ends a lease well and queues the same row again: a job that
 //!   runs for ever as one row (KAIROS-T-0636).
 //!
+//! A kind can have a unique index of its own on the key of a `queued` job
+//! (the write-back of a pull request or an issue, KAIROS-T-0637): one job
+//! waits for each key, and a job that runs does not count. Such a kind adds
+//! its jobs with [`enqueue_with_conflict`]. When [`release`], [`requeue`]
+//! or [`defer`] would put a job back in the queue next to a waiting job of
+//! its key, the job ends `done`: the waiting job does its work.
+//!
 //! Each write of a lease names the server (`leased_by`): a server that lost
 //! its lease to another server changes nothing.
 
 use chrono::{DateTime, Utc};
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
+use diesel::result::{DatabaseErrorKind, Error as DieselError};
 use diesel::sql_query;
 use diesel::sql_types::{
     Array, BigInt, Double, Integer, Nullable, Text, Timestamptz, Uuid as SqlUuid,
@@ -127,14 +136,31 @@ impl NewJob {
     }
 }
 
+/// The conflict target of [`enqueue`]: the index `jobs_dedupe_key`.
+const DEDUPE_CONFLICT: &str =
+    "(dedupe_key) WHERE state IN ('queued', 'leased') AND dedupe_key IS NOT NULL";
+
 /// Add `job`. `None`: a `queued` or `leased` job has its `dedupe_key`, and
 /// nothing was added.
 pub fn enqueue(conn: &mut PgConnection, job: &NewJob) -> QueryResult<Option<Job>> {
+    enqueue_with_conflict(conn, job, DEDUPE_CONFLICT)
+}
+
+/// Add `job`, unless the unique index that `conflict` names (the conflict
+/// target of `ON CONFLICT`, as SQL: the columns or expressions, and the
+/// `WHERE` of a partial index) has its key: then `None`, and nothing was
+/// added. A transaction that adds the same key at the same time waits for
+/// this one, and adds nothing when this one commits (KAIROS-T-0637).
+/// `conflict` is SQL: a constant of the code, never an input.
+pub fn enqueue_with_conflict(
+    conn: &mut PgConnection,
+    job: &NewJob,
+    conflict: &'static str,
+) -> QueryResult<Option<Job>> {
     sql_query(format!(
         "INSERT INTO public.jobs (kind, tenant, payload, priority, dedupe_key, run_after, max_tries) \
          VALUES ($1, $2, $3::jsonb, $4, $5, COALESCE($6, now()), $7) \
-         ON CONFLICT (dedupe_key) WHERE state IN ('queued', 'leased') AND dedupe_key IS NOT NULL \
-         DO NOTHING \
+         ON CONFLICT {conflict} DO NOTHING \
          RETURNING {COLUMNS}"
     ))
     .bind::<Text, _>(&job.kind)
@@ -158,17 +184,31 @@ pub fn take(
     kinds: &[String],
     lease_secs: f64,
 ) -> QueryResult<Option<Job>> {
-    take_with(conn, instance, kinds, &[], lease_secs)
+    take_with(conn, instance, kinds, &[], &Keyed::default(), lease_secs)
+}
+
+/// The kinds whose jobs a server takes only by their dedupe key
+/// (KAIROS-T-0466): a job of one of `kinds` is taken only when its
+/// `dedupe_key` is one of `keys`. The periodic passes: a server takes only
+/// the runs of the passes that it runs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Keyed {
+    /// The kinds that are taken by key.
+    pub kinds: Vec<String>,
+    /// The dedupe keys of those kinds that the server takes.
+    pub keys: Vec<String>,
 }
 
 /// [`take`], but a `leased` job of one of `no_retake` whose lease ran out
 /// is not taken again: [`fail_expired_with`] fails it (KAIROS-T-0399, a
-/// code index build that took its server down).
+/// code index build that took its server down). A job of a kind of `keyed`
+/// is taken only when its key is one of the keys of `keyed`.
 pub fn take_with(
     conn: &mut PgConnection,
     instance: Uuid,
     kinds: &[String],
     no_retake: &[String],
+    keyed: &Keyed,
     lease_secs: f64,
 ) -> QueryResult<Option<Job>> {
     if kinds.is_empty() {
@@ -189,6 +229,7 @@ pub fn take_with(
                AND (state = 'queued' \
                     OR (state = 'leased' AND lease_until < now() AND tries < max_tries \
                         AND NOT (kind = ANY($4)))) \
+               AND (NOT (kind = ANY($5)) OR dedupe_key = ANY($6)) \
              ORDER BY priority DESC, run_after, created_at \
              LIMIT 1 \
              FOR UPDATE SKIP LOCKED) \
@@ -198,6 +239,8 @@ pub fn take_with(
     .bind::<Double, _>(lease_secs)
     .bind::<Array<Text>, _>(kinds)
     .bind::<Array<Text>, _>(no_retake)
+    .bind::<Array<Text>, _>(&keyed.kinds)
+    .bind::<Array<Text>, _>(&keyed.keys)
     .get_result(conn)
     .optional()
 }
@@ -238,8 +281,22 @@ pub fn complete(conn: &mut PgConnection, id: Uuid, instance: Uuid) -> QueryResul
 /// End the lease of job `id` of the server `instance` with `error`: the job
 /// is `queued` again when it has tries left (`run_after` now plus
 /// `retry_after_secs`), else `failed`. The job after the write; `None`: the
-/// server did not hold the lease.
+/// server did not hold the lease. A job of a kind with a queued-key index
+/// whose key has a waiting job ends `done` instead (see the module).
 pub fn release(
+    conn: &mut PgConnection,
+    id: Uuid,
+    instance: Uuid,
+    error: &str,
+    retry_after_secs: f64,
+) -> QueryResult<Option<Job>> {
+    let back = back_to_queue(conn, id, instance, Some(error), |conn| {
+        release_row(conn, id, instance, error, retry_after_secs)
+    })?;
+    Ok(back.unwrap_or_else(|done| done))
+}
+
+fn release_row(
     conn: &mut PgConnection,
     id: Uuid,
     instance: Uuid,
@@ -389,15 +446,17 @@ pub fn cancel_waiting(
 /// (KAIROS-T-0374). It keeps its `run_after`, so it keeps its place in its
 /// priority. False: the server did not hold the lease.
 pub fn requeue(conn: &mut PgConnection, id: Uuid, instance: Uuid) -> QueryResult<bool> {
-    let n = sql_query(
-        "UPDATE public.jobs SET state = 'queued', leased_by = NULL, lease_until = NULL, \
-             tries = GREATEST(tries - 1, 0) \
-         WHERE id = $1 AND leased_by = $2 AND state = 'leased'",
-    )
-    .bind::<SqlUuid, _>(id)
-    .bind::<SqlUuid, _>(instance)
-    .execute(conn)?;
-    Ok(n == 1)
+    let back = back_to_queue(conn, id, instance, None, |conn| {
+        sql_query(
+            "UPDATE public.jobs SET state = 'queued', leased_by = NULL, lease_until = NULL, \
+                 tries = GREATEST(tries - 1, 0) \
+             WHERE id = $1 AND leased_by = $2 AND state = 'leased'",
+        )
+        .bind::<SqlUuid, _>(id)
+        .bind::<SqlUuid, _>(instance)
+        .execute(conn)
+    })?;
+    Ok(back.map_or_else(|done| done.is_some(), |n| n == 1))
 }
 
 /// Add the fields of `patch` (a JSON object) to the payload of the job
@@ -525,18 +584,61 @@ pub fn defer(
     reason: &str,
     after_secs: f64,
 ) -> QueryResult<bool> {
-    let n = sql_query(
-        "UPDATE public.jobs SET state = 'queued', leased_by = NULL, lease_until = NULL, \
-             tries = GREATEST(tries - 1, 0), last_error = $3, \
-             run_after = now() + make_interval(secs => $4) \
-         WHERE id = $1 AND leased_by = $2 AND state = 'leased'",
-    )
-    .bind::<SqlUuid, _>(id)
-    .bind::<SqlUuid, _>(instance)
-    .bind::<Text, _>(reason)
-    .bind::<Double, _>(after_secs)
-    .execute(conn)?;
-    Ok(n == 1)
+    let back = back_to_queue(conn, id, instance, Some(reason), |conn| {
+        sql_query(
+            "UPDATE public.jobs SET state = 'queued', leased_by = NULL, lease_until = NULL, \
+                 tries = GREATEST(tries - 1, 0), last_error = $3, \
+                 run_after = now() + make_interval(secs => $4) \
+             WHERE id = $1 AND leased_by = $2 AND state = 'leased'",
+        )
+        .bind::<SqlUuid, _>(id)
+        .bind::<SqlUuid, _>(instance)
+        .bind::<Text, _>(reason)
+        .bind::<Double, _>(after_secs)
+        .execute(conn)
+    })?;
+    Ok(back.map_or_else(|done| done.is_some(), |n| n == 1))
+}
+
+/// Why a job ended `done` when it went back to the queue: a waiting job of
+/// its key does its work (KAIROS-T-0637).
+pub const SUPERSEDED: &str = "A queued job of the same key waits, and does this work.";
+
+/// Run `back`, the write that puts the leased job `id` back in the queue,
+/// in a savepoint. A unique violation there means that a `queued` job of
+/// the same key waits (a queued-key index of the kind, KAIROS-T-0637): the
+/// job then ends `done`, with `reason` and [`SUPERSEDED`] in `last_error`.
+/// `Ok(Ok(_))`: the result of `back`; `Ok(Err(_))`: the job after the end,
+/// `None` when the server did not hold the lease.
+fn back_to_queue<T>(
+    conn: &mut PgConnection,
+    id: Uuid,
+    instance: Uuid,
+    reason: Option<&str>,
+    back: impl FnOnce(&mut PgConnection) -> QueryResult<T>,
+) -> QueryResult<Result<T, Option<Job>>> {
+    match conn.transaction::<T, DieselError, _>(back) {
+        Ok(value) => Ok(Ok(value)),
+        Err(DieselError::DatabaseError(DatabaseErrorKind::UniqueViolation, _)) => {
+            let error = match reason {
+                Some(reason) => format!("{reason} {SUPERSEDED}"),
+                None => SUPERSEDED.to_string(),
+            };
+            let row = sql_query(format!(
+                "UPDATE public.jobs SET state = 'done', finished_at = now(), lease_until = NULL, \
+                     last_error = $3 \
+                 WHERE id = $1 AND leased_by = $2 AND state = 'leased' \
+                 RETURNING {COLUMNS}"
+            ))
+            .bind::<SqlUuid, _>(id)
+            .bind::<SqlUuid, _>(instance)
+            .bind::<Text, _>(&error)
+            .get_result(conn)
+            .optional()?;
+            Ok(Err(row))
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Set the `max_tries` of the job `id` of the server `instance`: a kind

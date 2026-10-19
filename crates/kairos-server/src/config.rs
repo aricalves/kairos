@@ -94,7 +94,8 @@ impl ServerRole {
 
     /// True: this server takes the jobs of `kind`. A build kind goes to a
     /// server that builds; the periodic passes go to each server, and each
-    /// server runs only its passes ([`Self::runs_pass`]); each other kind
+    /// server takes only the runs of its passes ([`Self::runs_pass`],
+    /// KAIROS-T-0466); each other kind
     /// goes to a server that serves the API.
     pub fn takes(self, kind: &str) -> bool {
         use crate::jobs::kinds;
@@ -149,8 +150,8 @@ pub struct AppConfig {
     /// `KAIROS_POOL_SIZE` — the connections of each of the two pools of a
     /// server, the async one of the middleware and the blocking one of the
     /// handlers (default 16; KAIROS-T-0608). A server holds up to twice
-    /// this many connections, plus `KAIROS_JOB_POOL_SIZE` for the jobs and
-    /// one for LISTEN.
+    /// this many connections, plus `KAIROS_JOB_POOL_SIZE` for the jobs,
+    /// one for LISTEN and one for the event emitter (KAIROS-T-0632).
     pub pool_size: u32,
     /// `KAIROS_POOL_MIN_IDLE` — the connections the blocking pool opens at
     /// start and keeps idle (default 2), so the first requests after a
@@ -876,6 +877,7 @@ fn parse_jobs(
         ("KAIROS_JOB_LIMIT_WEBHOOK_DELIVERY", kinds::WEBHOOK_DELIVERY),
         ("KAIROS_JOB_LIMIT_GITHUB_WRITEBACK", kinds::GITHUB_WRITEBACK),
         ("KAIROS_JOB_LIMIT_ISSUE_IMPORT", kinds::ISSUE_IMPORT),
+        ("KAIROS_JOB_LIMIT_ISSUE_WRITEBACK", kinds::ISSUE_WRITEBACK),
     ] {
         let default = settings.limit(kind);
         let limit: usize = parse_num(get, var, default)?;
@@ -1314,6 +1316,7 @@ mod tests {
         assert!(!config.webhooks.allow_private);
         assert_eq!(config.jobs.limit("webhook_delivery"), 4);
         assert_eq!(config.jobs.limit("github_writeback"), 2);
+        assert_eq!(config.jobs.limit("issue_writeback"), 2);
         assert_eq!(config.writeback.api_url, "https://api.github.com");
 
         let mut vars = MINIMAL.to_vec();
@@ -1479,6 +1482,7 @@ mod tests {
             kinds::EMBEDDING_BATCH,
             kinds::WEBHOOK_DELIVERY,
             kinds::GITHUB_WRITEBACK,
+            kinds::ISSUE_WRITEBACK,
             "site_cleanup",
         ];
         for kind in builds {

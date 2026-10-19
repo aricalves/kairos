@@ -196,6 +196,29 @@ pub struct ItemDetail {
     /// no state, for the other families, and from an older server.
     #[serde(default)]
     pub state: Option<State>,
+    /// The notes of the item (KAIROS-T-0630), in the order of their ids.
+    /// The read of one item has them. The answer of a write has none
+    /// (`None`): the page keeps the notes that it shows.
+    #[serde(default)]
+    pub notes: Option<Vec<Note>>,
+}
+
+/// mirror of: `kairos_client::types::ItemNote` (KAIROS-T-0630).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct Note {
+    /// `n-3`.
+    pub id: String,
+    #[serde(default)]
+    pub author: String,
+    /// RFC 3339.
+    #[serde(default)]
+    pub created_at: String,
+    /// Markdown.
+    #[serde(default)]
+    pub text: String,
+    /// The draft ADR or document that a promote made from the note.
+    #[serde(default)]
+    pub promoted_to: Option<String>,
 }
 
 /// mirror of: `kairos_client::types::TaskState`.

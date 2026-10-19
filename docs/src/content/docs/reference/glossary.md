@@ -391,9 +391,12 @@ document is a move. See [Capabilities](../capabilities/#the-edit-rule).
 
 ## entry column
 
-A board's first column by position, among its live columns. A new item goes
-there by default. A task that moves to a different delivery board goes there. A
-[request](#request) goes there.
+A board's first column by position, among its live columns. A new task and a
+new initiative start there. Kairos refuses a create into a different column
+(KAIROS-T-0566, KAIROS-T-0643). Create the item, then move it.
+
+A new strategy or ADR goes there by default. A task that moves to a different delivery board
+goes there. A [request](#request) goes there.
 
 ## external reference
 
@@ -516,8 +519,8 @@ history. Also called a *work item*.
 
 The rule that decides who can write a [relationship](#relationship). A
 principal can create or remove an edge when the principal can edit the item at
-one end. The [edit rule](#edit-rule) decides each end. The rule is the same
-for each relationship type. See
+one end. The [edit rule](#edit-rule) decides each end. The create of a
+`blocks` edge needs the target, and the source alone gives a proposal. See
 [Capabilities](../capabilities/#who-can-write-relationships).
 
 The confirm of an edge proposal does not take this rule. The grant

@@ -187,6 +187,7 @@ async fn adr(svc: &KairosClient, board: &str, title: &str) -> Adr {
         content: "The decision.".into(),
         decision_maker: None,
         decision_date: None,
+        parent: None,
     })
     .await
     .unwrap_or_else(|e| panic!("ADR {title:?}: {e}"))

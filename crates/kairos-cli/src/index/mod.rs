@@ -29,6 +29,8 @@
 //!   MCP tool `duplicates`.
 //! - `kairos index mcp` serves the code tools to an agent over stdio
 //!   ([`mcp`]).
+//! - `kairos index upload` sends the index of the checkout to Kairos as the
+//!   index of its HEAD commit ([`upload`], KAIROS-T-0592).
 //!
 //! The index is `.kairos/index.db` in the checkout. Git must not track it,
 //! so a build adds it to `.git/info/exclude` when git does not ignore it
@@ -46,6 +48,7 @@ mod error;
 mod mcp;
 mod query;
 mod report;
+mod upload;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -58,6 +61,10 @@ use kairos_index::{
 };
 
 pub use error::IndexCommandError;
+
+// KAIROS-T-0646: `kairos repos local` reads the settings and the remotes as
+// `kairos index` does.
+pub(crate) use base::{normalized_remote, settings};
 
 use crate::context::print_json;
 use crate::error::CliError;
@@ -191,6 +198,19 @@ pub enum IndexCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Send the index of the checkout to Kairos as the index of its HEAD commit, for example from CI. The tree must have no changes that are not committed
+    Upload {
+        #[command(flatten)]
+        root: RootArg,
+        #[command(flatten)]
+        remote: base::RemoteArgs,
+        /// The branch, the pull request or the tag of the index, for example main, pull/12 or v1.0.0. Default: the branch of the checkout
+        #[arg(long = "ref", value_name = "REF")]
+        r#ref: Option<String>,
+        /// Print the JSON of the stored index, in place of the text
+        #[arg(long)]
+        json: bool,
+    },
     /// Serve the code tools of the index to an agent: MCP over stdio
     Mcp {
         #[command(flatten)]
@@ -273,6 +293,12 @@ impl IndexCommand {
                 limit as usize,
                 json,
             ),
+            IndexCommand::Upload {
+                root,
+                remote,
+                r#ref,
+                json,
+            } => upload::upload(&resolve_root(root)?, &remote, r#ref, json).await,
             IndexCommand::Mcp { root } => Ok(mcp::serve(resolve_root(root)?).await?),
         }
     }
@@ -302,7 +328,7 @@ pub(super) fn db_path(root: &Path) -> PathBuf {
 }
 
 /// The trimmed stdout of a git command that succeeded.
-pub(super) fn git_output(root: &Path, args: &[&str]) -> Option<String> {
+pub(crate) fn git_output(root: &Path, args: &[&str]) -> Option<String> {
     let out = Command::new("git")
         .arg("-C")
         .arg(root)
@@ -312,6 +338,26 @@ pub(super) fn git_output(root: &Path, args: &[&str]) -> Option<String> {
     out.status
         .success()
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// A git command in `dir` for a test, with a fixed identity.
+#[cfg(test)]
+pub(crate) fn test_git(dir: &Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_AUTHOR_NAME", "Robin")
+        .env("GIT_AUTHOR_EMAIL", "robin@example.test")
+        .env("GIT_COMMITTER_NAME", "Robin")
+        .env("GIT_COMMITTER_EMAIL", "robin@example.test")
+        .output()
+        .expect("git runs");
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 /// Make git ignore the index: if git does not ignore `.kairos/index.db`,

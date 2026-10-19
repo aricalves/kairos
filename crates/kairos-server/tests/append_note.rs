@@ -1,8 +1,9 @@
-//! KAIROS-T-0367 — `POST /api/{entity_type}/{short_code}/notes`: a note
-//! goes at the end of the content under a heading with the date and the
-//! name of the caller, in one call with no version, as one history
-//! version; notes sent at the same time all stay; the edit rule applies.
-//! The MCP tool `append_note` is in `tests/mcp.rs`.
+//! KAIROS-T-0367, KAIROS-T-0630 — `POST /api/{entity_type}/{short_code}/notes`:
+//! a note is a row of its own, in one call with no version. It writes no
+//! version of the content and no history row; the read of the item gives
+//! it in `notes`, and `content` has no note. A note can have headings.
+//! Notes sent at the same time all stay, each with its own id; the edit
+//! rule applies. The MCP tool `append_note` is in `tests/mcp.rs`.
 //!
 //! Runs against the LIVE compose stack (`angreal services up`). Owns the
 //! scratch database `kairos_append_note_t0367_test`.
@@ -121,20 +122,19 @@ async fn append_note_adds_a_dated_note_in_one_version_against_live_stack() {
     let id: Uuid = task["id"].as_str().expect("id").parse().expect("uuid");
     let notes = format!("/api/tasks/{code}/notes");
 
-    // --- one note: one call, no version, one new version ---------------------
+    // --- one note: one call, no version, no new version ---------------------
     let (status, answer) = send(
         Method::POST,
         notes.clone(),
         token.clone(),
-        Some(json!({"text": "Found the cause.\n"})),
+        Some(json!({"text": "Found the cause.\n\n## Findings\n\nThe fuse.\n"})),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{answer}");
     assert_eq!(answer["short_code"], code.as_str());
-    assert_eq!(answer["version"], 2);
-    // KAIROS-T-0504: the first note is n-1, and the heading carries the id.
+    assert_eq!(answer["version"], 1, "a note writes no version");
+    // KAIROS-T-0504: the first note is n-1.
     assert_eq!(answer["note_id"], "n-1", "{answer}");
-    let today = chrono::Utc::now().date_naive().format("%Y-%m-%d");
     let (_, got) = send(
         Method::GET,
         format!("/api/tasks/{code}"),
@@ -142,10 +142,36 @@ async fn append_note_adds_a_dated_note_in_one_version_against_live_stack() {
         None,
     )
     .await;
+    // KAIROS-T-0630: the content has no note; `notes` has it, a heading
+    // too.
+    assert_eq!(got["content"], "# Pay\n\nThe body.\n", "{got}");
+    assert_eq!(got["version"], 1, "{got}");
+    let note = &got["notes"][0];
+    assert_eq!(note["id"], "n-1", "{got}");
+    assert_eq!(note["author"], svc_name.as_str(), "{got}");
     assert_eq!(
-        got["content"],
-        format!("# Pay\n\nThe body.\n\n## Note n-1 ({today}, {svc_name})\n\nFound the cause."),
+        note["text"], "Found the cause.\n\n## Findings\n\nThe fuse.",
         "{got}"
+    );
+    assert!(note["author_id"].is_string(), "{got}");
+    assert!(note.get("promoted_to").is_none(), "{got}");
+    let today = chrono::Utc::now()
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string();
+    assert!(
+        note["created_at"]
+            .as_str()
+            .is_some_and(|at| at.starts_with(&today)),
+        "{got}"
+    );
+    // A list has no notes.
+    let (_, list) = send(Method::GET, "/api/tasks".into(), token.clone(), None).await;
+    assert!(
+        list["items"]
+            .as_array()
+            .is_some_and(|items| items.iter().all(|item| item.get("notes").is_none())),
+        "{list}"
     );
     let history = |conn: &mut PgConnection| -> i64 {
         item_history::table
@@ -157,7 +183,7 @@ async fn append_note_adds_a_dated_note_in_one_version_against_live_stack() {
     diesel::sql_query("SET search_path TO org_acme, public")
         .execute(&mut conn)
         .expect("pinning search_path");
-    assert_eq!(history(&mut conn), 2, "one note is one history version");
+    assert_eq!(history(&mut conn), 1, "a note writes no history row");
 
     // --- refusals: an empty text, an unknown field, the edit rule ------------
     let (status, answer) = send(
@@ -193,7 +219,7 @@ async fn append_note_adds_a_dated_note_in_one_version_against_live_stack() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{answer}");
-    assert_eq!(history(&mut conn), 2, "a refused note writes nothing");
+    assert_eq!(history(&mut conn), 1, "a refused note writes nothing");
 
     // --- notes at the same time: each one stays ------------------------------
     let calls = (0..AT_ONCE).map(|n| {
@@ -205,15 +231,10 @@ async fn append_note_adds_a_dated_note_in_one_version_against_live_stack() {
         )
     });
     let answers = futures_util::future::join_all(calls).await;
-    let mut versions: Vec<i64> = answers
-        .iter()
-        .map(|(status, answer)| {
-            assert_eq!(*status, StatusCode::OK, "{answer}");
-            answer["version"].as_i64().expect("version")
-        })
-        .collect();
-    versions.sort_unstable();
-    assert_eq!(versions, (3..3 + AT_ONCE as i64).collect::<Vec<_>>());
+    for (status, answer) in &answers {
+        assert_eq!(*status, StatusCode::OK, "{answer}");
+        assert_eq!(answer["version"], 1, "{answer}");
+    }
     // KAIROS-T-0504: each note gets its own id, n-2 to n-9.
     let mut ids: Vec<String> = answers
         .iter()
@@ -233,22 +254,29 @@ async fn append_note_adds_a_dated_note_in_one_version_against_live_stack() {
         None,
     )
     .await;
-    let content = got["content"].as_str().expect("content");
+    let rows = got["notes"].as_array().expect("notes");
+    assert_eq!(rows.len(), AT_ONCE + 1, "{got}");
     for n in 0..AT_ONCE {
         assert_eq!(
-            content.matches(&format!("Note number {n}.")).count(),
+            rows.iter()
+                .filter(|note| note["text"] == format!("Note number {n}.").as_str())
+                .count(),
             1,
-            "note {n} is lost: {content}"
+            "note {n} is lost: {got}"
         );
     }
     assert_eq!(
-        content.matches("## Note n-").count(),
-        AT_ONCE + 1,
-        "{content}"
+        rows.iter()
+            .map(|note| note["id"].as_str().expect("id"))
+            .collect::<Vec<_>>(),
+        (1..=AT_ONCE + 1)
+            .map(|n| format!("n-{n}"))
+            .collect::<Vec<_>>(),
+        "the notes come in the order of their ids"
     );
-    assert_eq!(history(&mut conn), 2 + AT_ONCE as i64);
+    assert_eq!(history(&mut conn), 1, "notes write no history row");
 
-    // --- KAIROS-T-0504: old notes without an id count by position ----------
+    // --- KAIROS-T-0630: a `## Note` heading in a content is content -------
     let (status, old) = send(
         Method::POST,
         "/api/tasks".into(),
@@ -256,7 +284,7 @@ async fn append_note_adds_a_dated_note_in_one_version_against_live_stack() {
         Some(json!({
             "board_id": "payments-delivery",
             "title": "Old notes",
-            "content": "# Old\n\n## Note (2026-10-01, Robin)\n\nOne.\n\n## Note (2026-10-02, Sam)\n\nTwo.\n",
+            "content": "# Old\n\n## Note (2026-10-01, Robin)\n\nOne.\n",
         })),
     )
     .await;
@@ -266,11 +294,11 @@ async fn append_note_adds_a_dated_note_in_one_version_against_live_stack() {
         Method::POST,
         format!("/api/tasks/{old_code}/notes"),
         token.clone(),
-        Some(json!({"text": "Three."})),
+        Some(json!({"text": "The first row."})),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{answer}");
-    assert_eq!(answer["note_id"], "n-3", "{answer}");
+    assert_eq!(answer["note_id"], "n-1", "{answer}");
 
     drop(pool);
     drop(conn);

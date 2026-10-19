@@ -35,6 +35,7 @@ in *this* envelope. See [SCIM](../scim/#errors).
 |---|---|---|---|
 | `UNAUTHORIZED` | 401 | No token, or a token that does not verify | — |
 | `FORBIDDEN` | 403 | Authenticated, but not allowed | one of five shapes — see below |
+| `KEY_SCOPE` | 403 | The request uses an agent key, and the scope of the key does not have the action. See [The scope of an agent key](../capabilities/#the-scope-of-an-agent-key) | `required_capability`, `board_id`, `scope_needs` (the capability that the scope must have), `reason` (`capability`, `board` or `no_board`), `key_scope` (`capabilities`, `boards`) |
 | `MEMBERSHIP_REQUIRED` | 403 | Authenticated against the issuer, but not a member of this tenant | `organization` — the slug that was resolved |
 | `NOT_FOUND` | 404 | The thing the call is about does not exist | — |
 | `TENANT_NOT_FOUND` | 404 | The request host resolves to no provisioned tenant | — |
@@ -194,7 +195,7 @@ what kind of gate refused:
 | `required_capability`, `board_id` (null = the item or the write has no board, and the caller needs the admin role) | a board capability check, or the [edit rule](../capabilities/#the-edit-rule). For the edit rule, the caller also did not create the item |
 | `required_capability`, `board_id`, `held: "file_backlog"` | an MCP move (`transition_item`, `move_item`) refused to the person who sent a request, while the request is in the entry column of its board. The message says that the item is a request, that the team of the board moves it, and that the caller can edit, link and archive it |
 | `required_role: "admin"` | tenant-wide configuration: templates and metadata definitions |
-| `relationship`, `required_capability`, `board_id`, `any_of` | an edge of any relationship type where the caller can edit neither end (the [link rule](../capabilities/#who-can-write-relationships)). `required_capability` and `board_id` are those of the source. `any_of` has one entry for each end: `end`, `required_capability`, `board_id`. For [the `supports` edge of a document](../capabilities/#the-supports-edge-of-a-document), the caller cannot edit the document: `any_of` has one entry, the target, and `required_capability` is `manage_documents` |
+| `relationship`, `required_capability`, `board_id`, `any_of` | an edge of any relationship type where the caller can edit neither end (the [link rule](../capabilities/#who-can-write-relationships)). `required_capability` and `board_id` are those of the source. `any_of` has one entry for each end: `end`, `required_capability`, `board_id`. For the create of a `blocks` edge, `required_capability` and `board_id` are those of the target, `any_of` has the target first, and each entry has `gives` (`edge` or `proposal`). For [the `supports` edge of a document](../capabilities/#the-supports-edge-of-a-document), the caller cannot edit the document: `any_of` has one entry, the target, and `required_capability` is `manage_documents` |
 | `required: "deployment_admin"` | the cross-tenant provisioning routes, which are not scoped to any organization |
 
 **`CONFLICT` is not only optimistic concurrency.** `details.current` is present
@@ -288,13 +289,13 @@ server refuses a value that is not an integer, with `VALIDATION`.
 |---|---|---|---|
 | `SAME_BOARD` | 422 | The move's target is the board the item is already on | — |
 | `NOT_DELIVERY_BOARD` | 422 | Cross-board moves are between delivery boards only. "Archive completed" (`POST /api/boards/{id}/archive-completed`) is for a delivery board only | — |
-| `RENAME_NOT_NEEDED` | 422 | A move with a rename to a board whose prefix the code has already, or a rename of a document whose owner board does not change. Nothing changes. Do the move with no rename | `argument`: `rename`. For a prefix, also `short_code` and `code_prefix` |
+| `RENAME_NOT_NEEDED` | 422 | A move with a rename to a board whose prefix the code has already, or a rename of a document whose owner board does not change. Nothing changes. Do the move with no rename | `field`: `rename`. For a prefix, also `short_code` and `code_prefix` |
 | `RESTORE_BLOCKED` | 422 | The item's board, column, owning team or repository has been removed, so it has nowhere to return to. For a document, the board is its owner board | `missing` — a list naming each thing that is gone |
 
 Each document has an owner board. The server refuses a document create with
 no board. It also refuses a change of the owner board with no board. The
-refusal is `VALIDATION` with `details.field` = `board` (MCP:
-`details.argument` = `board`, or `to_board` for `move_item`). See
+refusal is `VALIDATION` with `details.field` = `board` (MCP: `board`, or
+`to_board` for `move_item`). See
 [A document always has an owner](../capabilities/#a-document-always-has-an-owner).
 
 ### Relationships

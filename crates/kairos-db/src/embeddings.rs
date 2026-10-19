@@ -115,7 +115,9 @@ pub struct PendingItem {
     /// The item's title.
     #[diesel(sql_type = Text)]
     pub title: String,
-    /// The item's content.
+    /// The item's content, and then its notes as `## Note` sections
+    /// (KAIROS-T-0630: the SQL function `item_notes_markdown`). So a note
+    /// is embedded as it was when it was part of the content.
     #[diesel(sql_type = Text)]
     pub content: String,
     /// The repository the item is issued against, if any (tasks only).
@@ -248,7 +250,13 @@ pub fn pending_primary(
 /// parent -> child, so the item is the TARGET and the parent is the source.
 /// An archived parent counts (COLLIERY-T-1840): `entity_directory` has
 /// archived rows, and the join no longer filters them out.
-const PENDING_SELECT: &str = "SELECT s.id, s.entity_type, s.short_code, s.title, s.content, \
+///
+/// KAIROS-T-0630: the content is the content and then the notes as `## Note`
+/// sections (the SQL function `item_notes_markdown`), so a note is embedded
+/// as it was when it was part of the content.
+const PENDING_SELECT: &str = "SELECT s.id, s.entity_type, s.short_code, s.title, \
+                coalesce(rtrim(s.content, E' \\t\\r\\n\\f\\v') || item_notes_markdown(s.id), \
+                         s.content) AS content, \
                 r.slug AS repository, p.title AS parent_title, \
                 e.content_hash AS stored_hash \
          FROM searchable_items s \
@@ -299,6 +307,20 @@ pub struct DirtyMark {
     pub mark: i64,
 }
 
+/// The conflict clause of a mark: a marked item gets a new mark, the
+/// microseconds of the clock and at least the old mark plus 1, and keeps its
+/// place in the order (`dirty_at`).
+const NEW_MARK: &str = "ON CONFLICT (item_id) DO UPDATE SET mark = greatest( \
+     (extract(epoch FROM clock_timestamp()) * 1000000)::bigint, embedding_dirty.mark + 1)";
+
+/// A `WITH` item that marks the item `$1` (KAIROS-T-0636), for a statement
+/// of the write that does more: the outbox row of the item event
+/// ([`crate::events::emit_item_change_by_id`]). So the mark costs no
+/// statement of its own, and it is in the transaction of the write.
+pub(crate) fn mark_item_cte() -> String {
+    format!("embedding_mark AS (INSERT INTO embedding_dirty (item_id) VALUES ($1) {NEW_MARK})")
+}
+
 /// Mark the items that `select` gives (one column of item ids, with `$1`
 /// bound to `id`). A marked item gets a new mark and keeps its place in
 /// the order. The ids go in in their order, so two writes lock the rows in
@@ -311,18 +333,16 @@ fn mark_selected(
     sql_query(format!(
         "INSERT INTO embedding_dirty (item_id) \
          SELECT DISTINCT ids.item_id FROM ({select}) AS ids(item_id) ORDER BY 1 \
-         ON CONFLICT (item_id) DO UPDATE SET mark = greatest( \
-             (extract(epoch FROM clock_timestamp()) * 1000000)::bigint, \
-             embedding_dirty.mark + 1)"
+         {NEW_MARK}"
     ))
     .bind::<SqlUuid, _>(id)
     .execute(conn)
 }
 
 /// Mark the item `item_id`: its text, its metadata or its parent changed
-/// (KAIROS-T-0636). [`crate::events::emit_item_change_by_id`] calls it for
-/// each item event that can change the text, in the transaction of the
-/// write.
+/// (KAIROS-T-0636). The item event of a write marks its item in the outbox
+/// statement (`mark_item_cte`); this is the same mark as a statement of
+/// its own.
 pub fn mark_dirty(conn: &mut PgConnection, item_id: Uuid) -> Result<(), diesel::result::Error> {
     mark_selected(conn, "SELECT $1::uuid", item_id).map(|_| ())
 }

@@ -189,19 +189,31 @@ async fn the_board_and_search_send_cards_without_content_against_live_stack() {
     // state line.
     let mut first_code = String::new();
     for number in 0..CARDS {
+        // KAIROS-T-0566: a task starts in the entry column. The columns
+        // that are not done follow each other by a transition on the
+        // default board (Backlog, Todo, Blocked, Active), so the walk goes
+        // one column at a time.
         let task = stack
             .ok(
                 Method::POST,
                 "/api/tasks",
                 Some(json!({
                     "board_id": board_id,
-                    "column_id": columns[number % columns.len()],
                     "title": format!("Task {number}: the board sends cards without content"),
                     "content": content_of(number),
                 })),
             )
             .await;
         let code = task["short_code"].as_str().expect("code").to_string();
+        for column in &columns[1..=number % columns.len()] {
+            stack
+                .ok(
+                    Method::POST,
+                    &format!("/api/tasks/{code}/transition"),
+                    Some(json!({ "to_column_id": column })),
+                )
+                .await;
+        }
         if number % 3 == 0 {
             stack
                 .ok(
@@ -274,7 +286,20 @@ async fn the_board_and_search_send_cards_without_content_against_live_stack() {
     let item = stack
         .ok(Method::GET, &format!("/api/tasks/{first_code}"), None)
         .await;
+    // KAIROS-T-0630: the notes are rows. The read of one item has them in
+    // `notes`; a card of a list has none, `fields=full` too.
+    assert!(
+        item["notes"].is_array(),
+        "the read of the item has notes: {item}"
+    );
+    assert!(
+        first.get("notes").is_none(),
+        "a full card has no notes: {first}"
+    );
     for (key, value) in item.as_object().expect("the task") {
+        if key == "notes" {
+            continue;
+        }
         assert_eq!(&first[key], value, "fields=full has {key} as the item has");
     }
 

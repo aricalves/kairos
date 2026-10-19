@@ -61,6 +61,8 @@ diesel::table! {
         revoked_at -> Nullable<Timestamptz>,
         replaced_by -> Nullable<Uuid>,
         expiring_notified_at -> Nullable<Timestamptz>,
+        scope_capabilities -> Nullable<Array<Nullable<Text>>>,
+        scope_boards -> Nullable<Array<Nullable<Uuid>>>,
     }
 }
 
@@ -275,6 +277,9 @@ diesel::table! {
         author -> Text,
         source -> Text,
         created_at -> Timestamptz,
+        written_state -> Text,
+        comment_state -> Nullable<Text>,
+        busy_until -> Nullable<Timestamptz>,
     }
 }
 
@@ -415,6 +420,20 @@ diesel::table! {
         item_id -> Uuid,
         metadata_definition_id -> Uuid,
         value -> Text,
+    }
+}
+
+diesel::table! {
+    item_notes (id) {
+        id -> Uuid,
+        item_id -> Uuid,
+        seq -> Int4,
+        author_id -> Nullable<Uuid>,
+        author_name -> Nullable<Text>,
+        created_at -> Timestamptz,
+        text -> Text,
+        promoted_to -> Nullable<Text>,
+        agent_key_id -> Nullable<Uuid>,
     }
 }
 
@@ -842,6 +861,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     item_impacts,
     item_links,
     item_metadata,
+    item_notes,
     item_owners,
     item_relationships,
     metadata_definition_scopes,

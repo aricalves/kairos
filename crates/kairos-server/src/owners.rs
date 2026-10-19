@@ -227,6 +227,21 @@ fn is_org_admin(conn: &mut PgConnection, slug: &str, user: Uuid) -> Result<bool,
     kairos_db::abac::is_org_admin(conn, slug, user).map_err(ApiError::internal)
 }
 
+/// KAIROS-T-0536: a claim, a hand-off and a release are the work of a
+/// member of the board. The scope of an agent key must have `member` on the
+/// board of the item.
+fn require_owner_scope(conn: &mut PgConnection, item_id: Uuid) -> Result<(), ApiError> {
+    if crate::blocking::current_key_scope().is_none() {
+        return Ok(());
+    }
+    let board =
+        kairos_db::abac::resolve_authorization_board(conn, item_id).map_err(ApiError::internal)?;
+    match ApiError::outside_key_scope(kairos_core::abac::MEMBER, board) {
+        Some(refusal) => Err(refusal),
+        None => Ok(()),
+    }
+}
+
 /// The board of the item, and whether `user` is a member of it (any
 /// grant on it).
 fn board_membership(
@@ -254,6 +269,7 @@ pub fn claim(
     short_code: &str,
 ) -> Result<dto::ItemOwner, ApiError> {
     require_subject(item_type, short_code)?;
+    require_owner_scope(conn, item_id)?;
     if !kairos_db::task_claims::is_person(conn, user).map_err(ApiError::internal)? {
         return Err(ApiError::forbidden(format!(
             "A service account cannot be the owner of {short_code}. Only a person can claim it."
@@ -282,6 +298,7 @@ pub fn hand_off(
     to: &str,
 ) -> Result<dto::ItemOwner, ApiError> {
     require_subject(item_type, short_code)?;
+    require_owner_scope(conn, item_id)?;
     let owner = item_owners::owner_of(conn, item_id).map_err(ApiError::internal)?;
     let is_owner = owner.as_ref().is_some_and(|o| o.user_id == user);
     if !is_owner && !is_org_admin(conn, slug, user)? {
@@ -322,6 +339,7 @@ pub fn release(
     short_code: &str,
 ) -> Result<ItemOwner, ApiError> {
     require_subject(item_type, short_code)?;
+    require_owner_scope(conn, item_id)?;
     let owner = item_owners::owner_of(conn, item_id).map_err(ApiError::internal)?;
     let is_owner = owner.as_ref().is_some_and(|o| o.user_id == user);
     if owner.is_some() && !is_owner && !is_org_admin(conn, slug, user)? {

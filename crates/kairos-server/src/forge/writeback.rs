@@ -112,7 +112,7 @@ impl WriteError {
 }
 
 /// The link of an item in the GUI, or `None` with no public URL.
-fn item_link(public_url: Option<&str>, code: &str) -> Option<String> {
+pub(crate) fn item_link(public_url: Option<&str>, code: &str) -> Option<String> {
     public_url.map(|base| format!("{base}/items/{code}"))
 }
 
@@ -127,7 +127,7 @@ fn column_cell(item: &PrItem) -> String {
 }
 
 /// A text on one line, with no `|` (a cell of a Markdown table). Pure.
-fn one_line(text: &str) -> String {
+pub(crate) fn one_line(text: &str) -> String {
     text.split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
@@ -208,6 +208,35 @@ pub fn status_for(items: &[PrItem]) -> (&'static str, String) {
         text
     };
     (state, text)
+}
+
+/// The wait before the next try of a write that failed `tries` times: the
+/// base, 2 times longer after each try, at most about one hour.
+pub(crate) fn retry_wait(base: Duration, tries: i32) -> Duration {
+    let exponent = u32::try_from(tries.saturating_sub(1)).unwrap_or(0).min(10);
+    base.checked_mul(1u32 << exponent)
+        .unwrap_or(Duration::from_secs(3600))
+}
+
+/// The plain write token of a repository, or why not.
+pub(crate) fn open_write_token(
+    secrets: Option<&SecretsKey>,
+    tenant: &str,
+    token: &db::StoredWriteToken,
+) -> Result<String, String> {
+    let key = secrets.ok_or_else(|| {
+        "The deployment has no KAIROS_SECRETS_KEY, so Kairos cannot open the write token."
+            .to_string()
+    })?;
+    let plain = key
+        .open(
+            &crate::secrets::write_token_aad(tenant, token.repository_id),
+            &token.key_id,
+            &token.nonce,
+            &token.ciphertext,
+        )
+        .map_err(|e| e.to_string())?;
+    String::from_utf8(plain).map_err(|_| "The stored token does not decrypt.".to_string())
 }
 
 fn sha256_hex(text: &str) -> String {
@@ -538,14 +567,7 @@ impl WriteBackService {
                     .await;
                 tracing::warn!(tenant = %tenant, repository = %target.slug, pr = number, reason = %error.reason, "github write-back failed");
                 if error.retry {
-                    let exponent = u32::try_from(job.tries.saturating_sub(1))
-                        .unwrap_or(0)
-                        .min(10);
-                    let wait = self
-                        .settings
-                        .retry_base
-                        .checked_mul(1u32 << exponent)
-                        .unwrap_or(Duration::from_secs(3600));
+                    let wait = retry_wait(self.settings.retry_base, job.tries);
                     Err(JobError::retry_in(error.reason, wait))
                 } else {
                     Err(JobError::fail(error.reason))
@@ -556,19 +578,7 @@ impl WriteBackService {
 
     /// The plain write token, or why not.
     fn open(&self, tenant: &str, token: &db::StoredWriteToken) -> Result<String, String> {
-        let key = self.secrets.as_ref().ok_or_else(|| {
-            "The deployment has no KAIROS_SECRETS_KEY, so Kairos cannot open the write token."
-                .to_string()
-        })?;
-        let plain = key
-            .open(
-                &crate::secrets::write_token_aad(tenant, token.repository_id),
-                &token.key_id,
-                &token.nonce,
-                &token.ciphertext,
-            )
-            .map_err(|e| e.to_string())?;
-        String::from_utf8(plain).map_err(|_| "The stored token does not decrypt.".to_string())
+        open_write_token(self.secrets.as_ref(), tenant, token)
     }
 
     /// End the lease of the pull request, and record the result of the

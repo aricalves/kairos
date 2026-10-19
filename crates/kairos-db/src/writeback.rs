@@ -289,6 +289,12 @@ struct Found {
     found: bool,
 }
 
+/// The conflict target of the job of a pull request: the unique index
+/// `jobs_github_writeback_queued_pr_key` (KAIROS-T-0637), one queued job
+/// for each key.
+const QUEUED_PR_KEY: &str =
+    "((payload->>'pr_key')) WHERE kind = 'github_writeback' AND state = 'queued'";
+
 /// The key of the job of a pull request, in its payload.
 fn pr_key(tenant: &str, repository_id: Uuid, pr_number: i64) -> String {
     format!("github-writeback:{tenant}:{repository_id}:{pr_number}")
@@ -298,6 +304,11 @@ fn pr_key(tenant: &str, repository_id: Uuid, pr_number: i64) -> String {
 /// unless a job of that pull request waits already (it reads the items when
 /// it runs, so it writes this change too). Only for a GitHub repository with
 /// a write token. True: a job was added.
+///
+/// A unique index on the key of a queued job decides: a transaction that
+/// adds the same key at the same time waits for this one, and adds no job
+/// when this one commits (KAIROS-T-0637). A job that runs does not count:
+/// it may have read the items before this change.
 pub fn queue_pr(
     conn: &mut PgConnection,
     repository_id: Uuid,
@@ -316,17 +327,7 @@ pub fn queue_pr(
     }
     let tenant = crate::webhooks::current_tenant(conn)?;
     let key = pr_key(&tenant, repository_id, pr_number);
-    let waiting: Found = sql_query(
-        "SELECT EXISTS (SELECT 1 FROM public.jobs WHERE kind = $1 AND state = 'queued' \
-                          AND payload->>'pr_key' = $2) AS found",
-    )
-    .bind::<Text, _>(JOB_KIND)
-    .bind::<Text, _>(&key)
-    .get_result(conn)?;
-    if waiting.found {
-        return Ok(false);
-    }
-    jobs::enqueue(
+    let added = jobs::enqueue_with_conflict(
         conn,
         &NewJob {
             kind: JOB_KIND.to_string(),
@@ -341,20 +342,27 @@ pub fn queue_pr(
             run_after: None,
             max_tries: MAX_TRIES,
         },
+        QUEUED_PR_KEY,
     )?;
-    Ok(true)
+    Ok(added.is_some())
 }
 
 /// Queue the write-back of each pull request that links to the item (any
 /// type), in the transaction of its change. The number of jobs added.
+///
+/// It queues the write-back of the issue of a task born from an issue too
+/// ([`crate::issue_writeback::on_item_changed`], KAIROS-T-0575), so each
+/// change that writes a pull request writes the issue.
 pub fn on_item_changed(conn: &mut PgConnection, item_id: Uuid) -> Result<usize, DieselError> {
+    crate::issue_writeback::on_item_changed(conn, item_id)?;
     let prs: Vec<PrRow> = sql_query(
         "SELECT DISTINCT r.id AS repository_id, l.external_id \
            FROM item_links l \
            JOIN forge_connections c ON c.id = l.connection_id AND c.deleted_at IS NULL \
            JOIN repositories r ON r.id = c.repository_id AND r.forge = 'github' \
            JOIN repository_write_tokens w ON w.repository_id = r.id \
-          WHERE l.item_id = $1 AND l.kind = 'pull_request'",
+          WHERE l.item_id = $1 AND l.kind = 'pull_request' \
+          ORDER BY r.id, l.external_id",
     )
     .bind::<SqlUuid, _>(item_id)
     .load(conn)?;
@@ -378,7 +386,8 @@ pub fn queue_open_prs(conn: &mut PgConnection, repository_id: Uuid) -> Result<us
            FROM item_links l \
            JOIN forge_connections c ON c.id = l.connection_id AND c.deleted_at IS NULL \
           WHERE c.repository_id = $1 AND l.kind = 'pull_request' \
-            AND l.state IN ('open', 'draft')",
+            AND l.state IN ('open', 'draft') \
+          ORDER BY c.repository_id, l.external_id",
     )
     .bind::<SqlUuid, _>(repository_id)
     .load(conn)?;
@@ -408,12 +417,15 @@ pub struct Target {
     pub repo_full_name: String,
     #[diesel(sql_type = Text)]
     pub forge: String,
+    /// The web URL of the repository (the host of a GitLab API).
+    #[diesel(sql_type = Text)]
+    pub repo_url: String,
 }
 
 /// The repository `repository_id`, live.
 pub fn target(conn: &mut PgConnection, repository_id: Uuid) -> Result<Option<Target>, DieselError> {
     sql_query(
-        "SELECT id AS repository_id, slug, repo_full_name, forge FROM repositories \
+        "SELECT id AS repository_id, slug, repo_full_name, forge, repo_url FROM repositories \
          WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind::<SqlUuid, _>(repository_id)

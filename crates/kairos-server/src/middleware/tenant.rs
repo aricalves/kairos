@@ -366,6 +366,7 @@ pub async fn require_tenant(
     // claim on gets the header Kairos-Warning (`crate::claims`).
     let (mut response, warnings) = crate::claims::collect(crate::blocking::with_agent_key(
         auth.agent_key,
+        auth.key_scope.clone().map(|scope| (auth.user_id, scope)),
         next.run(req),
     ))
     .await;

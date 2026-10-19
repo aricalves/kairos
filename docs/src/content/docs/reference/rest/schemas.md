@@ -85,6 +85,7 @@ An Architecture Decision Record, as returned by `/api/adrs`. Board placement is 
 | `decision_maker` | `string`, nullable | no |  |
 | `id` | `string` | yes | Entity id (UUID). |
 | `impacts` | array of [`Impact`](#impact) | no | The repositories that the ADR impacts (COLLIERY-T-0269), by slug. An `impacts` link says what the ADR is about. It gives no right. |
+| `notes` | `array`, nullable | no | The notes of the item, in the order of their ids (KAIROS-T-0630). Present on the read of one item (`GET /api/{family}/{short_code}`), empty when the item has none. Absent from lists and from the answers of writes. A note is not part of `content`. |
 | `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-A-{NNNN}`). |
 | `title` | `string` | yes |  |
 | `updated_at` | `string` | yes | RFC 3339. |
@@ -100,7 +101,7 @@ An ADR on a board or in a search (KAIROS-T-0602).
 | `archived_at` | `string`, nullable | no | When this work was put away, RFC 3339; absent while it is live (KAIROS-A-0020). |
 | `board_id` | `string`, nullable | no | ADR board (UUID), if placed on one. |
 | `column_id` | `string`, nullable | no | Current column (UUID), if placed on a board. |
-| `content` | `string`, nullable | no | Markdown content. Only with `fields=full` on the board route. |
+| `content` | `string`, nullable | no | Markdown content. Only with `fields=full` on the board route. A card has no notes (KAIROS-T-0630): the read of the item gives them. |
 | `created_at` | `string` | yes | RFC 3339. |
 | `created_by` | `string`, nullable | no | Creator user id (UUID). Only with `fields=full` on the board route. |
 | `decision_date` | `string`, nullable | no | `YYYY-MM-DD`. |
@@ -135,6 +136,7 @@ Who decides the triage of intake on a board (KAIROS-T-0428). Intake is a task in
 | `key` | `string` | yes | The full API key. Shown once; store it now. |
 | `name` | `string` | yes |  |
 | `prefix` | `string` | yes |  |
+| `scope` | [`KeyScopeView`](#keyscopeview), nullable | no |  |
 
 ## ApiKeyListResponse
 
@@ -174,10 +176,11 @@ One row of `GET /api/service-accounts/{id}/keys` — never a secret or hash.
 | `prefix` | `string` | yes |  |
 | `replaced_by` | `string`, nullable | no | The key that a rotation made in place of this key (KAIROS-T-0370). The old secret works until `expires_at`, the end of the grace time. |
 | `revoked_at` | `string`, nullable | no |  |
+| `scope` | [`KeyScopeView`](#keyscopeview), nullable | no |  |
 
 ## AppendNoteRequest
 
-Body of `POST /api/{entity_type}/{short_code}/notes` (KAIROS-T-0367): the text of a note to append at the end of the item's content.
+Body of `POST /api/{entity_type}/{short_code}/notes` (KAIROS-T-0367): the text of a note. A note is a row of its own (KAIROS-T-0630).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -187,13 +190,13 @@ The server refuses a body with a field that is not in this table ([Errors](../..
 
 ## AppendNoteResponse
 
-Response of `POST /api/{entity_type}/{short_code}/notes` (KAIROS-T-0367): the version that the note made, and the id of the note (KAIROS-T-0504).
+Response of `POST /api/{entity_type}/{short_code}/notes` (KAIROS-T-0367): the id of the note (KAIROS-T-0504). A note writes no version of the content (KAIROS-T-0630).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `note_id` | `string` | no | The id of the note: `n-3`. The heading of the note carries it, and the item page anchors it (`#n-3`). The default is for the client only: a response of an older server has no `note_id`. |
+| `note_id` | `string` | no | The id of the note: `n-3`. The item page anchors it (`#n-3`). The default is for the client only: a response of an older server has no `note_id`. |
 | `short_code` | `string` | yes | The item's short code. |
-| `version` | `integer` | yes | The new version of the item. |
+| `version` | `integer` | yes | The version of the content of the item. A note does not change it. |
 
 ## ArchiveCompletedResponse
 
@@ -558,6 +561,7 @@ Body of `POST /api/adrs`. `board_id`/`column_id` follow the DDL rule: both set (
 | `content` | `string` | no | Markdown content; defaults to empty. |
 | `decision_date` | `string`, nullable | no | `YYYY-MM-DD`. |
 | `decision_maker` | `string`, nullable | no |  |
+| `parent` | `string`, nullable | no | The short code of the item that the ADR supports: a strategy, an initiative or a task (KAIROS-T-0591). The server writes the `supports` edge in the transaction of the create: a refused parent leaves no ADR. A retired code finds its item. |
 | `title` | `string` | yes |  |
 
 The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
@@ -571,6 +575,7 @@ The server refuses a body with a field that is not in this table ([Errors](../..
 | `expires_at` | `string`, nullable | no | Optional RFC 3339 expiry. Omitted: the key expires after the default life of the deployment (`KAIROS_API_KEY_TTL_DAYS`, 90 days by default), or never when that setting is 0. |
 | `name` | `string` | yes | Operator label for the key ("gha-main", ...). |
 | `no_expiry` | `boolean` | no | `true`: the key never expires (KAIROS-T-0370). Do not send it with `expires_at`. |
+| `scope` | [`KeyScopeRequest`](#keyscoperequest), nullable | no |  |
 
 The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
 
@@ -795,7 +800,7 @@ Body of `POST /api/tasks`.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `board_id` | `string`, nullable | no | Board to create the task on — SLUG or UUID (KAIROS-T-0150). Optional when `team_id` is given: the task then goes to the delivery board of that team. A request with no board and no team is a 422, with or without a `repository` (COLLIERY-T-0217, COLLIERY-A-0023). Until then a `repository` alone chose the board (KAIROS-T-0104). |
-| `column_id` | `string`, nullable | no | Column to place it in (UUID); defaults to the board's first column. |
+| `column_id` | `string`, nullable | no | The entry column of the board (UUID), the default (KAIROS-T-0566). A task starts there, for every caller: any other column is a 422 that names the entry column. Create the task, then move it. |
 | `content` | `string` | no | Markdown content; defaults to empty. |
 | `from_team` | `string`, nullable | no | The team that sends the task, by slug or UUID (KAIROS-T-0426). When it is not the team of the board, the task is a request whoever sends it: entry column, support lane. Omit it for today's rule. Kairos does not keep it on the task: name the sending team in the body. |
 | `parent` | `string`, nullable | no | The short code of the parent initiative (KAIROS-T-0572). The server writes the `parent` edge in the transaction of the create: a refused parent leaves no task. A retired code finds its item. In a claims column, `parent_gate` applies (KAIROS-A-0040). |
@@ -1015,6 +1020,7 @@ A supporting document, as returned by `/api/documents`. Documents do not live on
 | `id` | `string` | yes | Entity id (UUID). |
 | `impacts` | array of [`Impact`](#impact) | no | The repositories that the document impacts (COLLIERY-T-0269), by slug. An `impacts` link says what the document is about. It gives no right. |
 | `lifecycle` | `string` | yes | Editorial lifecycle: `draft|review|published|archived` (KAIROS-T-0078). A label with free transitions â never a board column, never metadata. |
+| `notes` | `array`, nullable | no | The notes of the item, in the order of their ids (KAIROS-T-0630). Present on the read of one item (`GET /api/{family}/{short_code}`), empty when the item has none. Absent from lists and from the answers of writes. A note is not part of `content`. |
 | `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-D-{NNNN}`). |
 | `template_id` | `string`, nullable | no | Template the document was stamped from (UUID), if any. |
 | `title` | `string` | yes |  |
@@ -1316,6 +1322,7 @@ An initiative (Flight Level 2), as returned by `/api/initiatives`.
 | `created_by` | `string` | yes | Creator user id (UUID). |
 | `id` | `string` | yes | Entity id (UUID). |
 | `is_bucket` | `boolean` | yes | Whether this initiative is a bucket. |
+| `notes` | `array`, nullable | no | The notes of the item, in the order of their ids (KAIROS-T-0630). Present on the read of one item (`GET /api/{family}/{short_code}`), empty when the item has none. Absent from lists and from the answers of writes. A note is not part of `content`. |
 | `owner` | [`ItemOwner`](#itemowner), nullable | no |  |
 | `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-I-{NNNN}`). |
 | `title` | `string` | yes |  |
@@ -1334,7 +1341,7 @@ An initiative on a board or in a search (KAIROS-T-0602).
 | `bucket_type` | `string`, nullable | no | Bucket kind (`tech_debt|bug|ad_hoc`), set iff `is_bucket`. |
 | `column_id` | `string` | yes | Current column (UUID). |
 | `complexity` | `string`, nullable | no | T-shirt sizing (`xs|s|m|l|xl`). |
-| `content` | `string`, nullable | no | Markdown content. Only with `fields=full` on the board route. |
+| `content` | `string`, nullable | no | Markdown content. Only with `fields=full` on the board route. A card has no notes (KAIROS-T-0630): the read of the item gives them. |
 | `created_at` | `string` | yes | RFC 3339. |
 | `created_by` | `string`, nullable | no | Creator user id (UUID). Only with `fields=full` on the board route. |
 | `id` | `string` | yes | Entity id (UUID). |
@@ -1421,6 +1428,19 @@ Response of `GET/PATCH /api/{entity_type}/{short_code}/metadata`.
 | `short_code` | `string` | yes | The item the values belong to. |
 | `values` | array of [`MetadataValue`](#metadatavalue) | yes | All metadata values on the item, ordered by definition slug. |
 
+## ItemNote
+
+One note of an item (KAIROS-T-0630): a row of its own, not part of the content of the item.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `author` | `string` | yes | The name of the author: the display name of the user, or the name of an old note as written. |
+| `author_id` | `string`, nullable | no | The user that wrote the note (UUID). Absent for an old note whose name is no user of the organization. |
+| `created_at` | `string` | yes | RFC 3339. |
+| `id` | `string` | yes | The id of the note in its item: `n-3`. Cite it as `note n-3 on ACME-T-0012`. |
+| `promoted_to` | `string`, nullable | no | The short code of the draft ADR or document that a promote made from the note. Absent until then. A note is promoted once. |
+| `text` | `string` | yes | The markdown text. It can have headings. |
+
 ## ItemOwner
 
 The owner of a strategy or an initiative (KAIROS-T-0411): the one person who answers for the item. A member of the board claims an item with no owner. The owner hands it off. An organization admin sets or clears it. The owner gives no right.
@@ -1504,6 +1524,35 @@ The jobs of one kind in each state.
 |---|---|---|---|
 | `failures` | array of [`JobFailure`](#jobfailure) | yes | The failed jobs, newest first, at most [`JOB_FAILURE_LIMIT`]. |
 | `kinds` | array of [`JobKindCounts`](#jobkindcounts) | yes | The jobs of each kind in each state, by kind. A finished job stays for 7 days. |
+
+## KeyScopeBoard
+
+One board of a [`KeyScopeView`].
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | `string` | yes |  |
+| `slug` | `string`, nullable | no | The slug of the board; `null` when the board is deleted. |
+
+## KeyScopeRequest
+
+The scope of a new agent key (KAIROS-T-0536). A scope never adds a right. The key does an action when the person can do it and the scope has it.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `boards` | `array`, nullable | no | The boards where the key can act, by slug or id. Omitted: each board. With a list, an action that has no board is refused. |
+| `capabilities` | `array`, nullable | no | The capabilities of the key, from the vocabulary of the capabilities reference: the board capabilities, `manage_structure` and `file_backlog`. `[]` makes a read-only key. Omitted: the default list (each one but `purge` and `manage_structure`). |
+
+The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
+
+## KeyScopeView
+
+The scope of a key (KAIROS-T-0536). `null` in place of this object: the key has no scope and no limit (a key made before KAIROS-T-0536).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `boards` | `array`, nullable | no | The boards of the key. `null`: each board. |
+| `capabilities` | array of `string` | yes | The capabilities of the key, sorted. Empty: a read-only key. |
 
 ## ListEnvelope_ActivityEntry
 
@@ -1846,7 +1895,7 @@ One notification of the caller (KAIROS-T-0382).
 | `created_at` | `string` | yes | When Kairos made the notification (RFC 3339). |
 | `entity_type` | `string`, nullable | no | `strategy|initiative|task|document|adr`; `null` when the item is gone. |
 | `id` | `string` | yes | The id (UUID). `POST /api/me/notifications/read` takes it. |
-| `kind` | `string` | yes | `hand_off|blocker_cleared|blocked_again|cancelled|blocker_cancelled|mention|p0_bug|delivery_failing|agent_key_revoked|claim_dropped|claim_stale|key_expiring`. |
+| `kind` | `string` | yes | `hand_off|blocker_cleared|blocked_again|cancelled|blocker_cancelled|mention|p0_bug|delivery_failing|agent_key_revoked|claim_dropped|claim_stale|key_expiring|proposal_decided`. |
 | `read_at` | `string`, nullable | no | When the person read it (RFC 3339); `null` while unread. |
 | `short_code` | `string`, nullable | no | The code of the item now; `null` when the item is gone. |
 | `text` | `string` | yes | What happened, in one sentence or two. |
@@ -1879,6 +1928,7 @@ One notification of the caller (KAIROS-T-0382).
 | `key_expiring` | `boolean` | yes | An agent key of yours, or a key of a service account of your organization (you are an admin), expires within 7 days (KAIROS-T-0540). |
 | `mention` | `boolean` | yes | A person wrote `@your_user_name` in a note or in the content of an item. |
 | `p0_bug` | `boolean` | yes | A bug with the priority P0 (critical) is on the board of your team. |
+| `proposal_decided` | `boolean` | yes | A person confirmed or rejected an edge proposal that you made (KAIROS-T-0558). |
 
 ## OrgAgentKey
 
@@ -1978,6 +2028,15 @@ Response of `POST /api/{entity_type}/{short_code}/notes/{note_id}/promote` (KAIR
 | `promoted_to` | `string` | yes | The short code of the new item. |
 | `short_code` | `string` | yes | The short code of the source item. |
 | `supports` | `boolean` | yes | True when the new item `supports` the source item. False for a note on a document or an ADR: no edge joins two attachments. |
+
+## ProposedRelationship
+
+The answer of `POST /api/relationships` when the call made a proposal and no edge (202, KAIROS-T-0569). A `blocks` edge needs the right to edit the target. A caller who can edit the source only gets this.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `message` | `string` | yes | What the call did, and who can confirm the proposal. |
+| `proposal` | [`EdgeProposalDto`](#edgeproposaldto) | yes | The proposal. Confirm it with `POST /api/proposals/{id}/confirm`. |
 
 ## PurgeTaskResponse
 
@@ -2155,6 +2214,7 @@ One repository, as returned by `/api/repositories` (KAIROS-T-0106).
 | `default_branch` | `string` | yes | The branch that the code index builder indexes (KAIROS-T-0430): the branch set by hand, or else the default branch of the forge at the last fetch. `default_branch_source` says which. |
 | `default_branch_source` | [`DefaultBranchSource`](#defaultbranchsource) | no | Where `default_branch` comes from (KAIROS-T-0430): `forge` (the builder reads the default branch of the remote at each fetch) or `hand` (a person set it; it wins over the forge). |
 | `delivery_board_id` | `string`, nullable | no | The delivery board of the owning team (UUID). It is a fact about the owner, not where tasks go: the board or the team of a task decides that (COLLIERY-T-0219, COLLIERY-A-0023). `None` only in a misconfigured tenant (team without a delivery board). |
+| `delivery_board_slug` | `string`, nullable | no | The slug of that delivery board (KAIROS-T-0561), `None` when `delivery_board_id` is `None`. |
 | `description` | `string` | yes | Short "how to work here" blurb agents read before starting. |
 | `forge` | `string` | yes | `github|gitlab|other`. |
 | `forge_branch` | `string`, nullable | no | The default branch that the remote gave at the last fetch of the builder, or `None` before the first fetch (KAIROS-T-0430). |
@@ -2631,6 +2691,7 @@ A strategy (Flight Level 3), as returned by `/api/strategies`.
 | `created_by` | `string` | yes | Creator user id (UUID). |
 | `hypothesis` | `string`, nullable | no |  |
 | `id` | `string` | yes | Entity id (UUID). |
+| `notes` | `array`, nullable | no | The notes of the item, in the order of their ids (KAIROS-T-0630). Present on the read of one item (`GET /api/{family}/{short_code}`), empty when the item has none. Absent from lists and from the answers of writes. A note is not part of `content`. |
 | `owner` | [`ItemOwner`](#itemowner), nullable | no |  |
 | `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-S-{NNNN}`). |
 | `title` | `string` | yes |  |
@@ -2647,7 +2708,7 @@ A strategy on a board or in a search (KAIROS-T-0602).
 | `archived_at` | `string`, nullable | no | When this work was put away, RFC 3339; absent while it is live (KAIROS-A-0020). |
 | `board_id` | `string` | yes | Board the strategy sits on (UUID). |
 | `column_id` | `string` | yes | Current column (UUID). |
-| `content` | `string`, nullable | no | Markdown content. Only with `fields=full` on the board route. |
+| `content` | `string`, nullable | no | Markdown content. Only with `fields=full` on the board route. A card has no notes (KAIROS-T-0630): the read of the item gives them. |
 | `created_at` | `string` | yes | RFC 3339. |
 | `created_by` | `string`, nullable | no | Creator user id (UUID). Only with `fields=full` on the board route. |
 | `hypothesis` | `string`, nullable | no |  |
@@ -2704,6 +2765,7 @@ A task/bug/tech-debt item (Flight Level 1), as returned by `/api/tasks`.
 | `created_at` | `string` | yes | RFC 3339. |
 | `created_by` | `string` | yes | Creator user id (UUID). |
 | `id` | `string` | yes | Entity id (UUID). |
+| `notes` | `array`, nullable | no | The notes of the item, in the order of their ids (KAIROS-T-0630). Present on the read of one item (`GET /api/{family}/{short_code}`), empty when the item has none. Absent from lists and from the answers of writes. A note is not part of `content`. |
 | `repository` | [`RepositoryRef`](#repositoryref), nullable | no |  |
 | `repository_id` | `string`, nullable | no | The repository this task is issued against (UUID), if bound (KAIROS-T-0104, A-0019). |
 | `short_code` | `string` | yes | Tenant-scoped short code (`{PREFIX}-T-{NNNN}`). |
@@ -2738,7 +2800,7 @@ A task on a board or in a search (KAIROS-T-0602).
 | `cancellation` | [`TaskCancellation`](#taskcancellation), nullable | no |  |
 | `claim` | [`TaskClaim`](#taskclaim), nullable | no |  |
 | `column_id` | `string` | yes | Current column (UUID). |
-| `content` | `string`, nullable | no | Markdown content. Only with `fields=full` on the board route. |
+| `content` | `string`, nullable | no | Markdown content. Only with `fields=full` on the board route. A card has no notes (KAIROS-T-0630): the read of the item gives them. |
 | `created_at` | `string` | yes | RFC 3339. |
 | `created_by` | `string`, nullable | no | Creator user id (UUID). Only with `fields=full` on the board route. |
 | `id` | `string` | yes | Entity id (UUID). |
@@ -3091,6 +3153,7 @@ The server refuses a body with a field that is not in this table ([Errors](../..
 | `key_expiring` | `boolean`, nullable | no |  |
 | `mention` | `boolean`, nullable | no |  |
 | `p0_bug` | `boolean`, nullable | no |  |
+| `proposal_decided` | `boolean`, nullable | no |  |
 
 The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
 

@@ -5,7 +5,7 @@
 //!
 //! - a create writes the row, with the vector of the old index expression,
 //! - an edit of the title or the content rewrites it, and search follows,
-//! - a note rewrites it,
+//! - a note rewrites it, with the text of the note (KAIROS-T-0630),
 //! - a transition, an archive and a restore do not write it,
 //! - a content edit is a HOT update of the task row,
 //! - a purge removes it.
@@ -55,12 +55,17 @@ struct Row {
 
 /// The row of the item in `item_search`: its xmin (a new value after each
 /// write of the row), its type, and whether its vector is the vector of the
-/// old index expression over the title and the content of the task now.
+/// old index expression over the title and the content of the task now,
+/// with the text of its notes after them (KAIROS-T-0630). With no notes it
+/// is the old expression.
 fn search_row(conn: &mut PgConnection, id: Uuid) -> Option<Row> {
     sql_query(
         "SELECT s.xmin::text AS xmin, s.entity_type, \
                 s.tsv = (setweight(to_tsvector('english', coalesce(t.title, '')), 'A') \
-                      || setweight(to_tsvector('english', coalesce(t.content, '')), 'B')) AS same \
+                      || setweight(to_tsvector('english', coalesce(t.content, '')), 'B') \
+                      || setweight(to_tsvector('english', coalesce( \
+                             (SELECT string_agg(n.text, E'\n\n' ORDER BY n.seq) \
+                                FROM item_notes n WHERE n.item_id = t.id), '')), 'B')) AS same \
            FROM item_search s LEFT JOIN tasks t ON t.id = s.item_id \
           WHERE s.item_id = $1",
     )
@@ -259,16 +264,22 @@ fn the_vector_follows_the_title_and_the_content_only() {
         vec![task.short_code.clone()]
     );
 
-    // A note is a content edit.
-    items::append_note(
+    // KAIROS-T-0630: a note is a row, not a content edit. Its text is in
+    // the vector, and the version does not change.
+    let before_note = version_of(&mut conn, task.id);
+    kairos_db::item_notes::append_note(
         &mut conn,
         ItemType::Task,
         task.id,
         "Found the saffron fuse.",
         user,
-        chrono::NaiveDate::from_ymd_opt(2026, 10, 17).expect("a date"),
     )
     .expect("appending a note");
+    assert_eq!(
+        version_of(&mut conn, task.id),
+        before_note,
+        "a note writes no version"
+    );
     let noted = search_row(&mut conn, task.id).expect("the row stays");
     assert_ne!(noted.xmin, retitled.xmin, "a note rewrites the row");
     assert!(noted.same, "the vector has the note");

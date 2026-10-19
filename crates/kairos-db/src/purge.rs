@@ -12,7 +12,8 @@
 //! - the row of the task (`tasks`), live or archived;
 //! - its claim (`task_claims`) and its cancel mark (`task_cancellations`),
 //!   by `ON DELETE CASCADE`;
-//! - its content versions (`item_history`);
+//! - its content versions (`item_history`) and its notes (`item_notes`,
+//!   KAIROS-T-0630);
 //! - its metadata values (`item_metadata`);
 //! - each edge to or from it (`item_relationships`), and each edge
 //!   proposal to or from it (`edge_proposals`);
@@ -136,6 +137,7 @@ pub fn purge_task(
             .execute(conn)?;
         diesel::delete(item_history::table.filter(item_history::item_id.eq(task_id)))
             .execute(conn)?;
+        crate::item_notes::delete_for_item(conn, task_id)?;
         diesel::delete(item_chunks::table.filter(item_chunks::item_id.eq(task_id)))
             .execute(conn)?;
         diesel::delete(item_embeddings::table.filter(item_embeddings::item_id.eq(task_id)))

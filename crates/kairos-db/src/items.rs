@@ -220,7 +220,7 @@ pub fn next_short_code(
 }
 
 /// The table of the items of `item_type`.
-fn table_of(item_type: ItemType) -> &'static str {
+pub(crate) fn table_of(item_type: ItemType) -> &'static str {
     match item_type {
         ItemType::Strategy => "strategies",
         ItemType::Initiative => "initiatives",
@@ -966,6 +966,11 @@ pub fn create_task(
             &created.title,
             &created.content,
         )?;
+        // KAIROS-T-0566: a create puts the task in a column, as a move
+        // does. The dispatch rules of that column fire, in this
+        // transaction. The column is the entry column for each caller but
+        // the demo seed (the server refuses any other).
+        crate::dispatch::on_task_entered_column(conn, created.id, column_id, actor)?;
         Ok(created)
     })
 }
@@ -1540,120 +1545,6 @@ pub fn update_item_content(
     })
 }
 
-/// Why [`append_note`] wrote nothing (KAIROS-T-0367).
-#[derive(Debug, thiserror::Error)]
-pub enum NoteError {
-    /// The text is empty or only white space.
-    #[error("The text of the note is empty. Send the text to append.")]
-    EmptyText,
-    /// The item is not there, or the database failed.
-    #[error(transparent)]
-    Item(#[from] ItemError),
-}
-
-impl From<DieselError> for NoteError {
-    fn from(e: DieselError) -> Self {
-        NoteError::Item(ItemError::Database(e))
-    }
-}
-
-/// What [`append_note`] wrote (KAIROS-T-0504).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AppendedNote {
-    /// The new version of the item.
-    pub version: i32,
-    /// The id of the note: `n-3`.
-    pub note_id: String,
-}
-
-/// The version and the content of a live item, with its row locked
-/// (`SELECT … FOR UPDATE`) until the end of the transaction of `conn`
-/// (KAIROS-T-0367, KAIROS-T-0505). The caller runs in a transaction.
-pub fn lock_item_content(
-    conn: &mut PgConnection,
-    item_type: ItemType,
-    item_id: Uuid,
-) -> Result<(i32, String), ItemError> {
-    macro_rules! lock_row {
-        ($table:ident) => {{
-            use crate::schema::$table::dsl;
-            dsl::$table
-                .filter(dsl::id.eq(item_id))
-                .filter(dsl::deleted_at.is_null())
-                .select((dsl::version, dsl::content))
-                .for_update()
-                .first::<(i32, String)>(conn)
-                .optional()
-        }};
-    }
-    let locked = match item_type {
-        ItemType::Strategy => lock_row!(strategies),
-        ItemType::Initiative => lock_row!(initiatives),
-        ItemType::Task => lock_row!(tasks),
-        ItemType::Document => lock_row!(documents),
-        ItemType::Adr => lock_row!(adrs),
-    }?;
-    locked.ok_or(ItemError::ItemNotFound {
-        entity_type: item_type.entity_type(),
-        id: item_id,
-    })
-}
-
-/// Append a note at the end of an item's content (KAIROS-T-0367): a heading
-/// with the id of the note, the UTC date of `today` and the display name of
-/// `actor` ([`kairos_core::items::note_heading`]), then the text. One new
-/// version, one history row, one `item.updated` event.
-///
-/// No version and no anchor: the transaction locks the item row
-/// (`SELECT … FOR UPDATE`) before it reads the content, so two notes at the
-/// same time are written one after the other, and the second one reads the
-/// content that the first one wrote. No note is lost, and each note gets
-/// its own id (KAIROS-T-0504: one after the count of the note headings).
-/// Returns the new version and the id of the note.
-pub fn append_note(
-    conn: &mut PgConnection,
-    item_type: ItemType,
-    item_id: Uuid,
-    text: &str,
-    actor: Uuid,
-    today: chrono::NaiveDate,
-) -> Result<AppendedNote, NoteError> {
-    if text.trim().is_empty() {
-        return Err(NoteError::EmptyText);
-    }
-    conn.transaction::<_, NoteError, _>(|conn| {
-        let (version, content) = lock_item_content(conn, item_type, item_id)?;
-        let author: Option<String> = crate::schema::users::table
-            .filter(crate::schema::users::id.eq(actor))
-            .select(crate::schema::users::display_name)
-            .first(conn)
-            .optional()
-            .map_err(ItemError::from)?;
-        let author = author
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| actor.to_string());
-        let position = kairos_core::items::next_note_position(&content);
-        let heading = kairos_core::items::note_heading(position, today, &author);
-        let new_content = kairos_core::items::content_with_note(&content, &heading, text)
-            .ok_or(NoteError::EmptyText)?;
-        let version = update_item_content(
-            conn,
-            item_type,
-            item_id,
-            ContentUpdate {
-                new_title: None,
-                new_content: &new_content,
-                expected_version: version,
-            },
-            actor,
-        )?;
-        Ok(AppendedNote {
-            version,
-            note_id: kairos_core::items::note_id(position),
-        })
-    })
-}
-
 /// Roll an item back to a historical snapshot (KAIROS-A-0004 "rollback by
 /// copying a historical snapshot back to the entity table — creates a new
 /// version"): the `to_version` snapshot's title/content are written forward
@@ -2094,8 +1985,8 @@ fn soft_delete_planned(
             details,
         )?;
 
-        // KAIROS-T-0022: one thin event for the cascade root, delivered on
-        // commit ([`events::item_placement`] still sees the soft-deleted
+        // KAIROS-T-0022: one thin event for the cascade root, delivered
+        // after the commit (the outbox insert still sees the soft-deleted
         // row).
         events::emit_item_event_by_id(
             conn,
@@ -2106,9 +1997,13 @@ fn soft_delete_planned(
         )?;
         // KAIROS-T-0574: and one for each cascaded descendant, with its own
         // board, so a socket filtered to the board of a descendant hears it.
-        for code in &cascaded_short_codes {
-            events::emit_item_event_by_code(conn, EventKind::ItemDeleted, code, actor)?;
-        }
+        // One insert for all of them (KAIROS-T-0632).
+        events::emit_item_events_by_codes(
+            conn,
+            EventKind::ItemDeleted,
+            &cascaded_short_codes,
+            actor,
+        )?;
 
         Ok(SoftDeleteOutcome {
             root_short_code,
@@ -2189,28 +2084,19 @@ fn restore_row(
     }
 }
 
-/// Everything an archived item needs back before it can be live, that is
-/// itself gone. Empty = the restore may proceed.
-///
-/// A document has no column. It can name a board as its owner
-/// (COLLIERY-T-0269), and that board is what it needs back: the delete of
-/// a board looks at the live documents only, so the owner of an archived
-/// document can be gone. The `impacts` links of a document or of an ADR
-/// need nothing: a link to an archived repository stays, and it is shown
-/// as such.
-fn restore_blockers(
+/// The board and the column of an item; each is `None` where the family
+/// has none (a document has no column; an ADR may be off a board).
+type Placement = (Option<Uuid>, Option<Uuid>);
+
+/// The [`Placement`] of an item, per family; `None` when the row is not
+/// there.
+fn placement_of(
     conn: &mut PgConnection,
     item_type: ItemType,
     item_id: Uuid,
-) -> Result<Vec<String>, DieselError> {
-    use crate::schema::{
-        adrs, board_columns, boards, documents, initiatives, repositories, strategies, tasks, teams,
-    };
-
-    let mut missing = Vec::new();
-
-    // (board, column) placement, per family.
-    let placement: Option<(Option<Uuid>, Option<Uuid>)> = match item_type {
+) -> Result<Option<Placement>, DieselError> {
+    use crate::schema::{adrs, documents, initiatives, strategies, tasks};
+    Ok(match item_type {
         ItemType::Strategy => strategies::table
             .filter(strategies::id.eq(item_id))
             .select((strategies::board_id, strategies::column_id))
@@ -2243,9 +2129,28 @@ fn restore_blockers(
             .first::<Uuid>(conn)
             .optional()?
             .map(|board_id| (Some(board_id), None)),
-    };
+    })
+}
 
-    if let Some((board_id, column_id)) = placement {
+/// Everything an archived item needs back before it can be live, that is
+/// itself gone. Empty = the restore may proceed.
+///
+/// A document has no column. It can name a board as its owner
+/// (COLLIERY-T-0269), and that board is what it needs back: the delete of
+/// a board looks at the live documents only, so the owner of an archived
+/// document can be gone. The `impacts` links of a document or of an ADR
+/// need nothing: a link to an archived repository stays, and it is shown
+/// as such.
+fn restore_blockers(
+    conn: &mut PgConnection,
+    item_type: ItemType,
+    item_id: Uuid,
+) -> Result<Vec<String>, DieselError> {
+    use crate::schema::{board_columns, boards, repositories, tasks, teams};
+
+    let mut missing = Vec::new();
+
+    if let Some((board_id, column_id)) = placement_of(conn, item_type, item_id)? {
         if let Some(board_id) = board_id {
             let board_live: Option<Uuid> = boards::table
                 .filter(boards::id.eq(board_id))
@@ -2317,6 +2222,9 @@ pub struct RestoreOutcome {
     /// Archived descendants that were NOT restored, sorted — see
     /// [`restore_item`] for why they are left alone, and named.
     pub still_archived_descendants: Vec<String>,
+    /// The column the item is in again, `None` for a document or an ADR
+    /// off a board (KAIROS-T-0566: the server checks its WIP limit).
+    pub column_id: Option<Uuid>,
 }
 
 /// Why a restore was refused: everything missing that the item needs in
@@ -2415,9 +2323,11 @@ pub fn restore_item(
             actor,
         )?;
 
+        let column_id = placement_of(conn, item_type, item_id)?.and_then(|(_, column)| column);
         Ok(Ok(RestoreOutcome {
             short_code,
             still_archived_descendants,
+            column_id,
         }))
     })
 }

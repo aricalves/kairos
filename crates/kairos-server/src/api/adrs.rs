@@ -15,6 +15,7 @@ use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use kairos_client::types as dto;
 use kairos_core::short_code::ItemType;
+use kairos_db::models::enums::RelationshipType;
 use kairos_db::models::items::Adr;
 use kairos_db::{boards, items};
 use serde_json::json;
@@ -22,8 +23,9 @@ use serde_json::json;
 use super::convert::{IntoDto, attach_impact, attach_impacts};
 use super::documents::{clamp_impact_list, impacting_ids};
 use super::{
-    Liveness, map_board_error, map_item_error, opt_board_id_by_ref, parse_opt_uuid, parse_uuid,
-    require_capability, require_item_edit,
+    Liveness, atomically, map_board_error, map_graph_error, map_item_error, opt_board_id_by_ref,
+    parse_opt_uuid, parse_uuid, require_capability, require_edge_write, require_item_edit,
+    resolve_live_ref,
 };
 use crate::app::AppState;
 use crate::body::ApiJson;
@@ -155,7 +157,9 @@ pub(crate) async fn get_adr(
         .blocking
         .run(&tenant.slug, move |conn| {
             let adr = load(conn, &short_code, Liveness::IncludeArchived)?;
-            render(conn, adr)
+            let mut adr = render(conn, adr)?;
+            adr.notes = crate::api::item_notes(conn, &adr.id)?;
+            Ok(adr)
         })
         .await?;
     Ok(Json(adr))
@@ -163,6 +167,10 @@ pub(crate) async fn get_adr(
 
 /// Create an ADR. On a board: requires `manage_adrs` on that board.
 /// Off-board (no `board_id`): org-admin-only (A-0006 fallback).
+///
+/// `parent` (KAIROS-T-0591) is the short code of the item that the ADR
+/// supports: a strategy, an initiative or a task. The ADR and its
+/// `supports` edge are one transaction: a refused parent leaves no ADR.
 #[utoipa::path(
     post,
     path = "/api/adrs",
@@ -171,7 +179,7 @@ pub(crate) async fn get_adr(
     responses(
         (status = 201, description = "Created", body = dto::Adr),
         (status = 403, description = "Missing capability", body = dto::ErrorEnvelope),
-        (status = 422, description = "Unknown board/column or bad date", body = dto::ErrorEnvelope),
+        (status = 422, description = "Unknown board/column/parent, a parent that is not a strategy, an initiative or a task, or bad date", body = dto::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn create_adr(
@@ -195,29 +203,77 @@ pub(crate) async fn create_adr(
         })
         .transpose()?;
     let user = auth.user_id;
+    let role = tenant.role;
     let slug = tenant.slug.clone();
     let created = state
         .blocking
         .run(&tenant.slug, move |conn| {
             let board_id = opt_board_id_by_ref(conn, body.board_id.as_deref())?;
             require_capability(conn, &slug, board_id, user, MANAGE)?;
-            let created = items::create_adr(
-                conn,
-                items::CreateAdr {
-                    board_id,
-                    column_id,
-                    title: &body.title,
-                    content: &body.content,
-                    decision_maker: body.decision_maker.as_deref(),
-                    decision_date,
-                },
-                user,
-            )
-            .map_err(map_item_error)?;
-            render(conn, created)
+            // KAIROS-T-0591: the parent is checked before the first write.
+            let parent = body
+                .parent
+                .as_deref()
+                .map(|code| supported_item(conn, code))
+                .transpose()?;
+            // The ADR and its edge are one transaction: a refused edge
+            // leaves no ADR (COLLIERY-T-0227).
+            atomically(conn, |conn| {
+                let created = items::create_adr(
+                    conn,
+                    items::CreateAdr {
+                        board_id,
+                        column_id,
+                        title: &body.title,
+                        content: &body.content,
+                        decision_maker: body.decision_maker.as_deref(),
+                        decision_date,
+                    },
+                    user,
+                )
+                .map_err(map_item_error)?;
+                if let Some(parent) = &parent {
+                    // The link rule, by the function that
+                    // `POST /api/relationships` asks. The creator can edit
+                    // the new ADR, so the rule lets the creator through.
+                    require_edge_write(
+                        conn,
+                        role,
+                        user,
+                        RelationshipType::Supports.as_str(),
+                        parent.typed(),
+                        (created.id, ItemType::Adr),
+                    )?;
+                    kairos_db::graph::link_items(
+                        conn,
+                        parent.id,
+                        created.id,
+                        RelationshipType::Supports,
+                        user,
+                    )
+                    .map_err(map_graph_error)?;
+                }
+                render(conn, created)
+            })
         })
         .await?;
     Ok((StatusCode::CREATED, Json(created)))
+}
+
+/// The `parent` of an ADR create (KAIROS-T-0591): a live strategy,
+/// initiative or task, the source of the `supports` edge. A retired code
+/// finds its item. Each refusal is a 422 `VALIDATION` with
+/// `details.field` = `parent`.
+fn supported_item(conn: &mut PgConnection, code: &str) -> Result<super::LiveRef, ApiError> {
+    let found = resolve_live_ref(conn, code, "parent")
+        .map_err(|e| e.with_details(json!({ "field": "parent" })))?;
+    kairos_core::graph::check_link(
+        kairos_core::graph::Relationship::Supports,
+        found.item_type,
+        ItemType::Adr,
+    )
+    .map_err(|e| ApiError::validation(e.to_string()).with_details(json!({ "field": "parent" })))?;
+    Ok(found)
 }
 
 /// Update ADR content (KAIROS-A-0004 optimistic concurrency).

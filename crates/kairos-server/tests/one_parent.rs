@@ -350,10 +350,36 @@ async fn one_parent_reparent_and_parent_on_create() {
     assert_eq!(err.code(), Some("VALIDATION"), "{err:?}");
     assert_eq!(rows_titled(&mut conn, "initiatives", "Lost"), 0);
 
-    // A refusal AFTER the insert rolls the task back: a create into the
-    // claims column Active under an initiative in Discovery.
+    // KAIROS-T-0566: a task starts in the entry column. A create into
+    // Active is refused before any write.
     let err = admin
         .create_task(&task_request("Too early", Some(&i1), Some(&active)))
+        .await
+        .expect_err("not the entry column");
+    assert_eq!(err.code(), Some("VALIDATION"), "{err:?}");
+    assert_eq!(
+        err.details().and_then(|d| d["field"].as_str()),
+        Some("column_id"),
+        "{err:?}"
+    );
+    assert_eq!(rows_titled(&mut conn, "tasks", "Too early"), 0);
+    // A refusal AFTER the insert rolls the task back: for this part the
+    // entry column holds claims, and the initiative is in Discovery.
+    let entry = web.columns[0].id.clone();
+    let claims = |on: bool| kairos_client::types_org::UpdateColumnRequest {
+        name: None,
+        position: None,
+        is_done: None,
+        claims: Some(on),
+        keeps_claims: None,
+        wip_limit: None,
+    };
+    admin
+        .update_column(&web.board.id, &entry, &claims(true))
+        .await
+        .expect("the entry column holds claims");
+    let err = admin
+        .create_task(&task_request("Too early", Some(&i1), None))
         .await
         .expect_err("PARENT_NOT_ACTIVE");
     assert_eq!(err.code(), Some("PARENT_NOT_ACTIVE"), "{err:?}");
@@ -364,9 +390,13 @@ async fn one_parent_reparent_and_parent_on_create() {
     );
     // With no parent, the same create passes (KAIROS-A-0040 decision 3).
     admin
-        .create_task(&task_request("Free", None, Some(&active)))
+        .create_task(&task_request("Free", None, None))
         .await
         .expect("no parent, no gate");
+    admin
+        .update_column(&web.board.id, &entry, &claims(false))
+        .await
+        .expect("the entry column holds no claims again");
 
     // ---- one parent ---------------------------------------------------------
     let err = admin

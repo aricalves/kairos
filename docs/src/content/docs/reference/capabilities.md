@@ -165,7 +165,7 @@ cannot carry them; grant and revoke refuse them. `whoami` reports them under
 
 | Capability | How it is satisfied |
 |---|---|
-| `file_backlog` | Every member of the tenant holds it on every live **delivery** board. It permits a request to any team: a **task** in the entry column of its delivery board, in the support lane. The server consults it only when the caller does not hold `manage_tasks` on the board. The work class of a request is `support`. The server refuses a request that sends the work class `planned`. The server refuses a request that names a column that is not the entry column. The repository is optional. It is not part of the condition. The capability permits the create only. The person who sends a request created it, so the [edit rule](#the-edit-rule) lets that person edit it and archive it. No rule lets that person move it. |
+| `file_backlog` | Every member of the tenant holds it on every live **delivery** board. It permits a request to any team: a **task** in the entry column of its delivery board, in the support lane. The server consults it only when the caller does not hold `manage_tasks` on the board. The work class of a request is `support`. The server refuses a request that sends the work class `planned`. The server refuses each create, a request too, that names a column that is not the entry column (KAIROS-T-0566). The repository is optional. It is not part of the condition. The capability permits the create only. The person who sends a request created it, so the [edit rule](#the-edit-rule) lets that person edit it and archive it. No rule lets that person move it. |
 
 These implications are computed the same way — by the authorisation
 check rather than by a stored row:
@@ -254,6 +254,78 @@ A refusal names the capability and the scope. A refusal on the structure of
 the organization has `details.scope` = `organization`. A refusal of
 `configure_boards` or `administer_members` has `details.or_capability` =
 `manage_structure`.
+
+## The scope of an agent key
+
+An agent key has a scope (KAIROS-T-0536, KAIROS-A-0063). The scope is a list of
+capabilities and an optional list of boards. A request with the key can do an
+action only when two conditions are true:
+
+1. The person can do the action.
+2. The scope has the capability of the action, on the board of the action.
+
+Thus a scope never gives a right to the key. It only takes rights away.
+
+### The names of a scope
+
+A scope can name each capability of [the grantable vocabulary](#the-grantable-vocabulary),
+`manage_structure` and `file_backlog`. Kairos refuses each other name, and a
+glob such as `*`. The refusal is `VALIDATION`, with `details.field` =
+`scope.capabilities` and `details.value` = the name.
+
+| Scope | What the key can do |
+|---|---|
+| No `scope` in the request | The default scope: each capability but `purge` and `manage_structure`, on each board |
+| `capabilities: []` | Nothing. The key is read-only |
+| A list of capabilities | Only the actions of these capabilities |
+| A list of boards | Only the actions on these boards. An action with no board is refused |
+
+A scope does not limit a read. Each member of the organization can read each item.
+
+### Which capability an action needs
+
+| Action | The scope needs |
+|---|---|
+| An action of a board capability | That capability, for example `manage_tasks` or `purge` |
+| An edit, an archive or a restore of an item | `manage_<type>` of the item. The creator and the claim of a task count only through it |
+| A request to another team | `file_backlog` |
+| A change of teams, boards and the grants of `manage_structure` | `manage_structure` |
+| The work of the organization admin role: accounts, keys, SCIM tokens, templates, metadata definitions, delivery streams, forge connections | `manage_structure` |
+| A claim, a hand-off or a release of the owner of an item | `member` |
+| A write to a team page or an announcement | `manage_documents` |
+
+The organization admin role passes each check only inside the scope. For
+example, the default key of an admin can make a task on each board. It cannot
+purge a task or make a team.
+
+### The refusal
+
+The refusal is `KEY_SCOPE`, with status 403. The refusal names the scope:
+
+| Field of `details` | Value |
+|---|---|
+| `required_capability` | The capability of the action |
+| `board_id` | The board of the action, or null |
+| `scope_needs` | The capability that the scope must have. For the work of the admin role, this is `manage_structure` |
+| `reason` | `capability`, `board` or `no_board` |
+| `key_scope` | The `capabilities` and the `boards` of the key. `boards` null means each board |
+
+When the scope has the capability and the person does not, the refusal is
+`FORBIDDEN`, as for a login.
+
+### Keys from before the scope
+
+Each key that existed before KAIROS-T-0536 has no scope. Such a key has no
+limit: it keeps each right of its person. Thus no agent stops at the upgrade.
+Make a new key with a scope, and revoke the old key, to limit an agent.
+
+A rotation keeps the scope of the key. The scope of a key does not change
+after Kairos makes it. The key of a service account has no scope: a service
+account has only its grants.
+
+`whoami` shows the scope of the key in use: REST `agent_key.scope`, the MCP
+section `Agent key scope` and the CLI line `key scope:`. See
+[Give an agent your key](../../how-to/give-an-agent-your-key/#choose-the-scope-of-the-key).
 
 ## How a board is resolved
 
@@ -384,11 +456,15 @@ create of a document needs `manage_documents` on its owner: see
 
 This is the link rule. A principal can create or remove an edge when the
 principal can edit the item at one end. The source is sufficient, and the
-target is sufficient. [The edit rule](#the-edit-rule) decides each end.
+target is sufficient. [The edit rule](#the-edit-rule) decides each end. The
+create of a `blocks` edge needs the target: see
+[A `blocks` edge needs the blocked item](#a-blocks-edge-needs-the-blocked-item).
 
 | Relationship | Who can write it |
 |---|---|
-| `parent`, `blocks`, `supports`, `informs`, `supersedes` | A principal who can edit the source **or** the target: its creator, **or** a holder of `manage_<type>` on its authorization board, **or** an organization admin |
+| `parent`, `supports`, `informs`, `supersedes` | A principal who can edit the source **or** the target: its creator, **or** a holder of `manage_<type>` on its authorization board, **or** an organization admin |
+| Create `blocks` | A principal who can edit the target, the blocked item. With the source only, the call makes a proposal |
+| Remove `blocks` | A principal who can edit the source **or** the target |
 
 No relationship type needs the admin role. Releases up to and including 0.4.0
 kept `supports`, `informs` and `supersedes` for organization admins. In those
@@ -402,6 +478,38 @@ change. A caller who can edit the two ends of an impossible edge gets
 
 A refusal names two capabilities, one for each end. The caller needs one of
 them.
+
+### A `blocks` edge needs the blocked item
+
+A `blocks` edge changes the work of its target. The card of the target shows
+it blocked, and the claimant of the target gets the events. So the create of a
+`blocks` edge needs the right to edit the target (KAIROS-T-0569).
+
+| The caller can edit | `link_items` and `POST /api/relationships` give |
+|---|---|
+| The target | The edge. REST answers 201. |
+| The source only | A proposal of the edge, and no edge. REST answers 202 with `message` and `proposal`. |
+| Neither end | 403 `FORBIDDEN`. |
+
+The answer of a proposal names the proposal and who can confirm it. A holder
+of `approve_proposals` on the board of one end confirms, or an organization
+admin. See [The decision of an edge proposal](#the-decision-of-an-edge-proposal).
+
+The server records no proposal of an edge that cannot exist. The type rule
+gives `RELATIONSHIP_RULE`, and an edge that exists gives `ALREADY_LINKED`. The
+same proposal, pending, gives `CONFLICT`. The confirm does the cycle check.
+
+The refusal of a `blocks` edge names the target first.
+`details.required_capability` and `details.board_id` are those of the target.
+Each entry of `details.any_of` has `gives`: `edge` for the target, and
+`proposal` for the source.
+
+The remove of a `blocks` edge keeps the link rule: a principal who can edit
+one end removes it. To remove a blocker does not stop the work of a team.
+
+Until KAIROS-T-0569, a principal who could edit the source wrote a `blocks`
+edge. So a team could block the work of a different team, and that team did
+not agree.
 
 ### The `supports` edge of a document
 
@@ -506,8 +614,8 @@ caller creates the document. So the link rule lets the caller link it to the
 parent. The caller needs no capability on the board of the parent.
 
 A create with no `board`, or with a null or empty `board`, gets `VALIDATION`,
-with status 422. The refusal names `board`: `details.field` on REST,
-`details.argument` on MCP.
+with status 422. The refusal names `board` in `details.field`, on REST and
+on MCP.
 
 ### Who can change the owner
 

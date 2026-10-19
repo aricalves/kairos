@@ -68,7 +68,7 @@ One JSON object per WebSocket text message
 | `short_code` | The affected item — re-fetch it via the REST API. For `repository` and `board`, the slug |
 | `board_id` | The item's board (UUID); `null` for off-board items (documents, unplaced ADRs) |
 | `column_id` | The item's (new) column (UUID); omitted when not applicable |
-| `change` | What changed, for `claim_changed` and `board_configured`; omitted for each other kind |
+| `change` | What changed, for `claim_changed` and `board_configured`; the id of the note for `note_appended` and `note_promoted`; omitted for each other kind |
 | `actor` | The acting user's id (UUID). For a change that an agent made with the agent key of a person, the person |
 | `agent_key_id` | The agent key (UUID) of the change, when an agent made it with the agent key of a person; omitted otherwise |
 | `occurred_at` | RFC 3339 timestamp |
@@ -96,11 +96,14 @@ ignore it.
 | `task_cancelled` | A person cancelled a task. `column_id` is the done column of the board |
 | `claim_changed` | The claim of a task changed. `change` tells what changed (see below) |
 | `board_configured` | The configuration of a board changed: a column, a transition, a flag or a setting. `entity_type` is `board`, `short_code` is the slug of the board, `board_id` is the board. `change` names the setting (see below). Read the board again |
+| `note_appended` | A person or an agent added a note to the item. `change` is the id of the note (`n-3`). A note writes no version of the content: read the item again for its `notes` |
+| `note_promoted` | A note of the item became a draft ADR or document. `change` is the id of the note |
 
 ### The precise kinds
 
-The kinds `task_state_changed`, `task_cancelled` and `claim_changed` come
-**in addition** to the kind that Kairos sent before:
+The kinds `task_state_changed`, `task_cancelled`, `claim_changed`,
+`note_appended` and `note_promoted` come **in addition** to the kind that
+Kairos sent before:
 
 | Write | Events |
 |---|---|
@@ -111,6 +114,8 @@ The kinds `task_state_changed`, `task_cancelled` and `claim_changed` come
 | A cancel | `item_transitioned`, `task_cancelled`, and `claim_changed` (`ended`) when the task had a claim |
 | A move into Active by a person | `item_transitioned`, `claim_changed` (`taken`) |
 | A move out of Active | `item_transitioned`, `claim_changed` (`ended`) |
+| A note | `item_updated`, `note_appended` (the id of the note) |
+| A promote of a note | `item_updated`, `note_promoted` (the id of the note) for the item of the note, and `item_created` for the new item |
 
 Thus a client that knows only the older kinds keeps working. A client that
 must know what changed reads the precise kind. The events of one write come
@@ -144,7 +149,9 @@ endpoints in the OpenAPI spec.
 
 A notification is for one person (KAIROS-T-0381). Its 2 events go only to the
 connections of that person, in the tenant of the notification. A connection of
-a different person never gets them.
+a different person never gets them. One write can tell many persons, for
+example the team of a board. Then the server sends one event, and each person
+of the write gets it.
 
 | `event` | Emitted when |
 |---|---|
@@ -192,6 +199,13 @@ time for each key. It sends none for a revoked key or a key with no expiry.
 It sends none for the old key of a rotation.
 
 The text names the key and `kairos keys rotate`. The notification has no item, so `short_code` is empty.
+
+The proposal kind (KAIROS-T-0558):
+
+| `kind` | Kairos makes it when |
+|---|---|
+| `proposal_decided` | A person confirms or rejects an edge proposal. The proposer gets it. The text names the edge, the state and the decider. `short_code` is the code of the source of the edge |
+
 The [MCP tools reference](../mcp-tools/#your-notifications) lists each kind.
 
 ## Client → server: filters
@@ -247,9 +261,46 @@ shows no event that the member cannot get without it.
   second to 15 seconds, and adds or removes up to 50 % of that time. Thus
   the clients do not all connect again in the same second after a restart
   of the server.
-- Fan-out is PostgreSQL `LISTEN/NOTIFY` on the `kairos_events` channel,
-  emitted inside the mutating transaction, so PostgreSQL delivers the
-  notification on commit and drops it on rollback.
+- An event comes at most about 100 ms after the commit of its write. See
+  [How the server sends the events](#how-the-server-sends-the-events).
+
+## How the server sends the events
+
+A write puts its events into the table `public.event_outbox`. It does this
+in its own transaction. Thus a write that rolls back sends no event.
+
+Each server process has one emitter. The emitter is part of the owner of
+the `LISTEN` connection. Every 100 ms, the emitter does these steps in one
+transaction:
+
+1. It takes the unsent rows in order, with `FOR UPDATE SKIP LOCKED`.
+2. It finds the boards across the `blocks` edges, with one query for each
+   tenant.
+3. It sends the events with PostgreSQL `NOTIFY` on the channel
+   `kairos_events`. One `NOTIFY` holds a JSON array of events, under 8000
+   bytes.
+4. It marks the rows as sent.
+
+Every 10 seconds, the emitter deletes the rows that it sent more than one
+minute ago.
+
+Each server listens on the channel. It sends each event to the
+connections of the tenant of the event.
+
+The design has these results:
+
+- A write does not send `NOTIFY`. Thus the writes of different tenants do
+  not wait for one database lock at commit.
+- With two server processes, `SKIP LOCKED` gives each row to one emitter.
+  The `NOTIFY` of that emitter reaches the listeners of the two processes.
+  Thus each connection gets each event one time.
+- A process can stop after the commit of a write and before the
+  `NOTIFY`. The row stays unsent. The next pass of an emitter sends it.
+  Thus the event comes late, but it does not go.
+- An emitter can stop before its commit. Then PostgreSQL rolls back its
+  marks and its `NOTIFY`. The next pass sends the rows again.
+- An event of a person goes to many persons in one event. The event holds
+  a list of at most 100 persons. A longer list makes more events.
 
 ## Related reading
 

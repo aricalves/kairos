@@ -182,6 +182,12 @@ enum Command {
     Adrs(AdrsCommand),
     /// Search and traverse all entity types (POST /api/search)
     Search(Box<SearchArgs>),
+    /// The activity log of the organization, newest first: filter by item,
+    /// person, action, time or team
+    Activity(Box<commands::activity::ActivityArgs>),
+    /// Your notifications: list them, mark them read
+    #[command(subcommand)]
+    Notifications(commands::notifications::NotificationsCommand),
     /// Teams and their membership
     #[command(subcommand)]
     Teams(TeamsCommand),
@@ -217,9 +223,10 @@ enum Command {
     /// The templates of the organization (writes: organization admins)
     #[command(subcommand)]
     Templates(commands::meta::TemplatesCommand),
-    /// Link an item to a URI with a label (the relationship `external`)
+    /// Make a relationship: parent, blocks, informs, supports, supersedes,
+    /// impacts (a repository) or external (a URI)
     Link(commands::links::LinkArgs),
-    /// Remove the external reference of an item with a URI
+    /// Remove a relationship that `kairos link` makes
     Unlink(commands::links::UnlinkArgs),
     /// The code index of a checkout, and its code tools for an agent (COLLIERY-T-1852)
     Index(IndexArgs),
@@ -326,6 +333,8 @@ async fn dispatch(command: Command) -> Result<(), CliError> {
         Command::Documents(command) => command.run().await,
         Command::Adrs(command) => command.run().await,
         Command::Search(args) => (*args).run().await,
+        Command::Activity(args) => (*args).run().await,
+        Command::Notifications(command) => command.run().await,
         Command::Teams(command) => command.run().await,
         Command::Grants(command) => command.run().await,
         Command::Repos(command) => command.run().await,
@@ -747,6 +756,13 @@ fn print_identity(identity: &WhoamiResponse) {
             .collect();
         println!("manage_structure: {}", scopes.join(", "));
     }
+    // KAIROS-T-0536: the scope of the agent key in use.
+    if let Some(key) = &identity.agent_key {
+        match &key.scope {
+            Some(scope) => println!("key scope: {}", scope.describe()),
+            None => println!("key scope: none (the key can do each thing that you can do)"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -890,6 +906,27 @@ mod tests {
             Cli::try_parse_from(["kairos", "boards", "create", "--name", "x"]).is_err(),
             "slug, level and prefix are required"
         );
+    }
+
+    /// KAIROS-T-0646: `repos local` takes one folder or none. A second
+    /// folder or an unknown flag is refused, and the error names it.
+    #[test]
+    fn repos_local_takes_one_folder_or_none() {
+        for argv in [
+            &["kairos", "repos", "local"][..],
+            &["kairos", "repos", "local", "boards/acme", "--json"][..],
+        ] {
+            let cli = Cli::try_parse_from(argv).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
+            assert!(matches!(cli.command, Command::Repos(_)));
+        }
+        let err = Cli::try_parse_from(["kairos", "repos", "local", "a", "b"])
+            .err()
+            .expect("a second folder is refused");
+        assert!(err.to_string().contains("'b'"), "{err}");
+        let err = Cli::try_parse_from(["kairos", "repos", "local", "--fetch"])
+            .err()
+            .expect("an unknown flag is refused");
+        assert!(err.to_string().contains("--fetch"), "{err}");
     }
 
     /// KAIROS-T-0386: `repos write-token` parses its subcommands, and takes
@@ -1767,6 +1804,87 @@ mod tests {
             _ => panic!("expected keys revoke"),
         }
         assert!(Cli::try_parse_from(["kairos", "keys", "create"]).is_err());
+
+        // KAIROS-T-0536: the scope of an agent key.
+        let cli = Cli::try_parse_from([
+            "kairos",
+            "keys",
+            "create",
+            "--name",
+            "ci",
+            "--scope",
+            "manage_tasks,transition_items",
+            "--scope-board",
+            "web",
+            "--scope-board",
+            "ops",
+        ])
+        .expect("keys create with a scope parses");
+        match cli.command {
+            Command::Keys(KeysCommand::Create {
+                scope,
+                read_only,
+                scope_board,
+                ..
+            }) => {
+                let request =
+                    commands::keys::scope_request(scope, read_only, scope_board).expect("a scope");
+                assert_eq!(
+                    request.capabilities,
+                    Some(vec![
+                        "manage_tasks".to_string(),
+                        "transition_items".to_string()
+                    ])
+                );
+                assert_eq!(
+                    request.boards,
+                    Some(vec!["web".to_string(), "ops".to_string()])
+                );
+            }
+            _ => panic!("expected keys create"),
+        }
+        let cli = Cli::try_parse_from(["kairos", "keys", "create", "--name", "r", "--read-only"])
+            .expect("--read-only parses");
+        match cli.command {
+            Command::Keys(KeysCommand::Create {
+                scope,
+                read_only,
+                scope_board,
+                ..
+            }) => {
+                let request =
+                    commands::keys::scope_request(scope, read_only, scope_board).expect("a scope");
+                assert_eq!(request.capabilities, Some(Vec::new()));
+                assert_eq!(request.boards, None);
+            }
+            _ => panic!("expected keys create"),
+        }
+        assert_eq!(commands::keys::scope_request(None, false, Vec::new()), None);
+        for args in [
+            &[
+                "kairos",
+                "keys",
+                "create",
+                "--name",
+                "x",
+                "--scope",
+                "purge",
+                "--read-only",
+            ][..],
+            &[
+                "kairos",
+                "keys",
+                "create",
+                "--name",
+                "x",
+                "--service-account",
+                "sa",
+                "--scope",
+                "purge",
+            ][..],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err(), "{args:?}");
+        }
     }
 
     /// KAIROS-T-0388: `admin agent-keys list` takes a user filter and a

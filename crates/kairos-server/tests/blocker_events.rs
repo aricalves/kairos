@@ -401,7 +401,9 @@ async fn a_blocker_that_goes_away_or_comes_back_tells_the_dependant() {
     .execute(&mut conn)
     .expect("alice owns the initiative");
     let t = task(&bob, &board, "Blocks the initiative").await;
-    blocks(&bob, &t, &initiative).await;
+    // KAIROS-T-0569: a blocks edge needs the right to edit the blocked
+    // item. bob cannot edit the initiative, so the admin links it.
+    blocks(&admin, &t, &initiative).await;
     let _ = new_notes(&mut conn, &mut notes);
     moves(&bob, &t, &columns, &["Todo", "Active", "Completed"]).await;
     let data = new_unblocked(&mut conn, &mut sent);

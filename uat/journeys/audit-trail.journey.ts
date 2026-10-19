@@ -170,6 +170,20 @@ journey(
       };
     });
 
+    await step(alice, 'reads the same episode from the CLI: the activity of the item, and the diff of her fix', async () => {
+      const cli = await alice.cli();
+      // KAIROS-T-0592: `kairos activity --item` takes the short code, and
+      // `tasks diff` compares one version with the version before it.
+      const feed = await cli.json(['activity', '--item', code]);
+      expect(feed.items.length).toBeGreaterThan(0);
+      for (const row of feed.items) expect(row.entity_short_code).toBe(code);
+      const diff = await cli.ok(['tasks', 'diff', code, String(goodVersion)]);
+      expect(diff).toContain(`+++ ${code} v${goodVersion} (`);
+      expect(diff).toContain('-Sweep history older than 30 days.');
+      expect(diff).toContain('+Sweep history older than 90 days.');
+      return { activity_rows: feed.items.length, diff_of: `v${goodVersion - 1} -> v${goodVersion}` };
+    });
+
     await step(bob, 'finds the episode in the activity feed, filtered to the item', async () => {
       const page = await bob.gui();
       await page.goto('/activity');

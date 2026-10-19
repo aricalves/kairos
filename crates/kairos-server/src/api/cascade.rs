@@ -115,15 +115,24 @@ fn not_reached_dto(items: Vec<items::NotReached>) -> Vec<dto::NotReached> {
 
 /// One line for each descendant that an archive did not reach, as MCP
 /// `delete_item` prints it. Empty when the archive reached each one.
-pub(crate) fn not_reached_lines(items: &[items::NotReached]) -> String {
+/// `preview`: the lines of `delete_item {preview: true}`, for an archive
+/// that has not happened (KAIROS-T-0558).
+pub(crate) fn not_reached_lines(items: &[items::NotReached], preview: bool) -> String {
     if items.is_empty() {
         return String::new();
     }
-    let mut out = format!(
-        "The archive did not reach {} item{}. They stay live and keep their parent.\n",
-        items.len(),
-        if items.len() == 1 { "" } else { "s" }
-    );
+    let (count, plural) = (items.len(), if items.len() == 1 { "" } else { "s" });
+    let mut out = if preview {
+        format!(
+            "The archive would not reach {count} item{plural}. They would stay live and keep \
+             their parent.\n"
+        )
+    } else {
+        format!(
+            "The archive did not reach {count} item{plural}. They stay live and keep their \
+             parent.\n"
+        )
+    };
     for item in items {
         let reason = match &item.reason {
             items::NotReachedReason::CannotEdit {
@@ -220,13 +229,21 @@ mod tests {
     /// stays.
     #[test]
     fn the_lines_name_each_item_and_its_reason() {
-        assert_eq!(not_reached_lines(&[]), "");
+        assert_eq!(not_reached_lines(&[], false), "");
+        assert_eq!(not_reached_lines(&[], true), "");
         assert_eq!(
-            not_reached_lines(&left()),
+            not_reached_lines(&left(), false),
             "The archive did not reach 2 items. They stay live and keep their parent.\n\
              - ACME-I-0002: You need `manage_initiatives` on the board \
              00000000-0000-0000-0000-000000000000.\n\
              - ACME-T-0009: It is below ACME-I-0002.\n"
+        );
+        // KAIROS-T-0558: the preview says what would stay.
+        assert_eq!(
+            not_reached_lines(&left()[..1], true),
+            "The archive would not reach 1 item. They would stay live and keep their parent.\n\
+             - ACME-I-0002: You need `manage_initiatives` on the board \
+             00000000-0000-0000-0000-000000000000.\n"
         );
     }
 

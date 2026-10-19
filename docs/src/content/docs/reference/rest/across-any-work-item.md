@@ -13,13 +13,13 @@ Operations addressed by `{entity_type}` and a short code, so they work uniformly
 
 ### `POST /api/relationships`
 
-Create a relationship edge.
+Create a relationship edge, or a proposal of a `blocks` edge.
 
 The link rule applies (COLLIERY-T-0228). The caller can edit the source
-or the target. The rule is the same for each relationship type.
-
-One exception (COLLIERY-T-0235) is a `supports` edge to a document
-that has no parent. The caller must be able to edit the document.
+or the target. A `blocks` edge needs the target, the blocked item
+(KAIROS-T-0569). A caller who can edit the source only gets a proposal
+of the edge. The answer is 202 with the proposal. The message says who
+can confirm it (KAIROS-A-0060).
 
 The T-0013 graph
 service enforces the A-0001 type-rule matrix, cycle prevention for
@@ -31,7 +31,9 @@ Request body (required): `application/json`, [`CreateRelationshipRequest`](../sc
 | Response | Body | Meaning |
 |---|---|---|
 | `201` | [`Relationship`](../schemas/#relationship) | Edge created (relationship_add activity row written) |
-| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The caller may edit neither the source nor the target. For a supports edge to a document with no parent: the caller may not edit the document |
+| `202` | [`ProposedRelationship`](../schemas/#proposedrelationship) | No edge: a proposal of a blocks edge. The caller can edit the source only. The message says who can confirm it |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The caller may edit neither the source nor the target |
+| `409` | [`ErrorEnvelope`](../schemas/#errorenvelope) | CONFLICT: the same proposal is pending, or the item has too many pending proposals |
 | `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Rule violation, cycle, duplicate edge, or unknown endpoint |
 
 ### `DELETE /api/relationships/{id}`
@@ -502,8 +504,10 @@ snapshot with `?version=N`.
 
 ### `POST /api/{entity_type}/{short_code}/notes`
 
-Append a note to an item. The note gets a heading with its id, the date
-and the name of the caller, then the text. One new version.
+Append a note to an item. The note gets the next id (`n-3`), the time
+and the caller as its author. The text is markdown, and it can have
+headings. The note writes no version of the content: the read of the
+item shows it in `notes`.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
@@ -514,7 +518,7 @@ Request body (required): `application/json`, [`AppendNoteRequest`](../schemas/#a
 
 | Response | Body | Meaning |
 |---|---|---|
-| `200` | [`AppendNoteResponse`](../schemas/#appendnoteresponse) | Appended; the id of the note and the new version |
+| `200` | [`AppendNoteResponse`](../schemas/#appendnoteresponse) | Appended; the id of the note and the version of the content, which does not change |
 | `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Refused by the edit rule: the caller did not create the item and lacks the capability |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown family or short code, or the item is archived |
 | `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The text is empty, or the body has an unknown field |
@@ -524,8 +528,9 @@ Request body (required): `application/json`, [`AppendNoteRequest`](../schemas/#a
 Turn a note into a draft ADR or document (KAIROS-T-0505). The new item
 has the text of the note. A line names the note, its author and its
 date. It `supports` the source item when the source is a
-strategy, an initiative or a task. The note gets a trailing line that
-names the new item.
+strategy, an initiative or a task. The note gets `promoted_to`: the
+code of the new item. Kairos promotes a note one time only: a second
+promote gets 409 CONFLICT, which names the item.
 
 The edit rule of the source item applies. The caller needs the right
 to create on the target board.
@@ -543,6 +548,7 @@ Request body (required): `application/json`, [`PromoteNoteRequest`](../schemas/#
 | `201` | [`PromoteNoteResponse`](../schemas/#promotenoteresponse) | The new item and its edge |
 | `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Refused by the edit rule of the source item, or the caller cannot create on the target board |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown family, short code, note id or board |
+| `409` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The note has the mark of a promote; the refusal names the item |
 | `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The kind is not adr or document, or the body has an unknown field |
 
 ## cascade

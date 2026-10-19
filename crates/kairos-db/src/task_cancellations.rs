@@ -73,6 +73,9 @@ pub struct Cancelled {
     pub short_code: String,
     pub from_column: String,
     pub to_column: String,
+    /// The done column the task is in now (KAIROS-T-0566: the server
+    /// checks its WIP limit).
+    pub to_column_id: Uuid,
     pub mark: TaskCancellation,
 }
 
@@ -239,6 +242,7 @@ pub fn cancel_task(
             short_code,
             from_column,
             to_column,
+            to_column_id,
             mark,
         })
     })

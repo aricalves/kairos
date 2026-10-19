@@ -255,11 +255,16 @@ is that a listing nobody asked hides put-away work.
 
 Create a task. `task_type` defaults to `task`.
 
-A caller with `manage_tasks` on the target board can use any column and
-any work class. Every other member of the tenant sends a request
-(`file_backlog`, COLLIERY-T-0218, COLLIERY-A-0023): the target is a
-delivery board, the task goes to the entry column, and the work class
-is `support`.
+A task starts in the entry column of its board (KAIROS-T-0566). A
+`column_id` of another column gives a 422. Create the task there, then
+move it. The move runs the claim, the WIP warning and the dispatch rules
+of the column. The dispatch rules of the entry column fire for the
+create.
+
+A caller with `manage_tasks` on the target board can use any work class.
+Every other member of the tenant sends a request (`file_backlog`,
+COLLIERY-T-0218, COLLIERY-A-0023): the target is a delivery board, and
+the work class is `support`.
 
 Name the board with `board_id`, or name a team with `team_id` to use
 the delivery board of that team (COLLIERY-T-0217, COLLIERY-A-0023).
@@ -277,8 +282,8 @@ Request body (required): `application/json`, [`CreateTaskRequest`](../schemas/#c
 | Response | Body | Meaning |
 |---|---|---|
 | `201` | [`Task`](../schemas/#task) | Created |
-| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Missing capability. For a caller without `manage_tasks` on the board: a column that is not the entry column, the work class `planned`, or a board that is not a delivery board |
-| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | No board and no team, a team that is not the team of the board, a team without exactly one delivery board, unknown board/column/repository/parent, a parent that is not an initiative, PARENT_NOT_ACTIVE (a claims column under an inactive parent), or bad enum value |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Missing capability. For a caller without `manage_tasks` on the board: the work class `planned`, or a board that is not a delivery board |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | No board and no team, a team that is not the team of the board, a team without exactly one delivery board, unknown board/column/repository/parent, a column that is not the entry column of the board, a parent that is not an initiative, PARENT_NOT_ACTIVE (a claims column under an inactive parent), or bad enum value |
 
 ### `GET /api/tasks/{short_code}`
 
@@ -577,10 +582,15 @@ Request body (required): `application/json`, [`SetTaskRepositoryRequest`](../sch
 ### `PUT /api/tasks/{short_code}/state`
 
 Write the live state of a task (KAIROS-T-0506): branch, last commit,
-pushed, PR, next step. One state for each task; the write replaces it.
-Kairos clears a field that you do not send. The state is not content:
-no new version of the task. The edit rule applies: the creator of the
-task, or `manage_tasks` on its board.
+pushed, PR, next step. Each task has one state. The state is not
+content: no new version of the task. The edit rule applies: the
+creator of the task, the holder of its claim, or `manage_tasks` on its
+board.
+
+The write is a patch (KAIROS-T-0533). A field that you send gets the
+value. `null` clears the field. A field that you do not send keeps its
+value. Send at least one field. `expected_updated_at` refuses a write
+over a state that changed since.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
@@ -591,9 +601,10 @@ Request body (required): `application/json`, [`SetTaskStateRequest`](../schemas/
 | Response | Body | Meaning |
 |---|---|---|
 | `200` | [`Task`](../schemas/#task) | The task, with its state |
-| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Refused by the edit rule: the caller did not create the task and lacks manage_tasks |
+| `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Refused by the edit rule: the caller did not create the task, has no claim on it, and lacks manage_tasks |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown short code, or the task is archived |
-| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | No field has a value, or the body has an unknown field |
+| `409` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The state changed after expected_updated_at; details.state is the current state |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The body has no field, a bad expected_updated_at, or an unknown field |
 
 ### `POST /api/tasks/{short_code}/transition`
 
@@ -831,13 +842,17 @@ repository. An unknown repository is a 422 `VALIDATION`.
 Create an ADR. On a board: requires `manage_adrs` on that board.
 Off-board (no `board_id`): org-admin-only (A-0006 fallback).
 
+`parent` (KAIROS-T-0591) is the short code of the item that the ADR
+supports: a strategy, an initiative or a task. The ADR and its
+`supports` edge are one transaction: a refused parent leaves no ADR.
+
 Request body (required): `application/json`, [`CreateAdrRequest`](../schemas/#createadrrequest)
 
 | Response | Body | Meaning |
 |---|---|---|
 | `201` | [`Adr`](../schemas/#adr) | Created |
 | `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Missing capability |
-| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown board/column or bad date |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown board/column/parent, a parent that is not a strategy, an initiative or a task, or bad date |
 
 ### `GET /api/adrs/{short_code}`
 
