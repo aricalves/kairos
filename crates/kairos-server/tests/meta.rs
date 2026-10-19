@@ -1350,8 +1350,10 @@ async fn meta_endpoints_against_live_stack() {
     // Activity log: combinable filters + pagination (S-0005)
     // ==========================================================================
     // entity_id: the task's create row plus the three children-progress
-    // walk transitions above (content edits go to item_history, metadata
-    // writes are unversioned/unlogged per A-0004). Newest first.
+    // walk transitions above (content edits go to item_history). Metadata
+    // writes are unversioned (A-0004), but each changed value writes one
+    // `update` row (KAIROS-T-0557): priority set, due set, priority
+    // cleared. Newest first.
     let body = bob
         .activity(&ActivityQuery {
             entity_id: Some(t1_id.clone()),
@@ -1362,9 +1364,31 @@ async fn meta_endpoints_against_live_stack() {
     // KAIROS-T-0359: the move into Active claims the task and the move out
     // of it releases the claim, so the walk adds a claim and a release row.
     // KAIROS-T-0638: t1 is the source of the blocks edge to t2, so the add
-    // and the remove of that edge are rows of t1 too.
-    assert_eq!(body.total, 8, "{body:?}");
-    let actions: Vec<&str> = body.items.iter().map(|i| i.action.as_str()).collect();
+    // and the remove of that edge are rows of t1 too. KAIROS-T-0557: each
+    // changed metadata value writes one `update` row: priority set, due
+    // set, priority cleared.
+    assert_eq!(body.total, 11, "{body:?}");
+    let metadata: Vec<&str> = body
+        .items
+        .iter()
+        .filter(|i| i.details.starts_with("metadata:"))
+        .map(|i| i.details.as_str())
+        .collect();
+    assert_eq!(
+        metadata,
+        [
+            "metadata:priority=",
+            "metadata:due=2026-08-01",
+            "metadata:priority=high"
+        ],
+        "{body:?}"
+    );
+    let rest: Vec<_> = body
+        .items
+        .iter()
+        .filter(|i| !i.details.starts_with("metadata:"))
+        .collect();
+    let actions: Vec<&str> = rest.iter().map(|i| i.action.as_str()).collect();
     assert_eq!(actions[0], "relationship_remove", "{body:?}");
     assert_eq!(actions[6..], ["relationship_add", "create"], "{body:?}");
     // A claim and its transition share one time, so their order is free.
@@ -1375,7 +1399,7 @@ async fn meta_endpoints_against_live_stack() {
         ["claim", "release", "transition", "transition", "transition"],
         "{body:?}"
     );
-    assert_eq!(body.items[7].entity_type.as_deref(), Some("task"));
+    assert_eq!(rest[7].entity_type.as_deref(), Some("task"));
 
     // action filter: the blocks link (svc), and the parent link, the
     // informs link (COLLIERY-T-0228: a member writes it now) and the two

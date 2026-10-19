@@ -38,9 +38,10 @@ use crate::types_auth::{DeploymentConfig, LoginRequest, LoginResponse};
 use crate::types_meta::{
     ActivityEntry, ActivityQuery, ChildrenProgressResponse, CreateMetadataDefinitionRequest,
     CreateRelationshipRequest, CreateTemplateRequest, DeletedResponse, HistoryQuery,
-    HistorySnapshot, HistoryVersion, ItemMetadataResponse, ItemRelationshipsResponse,
-    MetadataDefinition, ProposedRelationship, Relationship, RelationshipOutcome, Template,
-    TemplateDetail, UpdateMetadataDefinitionRequest, UpdateMetadataRequest, UpdateTemplateRequest,
+    HistorySnapshot, HistoryVersion, ItemActivityEntry, ItemActivityQuery, ItemMetadataResponse,
+    ItemRelationshipsResponse, MetadataDefinition, ProposedRelationship, Relationship,
+    RelationshipOutcome, Template, TemplateDetail, UpdateMetadataDefinitionRequest,
+    UpdateMetadataRequest, UpdateTemplateRequest,
 };
 use crate::types_org::{
     AddBoardMemberRequest, AddOrgMemberRequest, AddStreamTeamRequest, AddTeamMemberRequest,
@@ -766,6 +767,26 @@ impl KairosClient {
     ) -> Result<crate::types::ArchiveCompletedResponse, Error> {
         self.post_empty(&format!("/api/boards/{board}/archive-completed"))
             .await
+    }
+
+    /// `POST /api/boards/{id}/archive-completed?older_than_days=N`: archive
+    /// each task of the done columns that entered its column at least N
+    /// days ago (KAIROS-T-0649). `None` archives each done task, as
+    /// [`Client::archive_completed`].
+    pub async fn archive_completed_older_than(
+        &self,
+        board: &str,
+        older_than_days: Option<i64>,
+    ) -> Result<crate::types::ArchiveCompletedResponse, Error> {
+        match older_than_days {
+            Some(days) => {
+                self.post_empty(&format!(
+                    "/api/boards/{board}/archive-completed?older_than_days={days}"
+                ))
+                .await
+            }
+            None => self.archive_completed(board).await,
+        }
     }
 
     /// `PUT /api/tasks/{short_code}/repository` — set the repository the
@@ -2793,6 +2814,22 @@ impl KairosClient {
                 limit: None,
                 offset: None,
             },
+        )
+        .await
+    }
+
+    /// `GET /api/{family}/{short_code}/activity` — the activity of the
+    /// item, newest first, with names (KAIROS-T-0557).
+    pub async fn item_activity(
+        &self,
+        kind: EntityKind,
+        short_code: &str,
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> Result<ListEnvelope<ItemActivityEntry>, Error> {
+        self.get_query(
+            &format!("/api/{kind}/{short_code}/activity"),
+            &ItemActivityQuery { limit, offset },
         )
         .await
     }

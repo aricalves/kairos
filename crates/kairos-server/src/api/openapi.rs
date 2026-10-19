@@ -154,6 +154,7 @@ use crate::app::AppState;
         crate::api::meta::templates::update_template,
         crate::api::meta::templates::delete_template,
         crate::api::meta::history::get_history,
+        crate::api::meta::history::get_item_activity,
         crate::api::meta::restore::restore_item,
         crate::api::meta::notes::append_note,
         crate::api::meta::notes::promote_note,

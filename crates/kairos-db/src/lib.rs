@@ -30,6 +30,7 @@ pub mod graph;
 pub mod history;
 pub mod impacts;
 pub mod issue_writeback;
+pub mod item_activity;
 pub mod item_notes;
 pub mod item_owners;
 pub mod item_teams;
@@ -83,9 +84,9 @@ pub use graph::{
 pub use items::{
     CascadePreview, ContentUpdate, CreateAdr, CreateDocument, CreateInitiative, CreateStrategy,
     CreateTask, ItemError, NotReached, NotReachedReason, Principal, SoftDeleteOutcome, create_adr,
-    create_document, create_initiative, create_strategy, create_task, next_short_code,
-    preview_cascade, preview_cascade_as, rollback_item, soft_delete_item, soft_delete_item_as,
-    update_item_content,
+    create_document, create_initiative, create_strategy, create_task, edit_item_content,
+    next_short_code, preview_cascade, preview_cascade_as, rollback_item, soft_delete_item,
+    soft_delete_item_as, update_item_content,
 };
 pub use migrations::{
     MigrationError, establish_migration_connection, has_pending_public_migrations,

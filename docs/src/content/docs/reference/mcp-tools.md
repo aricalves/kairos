@@ -854,13 +854,14 @@ Refuses: `NOT_FOUND` only when the short code names nothing at all.
 
 ### `get_history`
 
-An item's content version history — version, editor, timestamp, newest first.
+The history of an item, newest first: its content versions, then its
+activity. A version line has the version, the time and the editor.
 
 | Argument | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `short_code` | string | yes | — | The item's short code. |
-| `limit` | integer | no | `20` | Maximum versions to list. Clamped to 1–200. |
-| `offset` | integer | no | `0` | The number of versions to skip, newest first. |
+| `limit` | integer | no | `20` | Maximum rows of each list: the versions and the activity. Clamped to 1–200. |
+| `offset` | integer | no | `0` | The number of versions to skip, newest first. The activity starts at its newest row. |
 | `version` | integer | no | — | Return that snapshot's full title and content instead of the list. |
 
 The list can show a part of the versions. Then its last line gives the count
@@ -876,8 +877,45 @@ line has the old code, the new code, the time and who did the move:
 
 ```text
 ## Renames
-- COLLIERY-T-0100 -> SKADI-T-0001 — 2026-10-03T18:20:00Z by Dylan
+- COLLIERY-T-0100 -> SKADI-T-0001 — 2026-10-03T18:20:00Z by Robin
 ```
+
+The list ends with the section **Activity**. Each line tells what changed,
+the time, and who did it. The newest line is first. The list has these rows:
+
+- a move: `moved from Todo to Active`;
+- a cancel, with the reason;
+- a move to a different board, with the boards and the columns;
+- a claim: `claim taken: Robin`;
+- a hand-off: `claim handed off: Robin -> Sam`;
+- a release: `claim released: Sam`. A claim that a move ends shows
+  `claim ended: Sam (transition)`;
+- a lane: `lane: planned -> support`;
+- a metadata value: `metadata priority: high`, or
+  `metadata priority: cleared`;
+- a state write: `state changed: branch, commit`. The line names the
+  fields that changed. `get_item` shows the values;
+- a link: `link added: blocks ACME-T-0001 -> ACME-T-0002`, and
+  `link removed`. A link between two items is in the activity of the two
+  items;
+- the repository, the lifecycle, the owner board, a rename, the create, an
+  archive and a restore.
+
+A row of a different kind shows its action and its details. The names come
+from the directory of the organization, not from the ids. An agent's change
+has the mark "(agent)". When the list does not show each row, the last line
+tells how many older rows there are:
+
+```text
+## Activity
+- state changed: branch, commit — 2026-10-17T10:05:00Z by Robin (agent)
+- claim taken: Robin — 2026-10-17T10:00:00Z by Robin (agent)
+- moved from Todo to Active — 2026-10-17T10:00:00Z by Robin (agent)
+- 4 older rows are not shown. Send a larger `limit` to see them.
+```
+
+An item with no activity rows has the line
+`No activity is recorded for this item.`
 
 Refuses: `NOT_FOUND` for an unknown short code, or for a `version` with no
 snapshot. `VALIDATION` for `version` with `limit` or with `offset`.
@@ -2216,6 +2254,11 @@ goes too.
 |---|---|---|---|---|
 | `board` | string | yes | — | The delivery board, by slug or UUID. |
 | `confirm` | boolean | yes | — | Must be `true`. |
+| `older_than_days` | integer | no | each done task | Archive only the done tasks that entered their done column at least this many days ago. A whole number from 1 to 36500. |
+
+The time that a task entered its column is the time of its last move. A task
+that never moved has the time of its creation. With `older_than_days` and no
+task that old, the output says so, and Kairos archives nothing.
 
 Each task goes through the archive of `delete_item`. The cascade, the end of
 the claim and the activity row are the same as for one task. `restore_item`
@@ -2230,9 +2273,9 @@ To get one back, restore it by its short code.
 Needs `manage_tasks` on the board: the capability that archives each task of
 the board.
 
-Refuses: `VALIDATION` when `confirm` is `false`; `NOT_FOUND` for an unknown
-board; `FORBIDDEN` without `manage_tasks`; `NOT_DELIVERY_BOARD` for a board
-that is not a delivery board.
+Refuses: `VALIDATION` when `confirm` is `false`, or when `older_than_days` is
+not from 1 to 36500; `NOT_FOUND` for an unknown board; `FORBIDDEN` without
+`manage_tasks`; `NOT_DELIVERY_BOARD` for a board that is not a delivery board.
 
 ### `purge_task`
 
