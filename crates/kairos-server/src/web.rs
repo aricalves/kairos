@@ -406,16 +406,18 @@ pub async fn spa_fallback(
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
+    let encoding = accepted_encoding(&headers);
     if let Some(dist) = state.config.web_dist.clone() {
-        return serve_from_dir(&dist, rel, if_none_match.as_deref()).await;
+        return serve_from_dir(&dist, rel, encoding, if_none_match.as_deref()).await;
     }
-    serve_embedded_or_placeholder(rel, accepted_encoding(&headers), if_none_match.as_deref())
+    serve_embedded_or_placeholder(rel, encoding, if_none_match.as_deref())
 }
 
 /// The encoding of a pre-compressed asset that the request accepts: brotli
-/// before gzip, none when the request names neither (KAIROS-T-0603). Only
-/// the embedded assets use it; a file from `KAIROS_WEB_DIST` and every API
-/// answer go through the compression layer of the router instead.
+/// before gzip, none when the request names neither (KAIROS-T-0603). The
+/// large GUI assets use it, embedded or from `KAIROS_WEB_DIST`
+/// (KAIROS-T-0662); every other answer goes through the compression layer
+/// of the router instead.
 fn accepted_encoding(headers: &HeaderMap) -> Option<&'static str> {
     let accept = headers
         .get(header::ACCEPT_ENCODING)
@@ -434,13 +436,24 @@ fn accepted_encoding(headers: &HeaderMap) -> Option<&'static str> {
     }
 }
 
-/// Dev serving: files out of `KAIROS_WEB_DIST`, with the SPA fallback.
+/// Dev serving: files out of `KAIROS_WEB_DIST`, with the SPA fallback. A
+/// file over [`precompressed::MIN_BYTES`] comes from its pre-compressed
+/// copy when the request accepts brotli or gzip (KAIROS-T-0662). Before,
+/// the compression layer compressed it again on each request: about 5 s
+/// for the debug wasm bundle (50 MB), on each full load of a page.
 async fn serve_from_dir(
     dist: &std::path::Path,
     rel: &str,
+    encoding: Option<&'static str>,
     if_none_match: Option<&str>,
 ) -> Response {
     let name = if rel.is_empty() { "index.html" } else { rel };
+    if let Some(encoding) = encoding
+        && name != "index.html"
+        && let Some(bytes) = precompressed::dist_copy(&dist.join(name), encoding).await
+    {
+        return asset_response_for(name, bytes, Some(encoding), None);
+    }
     match tokio::fs::read(dist.join(name)).await {
         Ok(bytes) => asset_response_for(name, Bytes::from(bytes), None, if_none_match),
         Err(_) if wants_index_fallback(name) => {
@@ -509,27 +522,67 @@ fn embedded_bytes(file: rust_embed::EmbeddedFile) -> Bytes {
     }
 }
 
-/// The pre-compressed copies of the large embedded assets (KAIROS-T-0603).
-/// Each asset at or over `MIN_BYTES` is compressed once per process, on the
+/// The pre-compressed copies of the large GUI assets (KAIROS-T-0603). Each
+/// asset at or over `MIN_BYTES` is compressed once per process, on the
 /// first request that asks for it, with gzip and with brotli; `index.html`
 /// is left to the compression layer, because its CSP is computed per body.
-#[cfg(feature = "embed-web")]
+/// The embedded assets use it, and the files of `KAIROS_WEB_DIST` too
+/// (KAIROS-T-0662). A dist file can change on a rebuild, so its copy is
+/// keyed on its path and stamped with its length and modified time.
 mod precompressed {
     use std::collections::HashMap;
     use std::io::Write;
+    use std::path::Path;
     use std::sync::{Mutex, OnceLock};
+    use std::time::UNIX_EPOCH;
 
     use axum::body::Bytes;
 
+    #[cfg(feature = "embed-web")]
     use super::Assets;
 
     /// Below this size the compression layer of the router does the work.
     pub const MIN_BYTES: usize = 64 * 1024;
 
-    static CACHE: OnceLock<Mutex<HashMap<(String, &'static str), Bytes>>> = OnceLock::new();
+    /// A rebuild of the dist gives the bundle a new hashed name, so a dev
+    /// server keeps the copies of the old names. When the copies pass this
+    /// size, the cache is emptied before the next one goes in.
+    const MAX_CACHED_BYTES: usize = 256 * 1024 * 1024;
+
+    /// What a copy was made from: the length and the modified time (in
+    /// nanoseconds) of a dist file; `(0, 0)` for an embedded asset, which
+    /// does not change in a process.
+    type Stamp = (u64, u128);
+
+    type Cache = HashMap<(String, &'static str), (Stamp, Bytes)>;
+
+    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+
+    fn cache() -> &'static Mutex<Cache> {
+        CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    fn lookup(key: &str, stamp: Stamp, encoding: &'static str) -> Option<Bytes> {
+        let cache = cache().lock().ok()?;
+        match cache.get(&(key.to_string(), encoding)) {
+            Some((held, bytes)) if *held == stamp => Some(bytes.clone()),
+            _ => None,
+        }
+    }
+
+    fn store(key: String, stamp: Stamp, encoding: &'static str, bytes: Bytes) {
+        if let Ok(mut cache) = cache().lock() {
+            let held: usize = cache.values().map(|(_, b)| b.len()).sum();
+            if held + bytes.len() > MAX_CACHED_BYTES {
+                cache.clear();
+            }
+            cache.insert((key, encoding), (stamp, bytes));
+        }
+    }
 
     /// The `encoding` copy of the embedded asset `name`, made on first use;
     /// `None` for an asset that is small, missing, or `index.html`.
+    #[cfg(feature = "embed-web")]
     pub fn get(name: &str, encoding: &'static str) -> Option<Bytes> {
         if name == "index.html" {
             return None;
@@ -538,13 +591,40 @@ mod precompressed {
         if file.data.len() < MIN_BYTES {
             return None;
         }
-        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-        let key = (name.to_string(), encoding);
-        if let Some(bytes) = cache.lock().ok()?.get(&key) {
-            return Some(bytes.clone());
+        let key = format!("embedded:{name}");
+        if let Some(bytes) = lookup(&key, (0, 0), encoding) {
+            return Some(bytes);
         }
         let bytes = Bytes::from(compress(&file.data, encoding)?);
-        cache.lock().ok()?.insert(key, bytes.clone());
+        store(key, (0, 0), encoding, bytes.clone());
+        Some(bytes)
+    }
+
+    /// The `encoding` copy of the dist file at `path`, made on first use and
+    /// again when the file changes; `None` for a file that is small or
+    /// missing (the caller then reads it as it is). The compression runs on
+    /// a blocking thread.
+    pub async fn dist_copy(path: &Path, encoding: &'static str) -> Option<Bytes> {
+        let meta = tokio::fs::metadata(path).await.ok()?;
+        if !meta.is_file() || meta.len() < MIN_BYTES as u64 {
+            return None;
+        }
+        let modified = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
+        let stamp = (meta.len(), modified.as_nanos());
+        let key = format!("dist:{}", path.display());
+        if let Some(bytes) = lookup(&key, stamp, encoding) {
+            return Some(bytes);
+        }
+        let data = tokio::fs::read(path).await.ok()?;
+        // The file changed between the stat and the read: no copy now.
+        if data.len() as u64 != stamp.0 {
+            return None;
+        }
+        let compressed = tokio::task::spawn_blocking(move || compress(&data, encoding))
+            .await
+            .ok()??;
+        let bytes = Bytes::from(compressed);
+        store(key, stamp, encoding, bytes.clone());
         Some(bytes)
     }
 
@@ -947,5 +1027,54 @@ mod tests {
             response.headers()[header::CACHE_CONTROL.as_str()],
             "no-cache"
         );
+    }
+
+    /// KAIROS-T-0662: a large dist file is compressed once. The second
+    /// request gets the same copy (the same buffer), a small file or
+    /// `index.html` gets none, and a changed file gets a new copy.
+    #[tokio::test]
+    async fn a_large_dist_file_is_compressed_once_and_again_when_it_changes() {
+        let dist = tempfile::tempdir().expect("dist dir");
+        let path = dist.path().join("kairos-web-once_bg.wasm");
+        let body: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&path, &body).expect("wasm");
+
+        let first = precompressed::dist_copy(&path, "br")
+            .await
+            .expect("br copy");
+        assert!(first.len() < body.len());
+        let second = precompressed::dist_copy(&path, "br").await.expect("cached");
+        assert_eq!(
+            first.as_ptr(),
+            second.as_ptr(),
+            "the second call is the copy"
+        );
+        let gzip = precompressed::dist_copy(&path, "gzip")
+            .await
+            .expect("gzip copy");
+        assert_ne!(gzip, first);
+
+        let small = dist.path().join("small.js");
+        std::fs::write(&small, b"console.log(1)").expect("small");
+        assert!(precompressed::dist_copy(&small, "br").await.is_none());
+        assert!(
+            precompressed::dist_copy(&dist.path().join("missing.wasm"), "br")
+                .await
+                .is_none()
+        );
+        let response =
+            serve_from_dir(dist.path(), "kairos-web-once_bg.wasm", Some("br"), None).await;
+        assert_eq!(response.headers()[header::CONTENT_ENCODING.as_str()], "br");
+        std::fs::write(dist.path().join("index.html"), vec![b' '; 100_000]).expect("index");
+        let response = serve_from_dir(dist.path(), "", Some("br"), None).await;
+        assert!(response.headers().get(header::CONTENT_ENCODING).is_none());
+
+        let mut rebuilt = body.clone();
+        rebuilt.extend_from_slice(b"rebuilt");
+        std::fs::write(&path, &rebuilt).expect("rebuilt");
+        let third = precompressed::dist_copy(&path, "br")
+            .await
+            .expect("new copy");
+        assert_ne!(third, first, "the copy follows the file");
     }
 }
