@@ -796,11 +796,18 @@ pub(crate) async fn set_repository(
 }
 
 /// Write the live state of a task (KAIROS-T-0506): branch, last commit,
-/// pushed, PR, next step. One state for each task; the write replaces it.
-/// Kairos clears a field that you do not send. The state is not content:
-/// no new version of the task. A write that changes a field writes one
-/// activity row with the names of the fields (KAIROS-T-0557). The edit
-/// rule applies: the creator of the task, or `manage_tasks` on its board.
+/// pushed, PR, next step. Each task has one state. The state is not
+/// content: no new version of the task. The edit rule applies: the
+/// creator of the task, the holder of its claim, or `manage_tasks` on its
+/// board.
+///
+/// The write is a patch (KAIROS-T-0533). A field that you send gets the
+/// value. `null` clears the field. A field that you do not send keeps its
+/// value. Send at least one field. `expected_updated_at` refuses a write
+/// over a state that changed since.
+///
+/// A write that changes a field writes one activity row with the names of
+/// the fields (KAIROS-T-0557).
 #[utoipa::path(
     put,
     path = "/api/tasks/{short_code}/state",
@@ -809,9 +816,10 @@ pub(crate) async fn set_repository(
     request_body = dto::SetTaskStateRequest,
     responses(
         (status = 200, description = "The task, with its state", body = dto::Task),
-        (status = 403, description = "Refused by the edit rule: the caller did not create the task and lacks manage_tasks", body = dto::ErrorEnvelope),
+        (status = 403, description = "Refused by the edit rule: the caller did not create the task, has no claim on it, and lacks manage_tasks", body = dto::ErrorEnvelope),
         (status = 404, description = "Unknown short code, or the task is archived", body = dto::ErrorEnvelope),
-        (status = 422, description = "No field has a value, or the body has an unknown field", body = dto::ErrorEnvelope),
+        (status = 409, description = "The state changed after expected_updated_at; details.state is the current state", body = dto::ErrorEnvelope),
+        (status = 422, description = "The body has no field, a bad expected_updated_at, or an unknown field", body = dto::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn set_state(

@@ -42,6 +42,9 @@ md-5 = "0.10"
 base64 = "0.22"
 # `kairos self-update` (KAIROS-T-0432): the checksum of a release tarball.
 sha2 = { workspace = true }
+# `<noun> diff` (KAIROS-T-0592): the unified diff of two versions, with the
+# crate that the web history page uses.
+similar = { workspace = true }
 
 [features]
 default = ["vectors"]

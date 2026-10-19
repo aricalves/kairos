@@ -7,6 +7,9 @@
 //!
 //! `kairos admin jobs` (KAIROS-T-0576): an organization admin reads the job
 //! queue (`GET /api/admin/jobs`).
+//!
+//! `kairos admin read-tokens` (KAIROS-T-0592): the read tokens of the
+//! organization ([`crate::commands::read_tokens`]).
 
 use kairos_client::types_auth::Secret;
 use kairos_client::types_code_index::{
@@ -35,6 +38,10 @@ pub enum AdminCommand {
     /// admin lists and revokes them)
     #[command(subcommand, name = "agent-keys")]
     AgentKeys(AgentKeysCommand),
+    /// The read tokens of the organization, one for each forge host (an
+    /// organization admin). No command prints a token
+    #[command(subcommand, name = "read-tokens")]
+    ReadTokens(crate::commands::read_tokens::ReadTokensCommand),
     /// The job queue of the organization and of the deployment: the jobs
     /// by kind and state, and the last failures with their error (an
     /// organization admin)
@@ -453,6 +460,7 @@ impl AdminCommand {
             Self::Tenants(command) => command.run().await,
             Self::CodeIndexSettings(command) => command.run().await,
             Self::AgentKeys(command) => command.run().await,
+            Self::ReadTokens(command) => command.run().await,
             Self::Jobs { common } => {
                 let client = client(&common)?;
                 let status = client.admin_jobs().await?;
