@@ -1395,22 +1395,19 @@ impl LiveReads {
             }
             data::Batch::Cards(codes) => {
                 let end = BatchEnd(self);
-                // KAIROS-T-0662: the path names the board by its slug; the
-                // id tells whether the page still shows this board.
-                let Some((board, paths)) = self.model.with_untracked(|m| {
-                    m.as_ref().map(|view| {
-                        let paths: Vec<String> = codes
-                            .iter()
-                            .map(|code| view.items.card_path(code))
-                            .collect();
-                        (view.items.board.id.clone(), paths)
-                    })
-                }) else {
+                // KAIROS-T-0662: the read names the board by its slug, as
+                // the route of the view does (COLLIERY-T-0265), not its id.
+                let Some(board) = self
+                    .model
+                    .with_untracked(|m| m.as_ref().map(|view| view.items.board.slug.clone()))
+                else {
                     return;
                 };
                 let auth = self.auth;
                 leptos::task::spawn_local(async move {
-                    let reads = paths.iter().map(|path| data::load_board_card(auth, path));
+                    let reads = codes
+                        .iter()
+                        .map(|code| data::load_board_card(auth, &board, code));
                     let pages = futures_util::future::join_all(reads).await;
                     // KAIROS-T-0619: the read of a card with a drop that
                     // runs waits for the end of the drop.
@@ -1427,7 +1424,7 @@ impl LiveReads {
                     let mut whole = false;
                     self.model.try_update(|model| match model.as_mut() {
                         // The page shows a different board now.
-                        Some(view) if view.items.board.id != board => {}
+                        Some(view) if view.items.board.slug != board => {}
                         Some(view) => {
                             for (code, page) in pages {
                                 whole |= match page {

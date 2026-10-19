@@ -580,14 +580,6 @@ pub enum Patched {
 }
 
 impl BoardItemsResponse {
-    /// The path of the read of the card `code` of this board
-    /// ([`load_board_card`]). It names the board by its slug, as the route
-    /// of the view does (COLLIERY-T-0265), not by its id. Pure,
-    /// host-tested.
-    pub fn card_path(&self, code: &str) -> String {
-        board_card_path(&self.board.slug, code)
-    }
-
     /// Replace the card `code` with the card of `page`, the response of
     /// [`load_board_card`] (KAIROS-T-0615). A `page` with no card takes
     /// the card out: it left the board, or it was put away. The counts of
@@ -972,13 +964,16 @@ pub async fn load_board_view(auth: Auth, param: &str) -> Result<BoardView, ApiEr
 }
 
 /// The card of one item of a board (KAIROS-T-0615):
-/// `GET /api/boards/{slug}/items?code=`, at the path of
-/// [`BoardItemsResponse::card_path`]. The response has each column with
+/// `GET /api/boards/{id}/items?code=`. The response has each column with
 /// its counts, and the card in its column, or no card when the item is not
 /// on the board now. [`BoardItemsResponse::patch_card`] puts it in the
 /// view.
-pub async fn load_board_card(auth: Auth, path: &str) -> Result<BoardItemsResponse, ApiError> {
-    get_json(auth, path).await
+pub async fn load_board_card(
+    auth: Auth,
+    board: &str,
+    code: &str,
+) -> Result<BoardItemsResponse, ApiError> {
+    get_json(auth, &board_card_path(board, code)).await
 }
 
 /// The path of the pages of [`load_board_items`], before `limit` and
@@ -1618,17 +1613,6 @@ mod tests {
             .iter()
             .map(|task| task.title.clone())
             .collect()
-    }
-
-    /// KAIROS-T-0662: the read of one card names the board by its slug,
-    /// as the route of the view does (COLLIERY-T-0265), not by its id.
-    #[test]
-    fn the_read_of_a_card_names_the_board_by_its_slug() {
-        let view = board_of(&[("D-T-1", "todo", 1)], &[], 1);
-        assert_eq!(
-            view.card_path("D-T-1"),
-            "/api/boards/demo-delivery/items?with_metadata=true&code=D-T-1"
-        );
     }
 
     /// KAIROS-T-0615: a note on a card replaces that card in its place.
