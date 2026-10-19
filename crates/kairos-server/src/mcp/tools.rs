@@ -4760,8 +4760,7 @@ impl KairosMcp {
                 )
                 .with_details(serde_json::json!({ "field": "confirm" })));
             }
-            let older_than_days =
-                crate::api::org::boards::older_than_days(params.older_than_days, "argument")?;
+            let older_than_days = crate::api::org::boards::older_than_days(params.older_than_days)?;
             let board = board_by_ref(conn, &params.board)?;
             let response = crate::api::org::boards::archive_completed_tasks(
                 conn,

@@ -361,7 +361,7 @@ pub(crate) async fn archive_completed(
     let user = auth.user_id;
     let slug = tenant.slug.clone();
     let role = tenant.role;
-    let older_than_days = older_than_days(query.older_than_days, "field")?;
+    let older_than_days = older_than_days(query.older_than_days)?;
     let response = state
         .blocking
         .run(&tenant.slug, move |conn| {
@@ -376,19 +376,16 @@ pub(crate) async fn archive_completed(
 pub(crate) const OLDER_THAN_DAYS_MAX: i64 = 36_500;
 
 /// Check `older_than_days` of "Archive completed" (KAIROS-T-0649): a whole
-/// number from 1 to [`OLDER_THAN_DAYS_MAX`], or no value. `key` names the
-/// detail of the refusal: `field` on REST, `argument` on MCP.
-pub(crate) fn older_than_days(value: Option<i64>, key: &str) -> Result<Option<i32>, ApiError> {
+/// number from 1 to [`OLDER_THAN_DAYS_MAX`], or no value. The refusal names
+/// the field (REST and MCP).
+pub(crate) fn older_than_days(value: Option<i64>) -> Result<Option<i32>, ApiError> {
     match value {
         None => Ok(None),
         Some(days) if (1..=OLDER_THAN_DAYS_MAX).contains(&days) => Ok(i32::try_from(days).ok()),
         Some(days) => Err(ApiError::validation(format!(
             "older_than_days must be a whole number from 1 to {OLDER_THAN_DAYS_MAX}. It is {days}."
         ))
-        .with_details(serde_json::Value::Object(serde_json::Map::from_iter([(
-            key.to_string(),
-            serde_json::Value::from("older_than_days"),
-        )])))),
+        .with_details(json!({ "field": "older_than_days" }))),
     }
 }
 
