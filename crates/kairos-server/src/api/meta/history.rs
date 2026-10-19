@@ -11,7 +11,6 @@
 use axum::extract::{Extension, Path, State};
 use axum::routing::get;
 use axum::{Json, Router};
-use diesel::prelude::*;
 use kairos_client::types as dto_base;
 use kairos_client::types_meta as dto;
 use kairos_db::models::graph::ItemHistory;
@@ -59,7 +58,6 @@ pub(crate) async fn get_history(
     let response = state
         .blocking
         .run(&tenant.slug, move |conn| {
-            use kairos_db::schema::item_history as history;
             let (item_id, _) =
                 resolve_family_item(conn, &family, &short_code, Liveness::IncludeArchived)?;
 
