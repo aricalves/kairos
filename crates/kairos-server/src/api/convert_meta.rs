@@ -52,7 +52,7 @@ impl IntoDto<dto::Template> for Template {
     }
 }
 
-impl IntoDto<dto::HistoryVersion> for ItemHistory {
+impl IntoDto<dto::HistoryVersion> for kairos_db::items::HistoryVersionMeta {
     fn into_dto(self) -> dto::HistoryVersion {
         dto::HistoryVersion {
             version: self.version,

@@ -7,7 +7,9 @@
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
-use kairos_client::types_team_pages::{CreateTeamPageRequest, TeamPage, UpdateTeamPageRequest};
+use kairos_client::types_team_pages::{
+    CreateTeamPageRequest, TeamPageSummary as TeamPage, UpdateTeamPageRequest,
+};
 
 use super::teams::team_id;
 use crate::commands::entities::require_confirm;
@@ -258,12 +260,14 @@ impl TeamPagesCommand {
                 let client = client(&common)?;
                 let team_id = team_id(&team);
                 let pages = client.list_team_pages(&team_id).await?;
-                let page = page_by_ref(&pages, &page)?;
+                let summary = page_by_ref(&pages, &page)?;
+                // KAIROS-T-0629: the list has no content; read the page.
+                let page = client.get_team_page(&team_id, &summary.id).await?;
                 if common.json {
-                    return print_json(page);
+                    return print_json(&page);
                 }
                 println!("{} ({}, v{})", page.title, page.kind, page.version);
-                println!("path: {}", page_path(&pages, page));
+                println!("path: {}", page_path(&pages, summary));
                 println!("id:   {}", page.id);
                 if !page.content.is_empty() {
                     println!("\n{}", page.content);
@@ -309,12 +313,13 @@ impl TeamPagesCommand {
                     return print_json(&created);
                 }
                 let mut all = pages;
-                all.push(created.clone());
+                let summary = TeamPage::from(&created);
+                all.push(summary.clone());
                 println!(
                     "Kairos created the {} {} at {} ({}).",
                     created.kind,
                     created.title,
-                    page_path(&all, &created),
+                    page_path(&all, &summary),
                     created.id
                 );
                 Ok(())
@@ -339,9 +344,15 @@ impl TeamPagesCommand {
                             .to_string(),
                     ));
                 }
+                // A title edit keeps the content: the list has none, so read
+                // the page (KAIROS-T-0629).
+                let content = match content {
+                    Some(content) => content,
+                    None => client.get_team_page(&team_id, &current.id).await?.content,
+                };
                 let request = UpdateTeamPageRequest {
                     title,
-                    content: Some(content.unwrap_or_else(|| current.content.clone())),
+                    content: Some(content),
                     version: Some(version.unwrap_or(current.version)),
                     ..Default::default()
                 };
@@ -397,7 +408,7 @@ impl TeamPagesCommand {
                 println!(
                     "Kairos moved {} to {} (position {}).",
                     updated.title,
-                    page_path(&all, &updated),
+                    page_path(&all, &TeamPage::from(&updated)),
                     updated.position
                 );
                 Ok(())
@@ -437,7 +448,6 @@ mod tests {
             kind: "folder".into(),
             slug: slug.into(),
             title: slug.into(),
-            content: String::new(),
             position: 0,
             is_protected: false,
             version: 1,

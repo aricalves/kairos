@@ -5429,7 +5429,13 @@ impl KairosMcp {
                     Ok(render_page_tree(&team.slug, &pages, &items))
                 }
                 Some(reference) => {
-                    let page = page_by_ref(&pages, &reference)?;
+                    // KAIROS-T-0629: the list has no content; read the page.
+                    let summary = page_by_ref(&pages, &reference)?;
+                    let page = crate::api::org::team_pages::page_as(
+                        conn,
+                        team.id,
+                        parse_page_id(summary)?,
+                    )?;
                     Ok(format!(
                         "# {} — {}\n- kind: {}{}\n- path: {}\n- id: {}\n- version: {}\n\n{}",
                         team.slug,
@@ -5440,7 +5446,7 @@ impl KairosMcp {
                         } else {
                             ""
                         },
-                        page_path(&pages, page),
+                        page_path(&pages, summary),
                         page.id,
                         page.version,
                         page.content
@@ -5496,14 +5502,15 @@ impl KairosMcp {
                 },
             )?;
             let mut all = pages;
-            all.push(created.clone());
+            let summary = kairos_client::types_team_pages::TeamPageSummary::from(&created);
+            all.push(summary.clone());
             Ok(format!(
                 "Created the {} {} ({}) in the team page of {}: path {}, version {}.",
                 created.kind,
                 created.title,
                 created.id,
                 team.slug,
-                page_path(&all, &created),
+                page_path(&all, &summary),
                 created.version
             ))
         })
@@ -5640,7 +5647,10 @@ impl KairosMcp {
                 updated.title,
                 updated.id,
                 team.slug,
-                page_path(&all, &updated),
+                page_path(
+                    &all,
+                    &kairos_client::types_team_pages::TeamPageSummary::from(&updated)
+                ),
                 updated.position
             ))
         })
@@ -5681,8 +5691,8 @@ impl KairosMcp {
 
 /// The path of slugs of a page, from the root ("documentation/runbooks").
 fn page_path(
-    pages: &[kairos_client::types_team_pages::TeamPage],
-    page: &kairos_client::types_team_pages::TeamPage,
+    pages: &[kairos_client::types_team_pages::TeamPageSummary],
+    page: &kairos_client::types_team_pages::TeamPageSummary,
 ) -> String {
     let mut slugs = vec![page.slug.clone()];
     let mut parent = page.parent_id.clone();
@@ -5701,9 +5711,9 @@ fn page_path(
 
 /// A page of the tree by its UUID or its path of slugs from the root.
 fn page_by_ref<'a>(
-    pages: &'a [kairos_client::types_team_pages::TeamPage],
+    pages: &'a [kairos_client::types_team_pages::TeamPageSummary],
     reference: &str,
-) -> Result<&'a kairos_client::types_team_pages::TeamPage, ApiError> {
+) -> Result<&'a kairos_client::types_team_pages::TeamPageSummary, ApiError> {
     if let Some(page) = pages.iter().find(|p| p.id == reference) {
         return Ok(page);
     }
@@ -5729,7 +5739,9 @@ fn page_by_ref<'a>(
     })
 }
 
-fn parse_page_id(page: &kairos_client::types_team_pages::TeamPage) -> Result<Uuid, ApiError> {
+fn parse_page_id(
+    page: &kairos_client::types_team_pages::TeamPageSummary,
+) -> Result<Uuid, ApiError> {
     Uuid::parse_str(&page.id).map_err(ApiError::internal)
 }
 
@@ -5739,10 +5751,10 @@ fn parse_page_id(page: &kairos_client::types_team_pages::TeamPage) -> Result<Uui
 /// the root.
 fn render_page_tree(
     team: &str,
-    pages: &[kairos_client::types_team_pages::TeamPage],
+    pages: &[kairos_client::types_team_pages::TeamPageSummary],
     items: &[kairos_client::types_team_pages::TeamTreeItem],
 ) -> String {
-    use kairos_client::types_team_pages::{TeamPage, TeamTreeItem};
+    use kairos_client::types_team_pages::{TeamPageSummary as TeamPage, TeamTreeItem};
     enum Node<'a> {
         Page(&'a TeamPage),
         Item(&'a TeamTreeItem),
