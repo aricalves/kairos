@@ -71,10 +71,13 @@ build + compose lifecycle + wasm build, not this suite.
 
 ## CI decision
 
-Per KAIROS-A-0012 the e2e tier **gates releases, not every task**, so it is
-**not** in the per-push `ci` gate (`.github/workflows/ci.yml`). It runs:
+KAIROS-A-0012 said the e2e tier **gates releases, not every task**. On
+2026-10-19 that changed (KAIROS-T-0662): e2e runs in the **merge queue**. The
+`e2e` job of `.github/workflows/ci.yml` runs `angreal test e2e --down` in the
+queue stage, not in the PR stage, and the required check `ci` fails when e2e
+fails. It runs when the change touches Rust, the GUI or `e2e/`. It runs:
 
 - locally / at agent completion, on demand (`angreal test e2e`);
+- in the merge queue, before a change reaches main;
 - in CI via `.github/workflows/e2e.yml` — **manually** (`workflow_dispatch`)
-  and on **release tags** (`push: tags: v*`), so no release is cut without the
-  GUI critical paths having been exercised.
+  and on **release tags** (`push: tags: v*`).
