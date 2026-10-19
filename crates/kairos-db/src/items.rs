@@ -52,11 +52,11 @@
 //!
 //! # Soft delete (KAIROS-A-0001)
 //!
-//! [`soft_delete_item`] loads the tenant's `parent` edges in one query,
-//! computes the descendant set with the pure
-//! [`kairos_core::items::cascade_descendants`] (chosen over a recursive CTE
-//! so the traversal decision lives in core and is unit-testable; the edge
-//! count per tenant is small at M1 scale), and stamps `deleted_at` on the
+//! [`soft_delete_item`] loads the `parent` edges below the root in one
+//! query, a recursive CTE from the root ([`subtree_parent_edges`],
+//! KAIROS-T-0629), computes the descendant set with the pure
+//! [`kairos_core::items::cascade_descendants`] (so the traversal decision
+//! lives in core and is unit-testable), and stamps `deleted_at` on the
 //! root plus every live descendant across all five entity tables. One
 //! `activity_log` row (action `delete`) on the root records the cascade
 //! count and the cascaded short codes.
@@ -220,7 +220,7 @@ pub fn next_short_code(
 }
 
 /// The table of the items of `item_type`.
-fn table_of(item_type: ItemType) -> &'static str {
+pub(crate) fn table_of(item_type: ItemType) -> &'static str {
     match item_type {
         ItemType::Strategy => "strategies",
         ItemType::Initiative => "initiatives",
@@ -1540,120 +1540,6 @@ pub fn update_item_content(
     })
 }
 
-/// Why [`append_note`] wrote nothing (KAIROS-T-0367).
-#[derive(Debug, thiserror::Error)]
-pub enum NoteError {
-    /// The text is empty or only white space.
-    #[error("The text of the note is empty. Send the text to append.")]
-    EmptyText,
-    /// The item is not there, or the database failed.
-    #[error(transparent)]
-    Item(#[from] ItemError),
-}
-
-impl From<DieselError> for NoteError {
-    fn from(e: DieselError) -> Self {
-        NoteError::Item(ItemError::Database(e))
-    }
-}
-
-/// What [`append_note`] wrote (KAIROS-T-0504).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AppendedNote {
-    /// The new version of the item.
-    pub version: i32,
-    /// The id of the note: `n-3`.
-    pub note_id: String,
-}
-
-/// The version and the content of a live item, with its row locked
-/// (`SELECT … FOR UPDATE`) until the end of the transaction of `conn`
-/// (KAIROS-T-0367, KAIROS-T-0505). The caller runs in a transaction.
-pub fn lock_item_content(
-    conn: &mut PgConnection,
-    item_type: ItemType,
-    item_id: Uuid,
-) -> Result<(i32, String), ItemError> {
-    macro_rules! lock_row {
-        ($table:ident) => {{
-            use crate::schema::$table::dsl;
-            dsl::$table
-                .filter(dsl::id.eq(item_id))
-                .filter(dsl::deleted_at.is_null())
-                .select((dsl::version, dsl::content))
-                .for_update()
-                .first::<(i32, String)>(conn)
-                .optional()
-        }};
-    }
-    let locked = match item_type {
-        ItemType::Strategy => lock_row!(strategies),
-        ItemType::Initiative => lock_row!(initiatives),
-        ItemType::Task => lock_row!(tasks),
-        ItemType::Document => lock_row!(documents),
-        ItemType::Adr => lock_row!(adrs),
-    }?;
-    locked.ok_or(ItemError::ItemNotFound {
-        entity_type: item_type.entity_type(),
-        id: item_id,
-    })
-}
-
-/// Append a note at the end of an item's content (KAIROS-T-0367): a heading
-/// with the id of the note, the UTC date of `today` and the display name of
-/// `actor` ([`kairos_core::items::note_heading`]), then the text. One new
-/// version, one history row, one `item.updated` event.
-///
-/// No version and no anchor: the transaction locks the item row
-/// (`SELECT … FOR UPDATE`) before it reads the content, so two notes at the
-/// same time are written one after the other, and the second one reads the
-/// content that the first one wrote. No note is lost, and each note gets
-/// its own id (KAIROS-T-0504: one after the count of the note headings).
-/// Returns the new version and the id of the note.
-pub fn append_note(
-    conn: &mut PgConnection,
-    item_type: ItemType,
-    item_id: Uuid,
-    text: &str,
-    actor: Uuid,
-    today: chrono::NaiveDate,
-) -> Result<AppendedNote, NoteError> {
-    if text.trim().is_empty() {
-        return Err(NoteError::EmptyText);
-    }
-    conn.transaction::<_, NoteError, _>(|conn| {
-        let (version, content) = lock_item_content(conn, item_type, item_id)?;
-        let author: Option<String> = crate::schema::users::table
-            .filter(crate::schema::users::id.eq(actor))
-            .select(crate::schema::users::display_name)
-            .first(conn)
-            .optional()
-            .map_err(ItemError::from)?;
-        let author = author
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| actor.to_string());
-        let position = kairos_core::items::next_note_position(&content);
-        let heading = kairos_core::items::note_heading(position, today, &author);
-        let new_content = kairos_core::items::content_with_note(&content, &heading, text)
-            .ok_or(NoteError::EmptyText)?;
-        let version = update_item_content(
-            conn,
-            item_type,
-            item_id,
-            ContentUpdate {
-                new_title: None,
-                new_content: &new_content,
-                expected_version: version,
-            },
-            actor,
-        )?;
-        Ok(AppendedNote {
-            version,
-            note_id: kairos_core::items::note_id(position),
-        })
-    })
-}
-
 /// Roll an item back to a historical snapshot (KAIROS-A-0004 "rollback by
 /// copying a historical snapshot back to the entity table — creates a new
 /// version"): the `to_version` snapshot's title/content are written forward
@@ -1700,6 +1586,46 @@ pub fn rollback_item(
             actor,
         )
     })
+}
+
+// ---------------------------------------------------------------------------
+// The version list (KAIROS-T-0629)
+// ---------------------------------------------------------------------------
+
+/// A version of an item without its title and content: the row of the
+/// version list.
+#[derive(Debug, Clone, PartialEq, Eq, Queryable, Selectable)]
+#[diesel(table_name = crate::schema::item_history)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+pub struct HistoryVersionMeta {
+    pub version: i32,
+    pub edited_by: Uuid,
+    pub edited_at: chrono::DateTime<chrono::Utc>,
+    pub agent_key_id: Option<Uuid>,
+}
+
+/// One page of the versions of an item, newest first, and the number of
+/// versions. The rows have no title and no content: the read of one
+/// version gives them.
+pub fn history_versions(
+    conn: &mut PgConnection,
+    item_id: Uuid,
+    limit: i64,
+    offset: i64,
+) -> Result<(i64, Vec<HistoryVersionMeta>), DieselError> {
+    use crate::schema::item_history as history;
+    let total: i64 = history::table
+        .filter(history::item_id.eq(item_id))
+        .count()
+        .get_result(conn)?;
+    let rows = history::table
+        .filter(history::item_id.eq(item_id))
+        .order(history::version.desc())
+        .limit(limit)
+        .offset(offset)
+        .select(HistoryVersionMeta::as_select())
+        .load(conn)?;
+    Ok((total, rows))
 }
 
 // ---------------------------------------------------------------------------
@@ -1789,6 +1715,47 @@ struct CascadePlan {
     not_reached: Vec<NotReached>,
 }
 
+/// The `parent` edges below `root`: each edge whose parent is `root` or a
+/// descendant of it (KAIROS-T-0629). One recursive CTE from the root on
+/// the source index, not a read of each `parent` edge of the tenant. The
+/// walk of [`kairos_core::items::cascade_descendants`] and
+/// [`kairos_core::items::cascade_reach`] reads no other edge. `UNION`
+/// drops a node that the walk has, so a cycle ends the walk.
+pub fn subtree_parent_edges(
+    conn: &mut PgConnection,
+    root: Uuid,
+) -> Result<Vec<rules::ParentEdge>, DieselError> {
+    #[derive(QueryableByName)]
+    struct Edge {
+        #[diesel(sql_type = diesel::sql_types::Uuid)]
+        source_id: Uuid,
+        #[diesel(sql_type = diesel::sql_types::Uuid)]
+        target_id: Uuid,
+    }
+    let rows: Vec<Edge> = sql_query(
+        "WITH RECURSIVE below(id) AS ( \
+             SELECT $1::uuid \
+             UNION \
+             SELECT r.target_id FROM item_relationships r \
+             JOIN below b ON r.source_id = b.id \
+             WHERE r.relationship = $2 \
+         ) \
+         SELECT r.source_id, r.target_id FROM item_relationships r \
+         JOIN below b ON r.source_id = b.id \
+         WHERE r.relationship = $2",
+    )
+    .bind::<diesel::sql_types::Uuid, _>(root)
+    .bind::<Text, _>(RelationshipType::Parent.as_str())
+    .load(conn)?;
+    Ok(rows
+        .into_iter()
+        .map(|edge| rules::ParentEdge {
+            parent_id: edge.source_id,
+            child_id: edge.target_id,
+        })
+        .collect())
+}
+
 /// Plan the cascade of an archive. Call it inside the transaction of the
 /// caller.
 ///
@@ -1815,24 +1782,13 @@ fn plan_cascade(
     item_id: Uuid,
     principal: Option<Principal<'_>>,
 ) -> Result<CascadePlan, ItemError> {
-    use crate::schema::item_relationships;
-
     let (.., root_short_code) =
         load_live_content(conn, item_type, item_id)?.ok_or(ItemError::ItemNotFound {
             entity_type: item_type.entity_type(),
             id: item_id,
         })?;
 
-    let edges: Vec<rules::ParentEdge> = item_relationships::table
-        .filter(item_relationships::relationship.eq(RelationshipType::Parent))
-        .select((item_relationships::source_id, item_relationships::target_id))
-        .load::<(Uuid, Uuid)>(conn)?
-        .into_iter()
-        .map(|(parent_id, child_id)| rules::ParentEdge {
-            parent_id,
-            child_id,
-        })
-        .collect();
+    let edges = subtree_parent_edges(conn, item_id)?;
 
     let Some(principal) = principal else {
         return Ok(CascadePlan {
@@ -1932,8 +1888,8 @@ fn preview_planned(
 
 /// Preview the KAIROS-A-0001 soft-delete cascade WITHOUT mutating anything
 /// (KAIROS-T-0051): the read half of [`soft_delete_item`], sharing its
-/// exact machinery so the two can never disagree. Loads the tenant's
-/// `parent` edges, computes the descendant set with the SAME pure
+/// exact machinery so the two can never disagree. Loads the `parent`
+/// edges below the root ([`subtree_parent_edges`]), computes the descendant set with the SAME pure
 /// [`kairos_core::items::cascade_descendants`] BFS, and reads the LIVE
 /// short codes of those descendants across all five entity tables (the
 /// read-only mirror of the delete's per-table filter). Runs in one
@@ -1967,9 +1923,9 @@ pub fn preview_cascade_as(
 }
 
 /// Soft-delete an item and cascade to its descendants (KAIROS-A-0001), in
-/// ONE transaction: load the tenant's `parent` edges, compute the
-/// descendant set with the pure [`kairos_core::items::cascade_descendants`]
-/// (see module docs for why this over a recursive CTE), stamp `deleted_at`
+/// ONE transaction: load the `parent` edges below the root
+/// ([`subtree_parent_edges`]), compute the descendant set with the pure
+/// [`kairos_core::items::cascade_descendants`], stamp `deleted_at`
 /// on the root and every live descendant across all five entity tables,
 /// and write ONE `activity_log` `delete` row on the root recording the
 /// cascade count and short codes. Already-deleted descendants are left
@@ -2370,8 +2326,6 @@ pub fn restore_item(
     actor: Uuid,
 ) -> Result<Result<RestoreOutcome, RestoreBlockers>, ItemError> {
     conn.transaction::<_, ItemError, _>(|conn| {
-        use crate::schema::item_relationships;
-
         let short_code =
             archived_short_code(conn, item_type, item_id)?.ok_or(ItemError::ItemNotFound {
                 entity_type: item_type.entity_type(),
@@ -2387,16 +2341,7 @@ pub fn restore_item(
 
         // Name the descendants still away, so "I restored it and half of it
         // is missing" is answered before it is asked.
-        let edges: Vec<rules::ParentEdge> = item_relationships::table
-            .filter(item_relationships::relationship.eq(RelationshipType::Parent))
-            .select((item_relationships::source_id, item_relationships::target_id))
-            .load::<(Uuid, Uuid)>(conn)?
-            .into_iter()
-            .map(|(parent_id, child_id)| rules::ParentEdge {
-                parent_id,
-                child_id,
-            })
-            .collect();
+        let edges = subtree_parent_edges(conn, item_id)?;
         let mut still_archived_descendants = Vec::new();
         for descendant in rules::cascade_descendants(item_id, &edges) {
             if let Some(code) = any_archived_short_code(conn, descendant)? {

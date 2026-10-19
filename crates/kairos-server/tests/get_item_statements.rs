@@ -177,13 +177,14 @@ async fn get_item_runs_few_statements_against_live_stack() {
             Some(json!({"board_id": "payments-delivery", "title": title, "content": content})),
         )
     };
-    let t1 = code(
-        &task(
-            "Pay",
-            "# Pay\n\nThe body.\n\n## Note n-1 (2026-10-17, Robin)\n\nThe first note.\n",
-        )
-        .await,
-    );
+    let t1 = code(&task("Pay", "# Pay\n\nThe body.\n").await);
+    // KAIROS-T-0630: a note is a row; the facts statement reads it.
+    send(
+        Method::POST,
+        format!("/api/tasks/{t1}/notes"),
+        Some(json!({"text": "The first note."})),
+    )
+    .await;
     let t2 = code(&task("Blocker", "It blocks.").await);
     let t3 = code(&task("Dropped", "It is cancelled.").await);
     let t4 = code(&task("Put away", "It is archived.").await);
@@ -329,6 +330,7 @@ async fn get_item_runs_few_statements_against_live_stack() {
         "- external: RFC 42",
         "- priority: high",
         "## Notes\n- n-1",
+        "The body.\n\n## Note n-1 (",
     ] {
         assert!(task_text.contains(line), "no {line:?} in:\n{task_text}");
     }

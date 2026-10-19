@@ -454,6 +454,18 @@
   opacity: 1;
 }
 
+/* KAIROS-T-0579: a note of the Notes panel, and the note of the URL hash. */
+.kairos-note {
+  border-radius: var(--radius-xs);
+  padding: var(--space-xs);
+  scroll-margin-top: var(--space-md);
+}
+
+.kairos-note--target {
+  background: var(--inset);
+  outline: 1px solid var(--ice);
+}
+
 .kairos-markdown a {
   color: var(--ice);
 }

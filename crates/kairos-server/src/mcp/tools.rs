@@ -2824,7 +2824,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "One item by short code: type, board and column, who created it and when, version, markdown content, metadata, relationships (parent chain, children, blockers and blocked, supporting documents; a done end is marked [done], a cancelled one [cancelled]), and as it applies: the claim of a task in Active, the owner and teams of a strategy or initiative, the owner board and impacted repositories of a document or ADR, the cancel mark of a task, the external references (URIs with a label) of any item, and its edge proposals (each pending one and the 5 newest decided ones, with the state). A retired code finds the item and names the current code."
+        description = "One item by short code: type, board and column, who created it and when, version, markdown content and then its notes (each one under `## Note n-3 (date, name)`), metadata, relationships (parent chain, children, blockers and blocked, supporting documents; a done end is marked [done], a cancelled one [cancelled]), and as it applies: the claim of a task in Active, the owner and teams of a strategy or initiative, the owner board and impacted repositories of a document or ADR, the cancel mark of a task, the external references (URIs with a label) of any item, and its edge proposals (each pending one and the 5 newest decided ones, with the state). A retired code finds the item and names the current code."
     )]
     pub async fn get_item(
         &self,
@@ -3219,7 +3219,7 @@ impl KairosMcp {
 
     // KAIROS-T-0367: a note in one call, with no version and no anchor.
     #[tool(
-        description = "Append a note at the end of an item's content. The note gets an id and a heading with the date and your name: `## Note n-3 (2026-10-11, Robin)`. The result names the id: cite it as `note n-3 on ACME-T-0012`. Send no version and no anchor text: the server locks the item, adds the note to the current content, and writes one new version. Two notes at the same time both stay. Use it to record work, a finding or a decision on an item. You can append to an item that you created, or with `manage_<type>` on its board."
+        description = "Append a note to an item. The note gets the next id, and `get_item` shows it after the content under a heading with the date and your name: `## Note n-3 (2026-10-11, Robin)`. The result names the id: cite it as `note n-3 on ACME-T-0012`. Send no version and no anchor text. A note is not part of the content: it writes no version, and an edit of the content does not change it. Two notes at the same time both stay. The text is markdown, and headings are allowed. Use it to record work, a finding or a decision on an item. You can append to an item that you created, or with `manage_<type>` on its board."
     )]
     pub async fn append_note(
         &self,
@@ -3232,17 +3232,16 @@ impl KairosMcp {
         self.run_tool(&tenant, move |conn| {
             let item = load_item(conn, &params.short_code, Liveness::LiveOnly)?;
             require_item_edit(conn, role, user, item.id, item.item_type)?;
-            let appended = items::append_note(
+            let appended = kairos_db::item_notes::append_note(
                 conn,
                 item.item_type,
                 item.id,
                 &params.text,
                 user,
-                chrono::Utc::now().date_naive(),
             )
             .map_err(crate::api::map_note_error)?;
             Ok(format!(
-                "Appended note {} to {} (version {}).",
+                "Appended note {} to {}. The content stays at version {}.",
                 appended.note_id, item.short_code, appended.version
             ))
         })
@@ -3584,7 +3583,7 @@ impl KairosMcp {
 
     // KAIROS-T-0505: a note becomes a draft ADR or document.
     #[tool(
-        description = "Turn a note into a draft ADR or document in one call: `short_code` of the item, `note_id` as `get_item` lists it (n-3), `kind` adr | document, `board` (slug or UUID) that gets the new item, optional `title` (default: the first line of the note). The new item has the text of the note and a line `From note n-3 on CODE (author, date)`; it `supports` the item when the item is a strategy, an initiative or a task. The note gets the line `Promoted to <code>`. Needs the edit rule on the item and the right to create on the board (manage_adrs or manage_documents)."
+        description = "Turn a note into a draft ADR or document in one call: `short_code` of the item, `note_id` as `get_item` lists it (n-3), `kind` adr | document, `board` (slug or UUID) that gets the new item, optional `title` (default: the first line of the note). The new item has the text of the note and a line `From note n-3 on CODE (author, date)`; it `supports` the item when the item is a strategy, an initiative or a task. The note gets the mark `Promoted to <code>`. A note is promoted one time only: a second promote is refused with CONFLICT and the code. Needs the edit rule on the item and the right to create on the board (manage_adrs or manage_documents)."
     )]
     pub async fn promote_note(
         &self,
@@ -5441,7 +5440,13 @@ impl KairosMcp {
                     Ok(render_page_tree(&team.slug, &pages, &items))
                 }
                 Some(reference) => {
-                    let page = page_by_ref(&pages, &reference)?;
+                    // KAIROS-T-0629: the list has no content; read the page.
+                    let summary = page_by_ref(&pages, &reference)?;
+                    let page = crate::api::org::team_pages::page_as(
+                        conn,
+                        team.id,
+                        parse_page_id(summary)?,
+                    )?;
                     Ok(format!(
                         "# {} — {}\n- kind: {}{}\n- path: {}\n- id: {}\n- version: {}\n\n{}",
                         team.slug,
@@ -5452,7 +5457,7 @@ impl KairosMcp {
                         } else {
                             ""
                         },
-                        page_path(&pages, page),
+                        page_path(&pages, summary),
                         page.id,
                         page.version,
                         page.content
@@ -5508,14 +5513,15 @@ impl KairosMcp {
                 },
             )?;
             let mut all = pages;
-            all.push(created.clone());
+            let summary = kairos_client::types_team_pages::TeamPageSummary::from(&created);
+            all.push(summary.clone());
             Ok(format!(
                 "Created the {} {} ({}) in the team page of {}: path {}, version {}.",
                 created.kind,
                 created.title,
                 created.id,
                 team.slug,
-                page_path(&all, &created),
+                page_path(&all, &summary),
                 created.version
             ))
         })
@@ -5652,7 +5658,10 @@ impl KairosMcp {
                 updated.title,
                 updated.id,
                 team.slug,
-                page_path(&all, &updated),
+                page_path(
+                    &all,
+                    &kairos_client::types_team_pages::TeamPageSummary::from(&updated)
+                ),
                 updated.position
             ))
         })
@@ -5693,8 +5702,8 @@ impl KairosMcp {
 
 /// The path of slugs of a page, from the root ("documentation/runbooks").
 fn page_path(
-    pages: &[kairos_client::types_team_pages::TeamPage],
-    page: &kairos_client::types_team_pages::TeamPage,
+    pages: &[kairos_client::types_team_pages::TeamPageSummary],
+    page: &kairos_client::types_team_pages::TeamPageSummary,
 ) -> String {
     let mut slugs = vec![page.slug.clone()];
     let mut parent = page.parent_id.clone();
@@ -5713,9 +5722,9 @@ fn page_path(
 
 /// A page of the tree by its UUID or its path of slugs from the root.
 fn page_by_ref<'a>(
-    pages: &'a [kairos_client::types_team_pages::TeamPage],
+    pages: &'a [kairos_client::types_team_pages::TeamPageSummary],
     reference: &str,
-) -> Result<&'a kairos_client::types_team_pages::TeamPage, ApiError> {
+) -> Result<&'a kairos_client::types_team_pages::TeamPageSummary, ApiError> {
     if let Some(page) = pages.iter().find(|p| p.id == reference) {
         return Ok(page);
     }
@@ -5741,7 +5750,9 @@ fn page_by_ref<'a>(
     })
 }
 
-fn parse_page_id(page: &kairos_client::types_team_pages::TeamPage) -> Result<Uuid, ApiError> {
+fn parse_page_id(
+    page: &kairos_client::types_team_pages::TeamPageSummary,
+) -> Result<Uuid, ApiError> {
     Uuid::parse_str(&page.id).map_err(ApiError::internal)
 }
 
@@ -5751,10 +5762,10 @@ fn parse_page_id(page: &kairos_client::types_team_pages::TeamPage) -> Result<Uui
 /// the root.
 fn render_page_tree(
     team: &str,
-    pages: &[kairos_client::types_team_pages::TeamPage],
+    pages: &[kairos_client::types_team_pages::TeamPageSummary],
     items: &[kairos_client::types_team_pages::TeamTreeItem],
 ) -> String {
-    use kairos_client::types_team_pages::{TeamPage, TeamTreeItem};
+    use kairos_client::types_team_pages::{TeamPageSummary as TeamPage, TeamTreeItem};
     enum Node<'a> {
         Page(&'a TeamPage),
         Item(&'a TeamTreeItem),
@@ -6086,14 +6097,21 @@ pub fn get_item_text(conn: &mut PgConnection, short_code: &str) -> Result<String
     ));
 
     // KAIROS-T-0504: the notes of the item, each one with its id, so
-    // that an agent cites `note n-3 on ACME-T-0012`.
-    let notes = kairos_core::items::notes(&item.content);
+    // that an agent cites `note n-3 on ACME-T-0012`. KAIROS-T-0630: the
+    // notes are rows; the text of each one follows the content.
+    let notes =
+        kairos_db::item_notes::parse_notes_json(&facts.notes_json).map_err(ApiError::internal)?;
     if !notes.is_empty() {
         out.push_str("\n## Notes\n");
-        for note in notes {
-            out.push_str(&format!("- {} ({}, {})", note.id, note.date, note.author));
-            if !note.first_line.is_empty() {
-                out.push_str(&format!(": {}", clip_line(&note.first_line, 120)));
+        for note in &notes {
+            out.push_str(&format!(
+                "- {} ({}, {})",
+                note.note_id(),
+                note.date(),
+                note.author
+            ));
+            if !note.first_line().is_empty() {
+                out.push_str(&format!(": {}", clip_line(note.first_line(), 120)));
             }
             out.push('\n');
         }
@@ -6123,7 +6141,12 @@ pub fn get_item_text(conn: &mut PgConnection, short_code: &str) -> Result<String
     }
 
     out.push_str("\n## Content\n");
-    out.push_str(&item.content);
+    // KAIROS-T-0630: the notes after the content, each one under its
+    // `## Note n-3 (date, name)` heading, as before the notes were rows.
+    out.push_str(&kairos_db::item_notes::content_with_notes(
+        &item.content,
+        &notes,
+    ));
     out.push('\n');
     Ok(out)
 }
@@ -6174,6 +6197,7 @@ const ITEM_FACTS_SQL: &str = "\
                   ORDER BY x.created_at, x.uri, x.id) AS external_uris, \
            ARRAY(SELECT x.label FROM item_external_refs x WHERE x.item_id = $1 \
                   ORDER BY x.created_at, x.uri, x.id) AS external_labels, \
+           {notes} AS notes_json, \
            (SELECT count(*) FROM edge_proposals ep WHERE ep.state = 'pending' \
                AND (ep.source_id = $1 OR ep.target_id = $1)) AS proposals_pending, \
            COALESCE((SELECT json_agg(json_build_object( \
@@ -6297,6 +6321,10 @@ struct ItemFacts {
     external_uris: Vec<String>,
     #[diesel(sql_type = diesel::sql_types::Array<SqlNullable<SqlText>>)]
     external_labels: Vec<Option<String>>,
+    /// The notes ([`kairos_db::item_notes::NOTES_JSON_OF_ITEM`],
+    /// KAIROS-T-0630).
+    #[diesel(sql_type = SqlText)]
+    notes_json: String,
     /// The count of the pending proposals of the item (KAIROS-T-0558).
     #[diesel(sql_type = diesel::sql_types::BigInt)]
     proposals_pending: i64,
@@ -6421,7 +6449,7 @@ impl ItemFacts {
 
 /// [`ITEM_FACTS_SQL`] for `item`.
 fn item_facts(conn: &mut PgConnection, item: &ItemView) -> Result<ItemFacts, ApiError> {
-    sql_query(ITEM_FACTS_SQL)
+    sql_query(ITEM_FACTS_SQL.replace("{notes}", kairos_db::item_notes::NOTES_JSON_OF_ITEM))
         .bind::<SqlUuid, _>(item.id)
         .bind::<SqlNullable<SqlUuid>, _>(item.board_id)
         .bind::<SqlNullable<SqlUuid>, _>(item.column_id)
