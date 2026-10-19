@@ -48,6 +48,12 @@ const MARK: &str = "Zebrawood";
 /// 10/2/2, update_item with a mention 12/2/3, edit_item with a mention
 /// 12/2/3, a stale update_item 7/1/3, append_note 14/0/1. The two copies
 /// that stay sent are the UPDATE and the `item_history` row.
+///
+/// The event outbox (#242) writes each event with one INSERT, where the
+/// event took three statements before (the code of the item, the schema
+/// and `pg_notify`). So each count of statements is 2 lower for each
+/// event: 1 event in each content write, 2 in `append_note`. The copies
+/// do not change.
 struct Budget {
     statements: usize,
     sent: usize,
@@ -209,7 +215,7 @@ async fn content_writes_move_the_content_once_against_live_stack() {
             Box::new(|c| update_item_text(c, OrgRole::Admin, svc, &update(body("One."), 1))),
             "Updated PAYMENTS-T-0001 to version 2.",
             Budget {
-                statements: 10,
+                statements: 8,
                 sent: 2,
                 read: 0,
             },
@@ -221,7 +227,7 @@ async fn content_writes_move_the_content_once_against_live_stack() {
             }),
             "Edited PAYMENTS-T-0001 to version 3 (1 replacement).",
             Budget {
-                statements: 10,
+                statements: 8,
                 sent: 2,
                 read: 1,
             },
@@ -233,7 +239,7 @@ async fn content_writes_move_the_content_once_against_live_stack() {
             }),
             "Updated PAYMENTS-T-0001 to version 4.",
             Budget {
-                statements: 12,
+                statements: 10,
                 sent: 2,
                 read: 1,
             },
@@ -243,7 +249,7 @@ async fn content_writes_move_the_content_once_against_live_stack() {
             Box::new(|c| edit_item_text(c, OrgRole::Admin, svc, &edit("Two,", "Two, @sam,"))),
             "Edited PAYMENTS-T-0001 to version 5 (1 replacement).",
             Budget {
-                statements: 11,
+                statements: 9,
                 sent: 2,
                 read: 1,
             },
@@ -273,7 +279,7 @@ async fn content_writes_move_the_content_once_against_live_stack() {
             }),
             "Appended note n-1 to PAYMENTS-T-0001. The content stays at version 5.",
             Budget {
-                statements: 14,
+                statements: 10,
                 sent: 0,
                 read: 0,
             },
