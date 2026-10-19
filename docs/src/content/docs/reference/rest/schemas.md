@@ -2198,6 +2198,7 @@ One repository, as returned by `/api/repositories` (KAIROS-T-0106).
 | `default_branch` | `string` | yes | The branch that the code index builder indexes (KAIROS-T-0430): the branch set by hand, or else the default branch of the forge at the last fetch. `default_branch_source` says which. |
 | `default_branch_source` | [`DefaultBranchSource`](#defaultbranchsource) | no | Where `default_branch` comes from (KAIROS-T-0430): `forge` (the builder reads the default branch of the remote at each fetch) or `hand` (a person set it; it wins over the forge). |
 | `delivery_board_id` | `string`, nullable | no | The delivery board of the owning team (UUID). It is a fact about the owner, not where tasks go: the board or the team of a task decides that (COLLIERY-T-0219, COLLIERY-A-0023). `None` only in a misconfigured tenant (team without a delivery board). |
+| `delivery_board_slug` | `string`, nullable | no | The slug of that delivery board (KAIROS-T-0561), `None` when `delivery_board_id` is `None`. |
 | `description` | `string` | yes | Short "how to work here" blurb agents read before starting. |
 | `forge` | `string` | yes | `github|gitlab|other`. |
 | `forge_branch` | `string`, nullable | no | The default branch that the remote gave at the last fetch of the builder, or `None` before the first fetch (KAIROS-T-0430). |

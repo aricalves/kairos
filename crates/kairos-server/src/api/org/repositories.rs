@@ -629,20 +629,23 @@ pub(crate) fn render(
     // One delivery board per team, with the SAME exactly-one semantics as
     // routing: a team with two delivery boards shows none here rather than
     // an arbitrary one (KAIROS-T-0112).
-    let board_rows: Vec<(Uuid, Uuid)> = boards::table
+    let board_rows: Vec<(Uuid, Uuid, String)> = boards::table
         .filter(boards::team_id.eq_any(team_ids.iter().map(|id| Some(*id)).collect::<Vec<_>>()))
         .filter(boards::board_level.eq(BoardLevel::Delivery))
         .filter(boards::deleted_at.is_null())
-        .select((boards::team_id.assume_not_null(), boards::id))
+        .select((boards::team_id.assume_not_null(), boards::id, boards::slug))
         .load(conn)
         .map_err(ApiError::internal)?;
     let mut board_count: HashMap<Uuid, usize> = HashMap::new();
-    for (team, _) in &board_rows {
+    for (team, _, _) in &board_rows {
         *board_count.entry(*team).or_default() += 1;
     }
-    let board_of: HashMap<Uuid, Uuid> = board_rows
+    // KAIROS-T-0561: the slug too, so that `list_repositories` names the
+    // board as `board_items` takes it.
+    let board_of: HashMap<Uuid, (Uuid, String)> = board_rows
         .into_iter()
-        .filter(|(team, _)| board_count.get(team) == Some(&1))
+        .filter(|(team, _, _)| board_count.get(team) == Some(&1))
+        .map(|(team, id, slug)| (team, (id, slug)))
         .collect();
     let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
     let counts: HashMap<Uuid, (i64, bool)> = repositories::counts(conn, &ids)
@@ -708,7 +711,8 @@ pub(crate) fn render(
                     slug: team.slug.clone(),
                     name: team.name.clone(),
                 },
-                delivery_board_id: board_of.get(&repo.team_id).map(|b| b.to_string()),
+                delivery_board_id: board_of.get(&repo.team_id).map(|(id, _)| id.to_string()),
+                delivery_board_slug: board_of.get(&repo.team_id).map(|(_, slug)| slug.clone()),
                 open_tasks,
                 has_webhook,
                 credential: crate::credentials::status_dto(credentials.get(&repo.id)),
