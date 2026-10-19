@@ -158,7 +158,14 @@ impl ApiError {
     /// covers (`configure_boards`, `administer_members`), the refusal says
     /// so, names the two scopes of that grant, and says who grants it.
     /// `details.or_capability` is then `manage_structure`.
+    ///
+    /// KAIROS-T-0536: when the request uses an agent key whose scope does
+    /// not let it do the action, the refusal is [`ApiError::key_scope`]
+    /// instead. The scope is then the reason, whatever the person holds.
     pub fn capability_required(capability: &str, board_id: Option<uuid::Uuid>) -> Self {
+        if let Some(refusal) = Self::outside_key_scope(capability, board_id) {
+            return refusal;
+        }
         let structure = kairos_core::abac::MANAGE_STRUCTURE;
         match board_id {
             Some(board_id) if kairos_core::abac::structure_covers(capability) => {
@@ -186,6 +193,91 @@ impl ApiError {
                     "board_id": board_id,
                 })),
         }
+    }
+
+    /// [`ApiError::key_scope`] when the request uses an agent key whose
+    /// scope does not let it do `capability` on `board_id`; `None` when the
+    /// scope lets it, or when the request has no scope (KAIROS-T-0536).
+    pub fn outside_key_scope(capability: &str, board_id: Option<uuid::Uuid>) -> Option<Self> {
+        let scope = crate::blocking::current_key_scope()?;
+        let gap = scope.gap(capability, board_id)?;
+        Some(Self::key_scope(capability, board_id, &scope, gap))
+    }
+
+    /// [`ApiError::outside_key_scope`] for a check about `user`: `None`
+    /// when `user` is not the principal of the agent key of the request.
+    pub fn outside_key_scope_of(
+        user: uuid::Uuid,
+        capability: &str,
+        board_id: Option<uuid::Uuid>,
+    ) -> Option<Self> {
+        let scope = crate::blocking::key_scope_of(user)?;
+        let gap = scope.gap(capability, board_id)?;
+        Some(Self::key_scope(capability, board_id, &scope, gap))
+    }
+
+    /// 403 `KEY_SCOPE` (KAIROS-T-0536): the request uses an agent key, and
+    /// the scope of the key does not let it do the action. The person can
+    /// perhaps do it with a different key or with the login. A scope never
+    /// adds a right, so a wider key does not help when the person does not
+    /// have the capability either.
+    ///
+    /// `details`: `required_capability` (the capability of the action),
+    /// `board_id`, `scope_needs` (the capability that the scope must
+    /// have: `manage_structure` for the work of the admin role), `reason`
+    /// (`capability`, `board` or `no_board`) and `key_scope` (the
+    /// capabilities and the boards of the key; `boards` null = each
+    /// board).
+    pub fn key_scope(
+        capability: &str,
+        board_id: Option<uuid::Uuid>,
+        scope: &kairos_core::key_scope::KeyScope,
+        gap: kairos_core::key_scope::ScopeGap,
+    ) -> Self {
+        use kairos_core::key_scope::ScopeGap;
+        let needs = kairos_core::key_scope::KeyScope::needed(capability);
+        let (reason, text) = match gap {
+            ScopeGap::Capability(_) => (
+                "capability",
+                format!("The scope of this agent key does not have the capability {needs:?}."),
+            ),
+            ScopeGap::Board => (
+                "board",
+                format!(
+                    "The scope of this agent key does not have the board {}.",
+                    board_id.map(|b| b.to_string()).unwrap_or_default()
+                ),
+            ),
+            ScopeGap::NoBoard => (
+                "no_board",
+                "The scope of this agent key has a list of boards, and this action is not \
+                 on a board."
+                    .to_string(),
+            ),
+        };
+        let boards: Option<Vec<String>> = scope
+            .boards
+            .as_ref()
+            .map(|boards| boards.iter().map(|b| b.to_string()).collect());
+        Self::new(
+            StatusCode::FORBIDDEN,
+            "KEY_SCOPE",
+            format!(
+                "{text} The key cannot do this action. Make a key with a wider scope with \
+                 your own login (`kairos keys create --scope`), or do the action with your \
+                 login."
+            ),
+        )
+        .with_details(json!({
+            "required_capability": capability,
+            "board_id": board_id,
+            "scope_needs": needs,
+            "reason": reason,
+            "key_scope": {
+                "capabilities": scope.capabilities,
+                "boards": boards,
+            },
+        }))
     }
 
     /// 403 `FORBIDDEN` for a change to the structure of the organization

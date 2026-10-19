@@ -148,6 +148,10 @@ team, these include `manage_adrs`. The section `Structure (manage_structure)`
 gives the grants of [`manage_structure`](../capabilities/#manage_structure) of
 the caller: on the organization, or on one board.
 
+When the request uses an agent key, the section `Agent key scope` gives the
+capabilities and the boards of the scope of the key. A key with no scope says
+so. See [The scope of an agent key](../capabilities/#the-scope-of-an-agent-key).
+
 The line `user name` gives the name that `hand_off_item` and the `claimed_by`
 filter of `search` take. `@<user name>` in the content of an item mentions the
 person (KAIROS-T-0556).

@@ -1413,7 +1413,7 @@ impl KairosMcp {
     }
 
     #[tool(
-        description = "Who am I in this Kairos organization: identity (display name, email, user name), org role, teams, my teams' repositories, the boards where I hold write capabilities, and the implicit capabilities every member has. Call this first to establish working context."
+        description = "Who am I in this Kairos organization: identity (display name, email, user name), org role, teams, my teams' repositories, the boards where I hold write capabilities, the implicit capabilities every member has, and the scope of the agent key in use (KAIROS-T-0536). Call this first to establish working context."
     )]
     pub async fn whoami(
         &self,
@@ -1424,6 +1424,7 @@ impl KairosMcp {
         let is_admin = tenant.role == OrgRole::Admin;
         let (org_slug, role) = (tenant.slug.clone(), tenant.role.as_str());
         let (display_name, email, user_id) = (auth.display_name, auth.email, auth.user_id);
+        let (agent_key, key_scope) = (auth.agent_key, auth.key_scope);
         self.run_tool(&tenant, move |conn| {
             use kairos_db::schema::{
                 board_member_capabilities as caps, boards, team_members, teams,
@@ -1576,6 +1577,10 @@ impl KairosMcp {
                         "- on the board {board_id}: its columns, transitions, members and grants\n"
                     )),
                 }
+            }
+            // KAIROS-T-0536: the agent key in use, and its scope.
+            if agent_key.is_some() {
+                out.push_str(&key_scope_section(conn, key_scope.as_deref())?);
             }
             Ok(out)
         })
@@ -7550,6 +7555,55 @@ fn task_for_claim(item: ItemView) -> Result<ItemView, ApiError> {
 /// The name of an actor in a history or activity text: "Alice (agent)"
 /// when an agent made the change with the agent key of the person
 /// (KAIROS-T-0359), else the name.
+/// The `## Agent key scope` section of `whoami` (KAIROS-T-0536).
+fn key_scope_section(
+    conn: &mut PgConnection,
+    scope: Option<&kairos_core::key_scope::KeyScope>,
+) -> Result<String, ApiError> {
+    let mut out = String::from("\n## Agent key scope\n");
+    let Some(scope) = scope else {
+        out.push_str(
+            "This request uses an agent key with no scope: the key can do each thing that \
+             you can do.\n",
+        );
+        return Ok(out);
+    };
+    if scope.capabilities.is_empty() {
+        out.push_str("- capabilities: none. The key is read-only.\n");
+    } else {
+        let names: Vec<&str> = scope.capabilities.iter().map(String::as_str).collect();
+        out.push_str(&format!("- capabilities: {}\n", names.join(", ")));
+    }
+    match &scope.boards {
+        None => out.push_str("- boards: each board\n"),
+        Some(ids) => {
+            use kairos_db::schema::boards;
+            let ids: Vec<Uuid> = ids.iter().copied().collect();
+            let slugs: Vec<(Uuid, String)> = boards::table
+                .filter(boards::id.eq_any(&ids))
+                .select((boards::id, boards::slug))
+                .load(conn)
+                .map_err(ApiError::internal)?;
+            let names: Vec<String> = ids
+                .iter()
+                .map(|id| {
+                    slugs
+                        .iter()
+                        .find(|(b, _)| b == id)
+                        .map(|(_, slug)| slug.clone())
+                        .unwrap_or_else(|| id.to_string())
+                })
+                .collect();
+            out.push_str(&format!("- boards: {}\n", names.join(", ")));
+        }
+    }
+    out.push_str(
+        "The key can do an action only when you can do it and the scope has it. A refusal \
+         outside the scope is KEY_SCOPE.\n",
+    );
+    Ok(out)
+}
+
 fn actor_text(name: &str, agent_key: Option<Uuid>) -> String {
     match agent_key {
         Some(_) => format!("{name} (agent)"),

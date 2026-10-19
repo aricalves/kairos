@@ -321,6 +321,7 @@ mod tests {
             display_name: "Robin".into(),
             email_verified: false,
             agent_key: None,
+            key_scope: None,
         }
     }
 

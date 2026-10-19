@@ -33,6 +33,7 @@ pub mod item_owners;
 pub mod item_teams;
 pub mod items;
 pub mod jobs;
+pub mod key_scope;
 pub mod local_auth;
 pub mod migrations;
 pub mod models;

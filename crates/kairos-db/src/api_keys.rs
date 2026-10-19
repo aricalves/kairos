@@ -44,9 +44,30 @@ pub struct ApiKey {
     pub revoked_at: Option<DateTime<Utc>>,
     /// The key that a rotation made in place of this key (KAIROS-T-0370).
     pub replaced_by: Option<Uuid>,
+    /// The capabilities of the scope of the key (KAIROS-T-0536). `None`:
+    /// the key has no scope, and so no limit (each key made before
+    /// KAIROS-T-0536). Read it with [`ApiKey::scope`].
+    pub scope_capabilities: Option<Vec<Option<String>>>,
+    /// The boards of the scope (KAIROS-T-0536). `None`: each board.
+    pub scope_boards: Option<Vec<Option<Uuid>>>,
 }
 
 impl ApiKey {
+    /// The scope of the key (KAIROS-T-0536), or `None` when the key has no
+    /// scope: then it has each right of its principal. A list of boards
+    /// with no list of capabilities is not a scope that Kairos writes; it
+    /// reads as no scope.
+    pub fn scope(&self) -> Option<kairos_core::key_scope::KeyScope> {
+        let capabilities = self.scope_capabilities.as_ref()?;
+        Some(kairos_core::key_scope::KeyScope {
+            capabilities: capabilities.iter().flatten().cloned().collect(),
+            boards: self
+                .scope_boards
+                .as_ref()
+                .map(|boards| boards.iter().flatten().copied().collect()),
+        })
+    }
+
     /// Whether the key is usable at `now`: not revoked and not past expiry.
     /// The auth path uses this AFTER the hash match so every failure is a
     /// uniform 401 (KAIROS-T-0058).
@@ -79,6 +100,43 @@ pub fn create_key(conn: &mut PgConnection, new: NewApiKey) -> QueryResult<ApiKey
     }
     diesel::insert_into(api_keys::table)
         .values(new)
+        .returning(ApiKey::as_returning())
+        .get_result(conn)
+}
+
+/// [`create_key`] with a scope (KAIROS-T-0536), in one transaction.
+/// `None`: no scope, the key has no limit.
+pub fn create_key_with_scope(
+    conn: &mut PgConnection,
+    new: NewApiKey,
+    scope: Option<&kairos_core::key_scope::KeyScope>,
+) -> QueryResult<ApiKey> {
+    conn.transaction(|conn| {
+        let created = create_key(conn, new)?;
+        let Some(scope) = scope else {
+            return Ok(created);
+        };
+        set_scope(conn, created.id, scope)
+    })
+}
+
+/// Write the scope of a key (KAIROS-T-0536). Kairos writes it when it
+/// makes the key, and a rotation copies it. Nothing changes it after that.
+fn set_scope(
+    conn: &mut PgConnection,
+    id: Uuid,
+    scope: &kairos_core::key_scope::KeyScope,
+) -> QueryResult<ApiKey> {
+    let capabilities: Vec<Option<String>> = scope.capabilities.iter().cloned().map(Some).collect();
+    let boards: Option<Vec<Option<Uuid>>> = scope
+        .boards
+        .as_ref()
+        .map(|boards| boards.iter().copied().map(Some).collect());
+    diesel::update(api_keys::table.filter(api_keys::id.eq(id)))
+        .set((
+            api_keys::scope_capabilities.eq(Some(capabilities)),
+            api_keys::scope_boards.eq(boards),
+        ))
         .returning(ApiKey::as_returning())
         .get_result(conn)
 }
@@ -166,7 +224,8 @@ pub fn rotate_key(
         if old.revoked_at.is_some() || old.replaced_by.is_some() {
             return Ok(None);
         }
-        let created = create_key(conn, new)?;
+        // KAIROS-T-0536: the new key has the scope of the old key.
+        let created = create_key_with_scope(conn, new, old.scope().as_ref())?;
         let ends = old.expires_at.map_or(old_ends_at, |e| e.min(old_ends_at));
         let old = diesel::update(api_keys::table.filter(api_keys::id.eq(old_id)))
             .set((

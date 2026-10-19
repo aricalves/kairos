@@ -256,6 +256,11 @@ pub fn require_capability(
     user_id: Uuid,
     capability: &str,
 ) -> Result<(), ApiError> {
+    // KAIROS-T-0536: the scope of the agent key comes first, so the admin
+    // role does not pass an action that the scope leaves out.
+    if let Some(refusal) = ApiError::outside_key_scope_of(user_id, capability, board_id) {
+        return Err(refusal);
+    }
     let allowed = match board_id {
         Some(board_id) => abac::authorize(conn, slug, board_id, user_id, capability),
         None => abac::is_org_admin(conn, slug, user_id),
@@ -289,6 +294,12 @@ pub fn require_structure(
     slug: &str,
     user_id: Uuid,
 ) -> Result<(), ApiError> {
+    // KAIROS-T-0536: the scope of the agent key must have `manage_structure`.
+    if let Some(refusal) =
+        ApiError::outside_key_scope_of(user_id, kairos_core::abac::MANAGE_STRUCTURE, None)
+    {
+        return Err(refusal);
+    }
     let allowed = abac::is_org_admin(conn, slug, user_id).map_err(map_abac_error)?
         || abac::holds_structure(conn, user_id, None).map_err(map_abac_error)?;
     if allowed {
@@ -639,6 +650,17 @@ fn edge_refusal(
     let target_capability = meta::manage_capability(target_type);
     let source_board = source.as_ref().and_then(|missing| missing.board_id);
     let target_board = target.as_ref().and_then(|missing| missing.board_id);
+    // KAIROS-T-0536: when the scope of the agent key leaves out both ends,
+    // the scope is the reason.
+    if source.is_some()
+        && target.is_some()
+        && let (Some(refusal), Some(_)) = (
+            ApiError::outside_key_scope(source_capability, source_board),
+            ApiError::outside_key_scope(target_capability, target_board),
+        )
+    {
+        return Ok(refusal);
+    }
     let need = |capability: &str, board: Option<Uuid>, end: &str| match board {
         Some(_) => format!("{capability:?} on the board of the {end}"),
         None => format!("the organization admin role for the {end}"),
