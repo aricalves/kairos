@@ -98,9 +98,10 @@ took=$((SECONDS - started))
 code="$(docker inspect -f '{{.State.ExitCode}}' "$app")"
 [ "$code" = "0" ] || fail "exit code ${code} after docker stop"
 [ "$took" -lt "$stop_timeout" ] || fail "the stop took ${took} s (the timeout is ${stop_timeout} s)"
-docker logs "$app" 2>&1 | grep -q '"signal":"SIGTERM"' \
-  || fail "no SIGTERM in the log"
-docker logs "$app" 2>&1 | grep -q 'shutdown complete' \
-  || fail "no clean shutdown in the log"
+# Read the log once into a variable: `docker logs | grep -q` fails under
+# pipefail when grep exits at the match before docker logs is done (SIGPIPE).
+log="$(docker logs "$app" 2>&1)"
+grep -q '"signal":"SIGTERM"' <<<"$log" || fail "no SIGTERM in the log"
+grep -q 'shutdown complete' <<<"$log" || fail "no clean shutdown in the log"
 echo "image smoke: docker stop gave a clean shutdown in ${took} s"
 echo "image smoke: PASS"
