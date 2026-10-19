@@ -252,13 +252,23 @@ fn twenty_creates_at_once_on_one_board_get_contiguous_unique_codes() {
         );
     }
 
-    // Each `item_created` event of the race names a final code.
+    // Each `item_created` event of the race names a final code. No server
+    // runs here: this connection is the emitter (KAIROS-T-0632). A NOTIFY
+    // carries a JSON array of events.
+    while kairos_db::events::send_outbox(&mut conn, kairos_db::events::SEND_BATCH)
+        .expect("send the outbox")
+        .rows
+        > 0
+    {}
     thread::sleep(Duration::from_millis(300));
     let event_codes: BTreeSet<String> = listener
         .notifications_iter()
         .map(|n| n.expect("notification").payload)
-        .filter_map(|payload| {
-            let v: serde_json::Value = serde_json::from_str(&payload).expect("event json");
+        .flat_map(|payload| {
+            let batch: serde_json::Value = serde_json::from_str(&payload).expect("event json");
+            batch.as_array().expect("a batch").clone()
+        })
+        .filter_map(|v| {
             (v["event"] == "item_created" && v["entity_type"] == "task")
                 .then(|| v["short_code"].as_str().expect("short_code").to_string())
         })

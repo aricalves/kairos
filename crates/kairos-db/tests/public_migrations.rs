@@ -29,10 +29,13 @@ static SCRATCH_DB: scratch::ScratchName =
 
 /// The public-schema tables: the 8 defined by KAIROS-S-0004 plus the
 /// KAIROS-T-0078 system metadata scopes.
-const EXPECTED_TABLES: [&str; 12] = [
+const EXPECTED_TABLES: [&str; 13] = [
     // KAIROS-T-0377: the counts of the login throttle, public because the
     // throttle runs before the organization is known.
     "auth_failures",
+    // KAIROS-T-0632: the outbox of the change events, public so that one
+    // query of an emitter sends the events of every organization.
+    "event_outbox",
     // KAIROS-T-0373: the job queue, public so that one query of a worker
     // serves every organization.
     "jobs",
