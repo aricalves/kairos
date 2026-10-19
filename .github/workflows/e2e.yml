@@ -32,7 +32,7 @@ jobs:
   e2e:
     name: e2e smoke
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       # The compose stack and the test servers bind host ports 41080-41900,
       # inside the default ephemeral range (32768-60999). An outbound

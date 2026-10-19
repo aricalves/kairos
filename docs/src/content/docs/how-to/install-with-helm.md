@@ -2,7 +2,7 @@
 title: "Install Kairos on Kubernetes with Helm"
 ---
 
-Get a Kairos 0.15.1 deployment serving on a cluster you already run.
+Get a Kairos 0.16.0 deployment serving on a cluster you already run.
 
 **Before you start**, have all four:
 
@@ -123,7 +123,7 @@ mounts the Swagger UI at `/api/docs`.
 
 ```sh
 helm install kairos oci://ghcr.io/colliery-io/charts/kairos \
-  --version 0.15.1 -f my-values.yaml
+  --version 0.16.0 -f my-values.yaml
 ```
 
 `--version` is not optional in practice: the chart publishes no floating tag.
@@ -265,6 +265,89 @@ A point release with fixes. No migration runs.
   did not work from 0.13.0 to 0.15.0.
 - The plugin tells you when the `kairos` CLI is older than the plugin or
   the server. Run `kairos self-update`.
+
+### From 0.15.1 to 0.16.0
+
+These changes of 0.16 show after the upgrade. They apply to Compose too.
+
+Before the upgrade:
+
+- Stop every old server before a new one serves. Do not run 0.15 and 0.16
+  at the same time. A 0.15 server drops the new event batches of the outbox.
+  Its write-back can also fail on the new unique indexes.
+- Take a dump. The migrations below change data, and they have no down for
+  the data.
+- Look at the repositories that have a write token. After the upgrade,
+  Kairos comments on the issue of each done or cancelled task, and closes
+  it. This includes old tasks.
+
+25 migrations run, 5 public and 20 for each tenant:
+
+- Public:
+  - `local_sessions_expires_at`: an index.
+  - `event_outbox`: a new table for the events.
+  - `writeback_jobs_dedupe`: it ends the duplicate queued write-back jobs.
+    The oldest job stays.
+  - `writeback_jobs_pr_key`, `writeback_jobs_issue_key`: a unique index on
+    the queued jobs.
+- Tenant, data: `item_notes` moves each note out of the content into a row
+  of its own. `one_parent` keeps the oldest `parent` edge of an item. It
+  removes each other one, and writes an `activity_log` row for each.
+  `retention_more` fills in the item of the old relationship rows of
+  `activity_log`. `embedding_dirty` marks each item, so the embedding sweep
+  reads each item one time.
+- Tenant, schema only:
+  - `blocked_claims`, `board_parent_gate`, `board_owner_gate`,
+    `board_blockers_gate`, `notification_reads`, `indexes`,
+    `issue_writeback`, `api_key_scope`, `history_diffs`.
+  - `item_search`: a stored tsvector for each item. Triggers write it.
+  - A new kind of notification: `blocked_again_notification`,
+    `blocker_cancelled_notification`, `claim_dropped_and_stale`,
+    `key_expiring`, `proposal_decided`, `proposal_decided_validate`.
+
+Locks and scans:
+
+- `writeback_jobs_pr_key` and `writeback_jobs_issue_key` build their index
+  with `CONCURRENTLY` on `public.jobs`. Writes to `jobs` continue. If one of
+  them stops at the lock timeout, drop the INVALID index and migrate again
+  (see above).
+- `proposal_decided_validate` reads each row of `notifications` to validate
+  its CHECK. Writes continue.
+- `history_diffs` adds its CHECK `NOT VALID`. It reads no row.
+- `indexes`, `retention_more` and `item_search` build plain indexes on
+  `activity_log`, `notifications`, `webhook_deliveries` and the item
+  tables. Writes to a table wait while its index builds. Reads continue.
+
+Changes that people and agents see:
+
+- A task starts in the entry column of its board. A create into another
+  column gets 422. Move the task after the create.
+- A note is a row of its own. `get_item` shows the notes after the content,
+  and `append_note` writes no version of the content. History keeps a diff,
+  with a full row every 10 versions.
+- An edit or a move on a strategy board or an initiative board needs the
+  `member` grant. Give `member` to each person who needs it.
+- Only a person with the `approve_proposals` grant on the board of one end,
+  or an organization admin, confirms or rejects a proposal. At first, only
+  organization admins have it. The error `PERSON_DECIDES` is gone.
+- A `blocks` edge needs the right to edit the blocked item. With rights on
+  the source only, the call makes a proposal.
+- An agent key can have a scope. A key from before the upgrade keeps all the
+  rights of its person. A new agent key gets each capability except `purge`
+  and `manage_structure`, so it does no administration of the organization. A refusal has
+  the code `KEY_SCOPE`.
+- The details of an error name the input with the key `field`. The key
+  `argument` is gone.
+- The REST lists of team pages have no content. Page history and
+  announcements answer a list with `limit` and `offset` (default 50, at most
+  200). CLI `--json` lists answer one envelope with `next_offset`.
+- Retention deletes unread notifications after 180 days, and keeps 5 code
+  indexes for each repository and ref. It keeps the `transition`, `cancel`
+  and `board_move` rows of `activity_log` at every age.
+- Each server holds one more database connection, for the event emitter.
+- The MCP server has 78 tools. The CLI has new verbs, and each verb takes a
+  name or a slug. Run `kairos self-update` and update the plugin with
+  `/plugin`.
 
 ## Trying it out without a database
 
