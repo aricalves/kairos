@@ -281,6 +281,18 @@ async fn an_agent_decides_intake_only_when_the_board_allows_it() {
             name: "board session".into(),
             expires_at: None,
             no_expiry: false,
+            // KAIROS-T-0536: the default scope has no purge. This key may
+            // purge, so the triage gate is what refuses it.
+            scope: Some(kairos_client::types_service_accounts::KeyScopeRequest {
+                capabilities: Some(
+                    kairos_core::key_scope::default_scope_capabilities()
+                        .into_iter()
+                        .chain(["purge"])
+                        .map(str::to_string)
+                        .collect(),
+                ),
+                boards: None,
+            }),
         })
         .await
         .expect("agent key")

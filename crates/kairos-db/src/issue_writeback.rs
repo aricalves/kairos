@@ -67,6 +67,12 @@ struct Found {
     found: bool,
 }
 
+/// The conflict target of the job of an issue: the unique index
+/// `jobs_issue_writeback_queued_issue_key` (KAIROS-T-0637), one queued job
+/// for each key.
+const QUEUED_ISSUE_KEY: &str =
+    "((payload->>'issue_key')) WHERE kind = 'issue_writeback' AND state = 'queued'";
+
 /// The key of the job of an issue, in its payload.
 fn issue_key(tenant: &str, repository_id: Uuid, issue_id: &str) -> String {
     format!("issue-writeback:{tenant}:{repository_id}:{issue_id}")
@@ -93,7 +99,9 @@ fn changed(conn: &mut PgConnection, filter: &str, id: Uuid) -> Result<Vec<IssueK
 }
 
 /// Queue the write-back of one issue, unless a job of that issue waits
-/// already (it reads the task when it runs). True: a job was added.
+/// already (it reads the task when it runs). True: a job was added. A
+/// unique index on the key of a queued job decides, as for a pull request
+/// ([`crate::writeback::queue_pr`], KAIROS-T-0637).
 fn queue_issue(
     conn: &mut PgConnection,
     tenant: &str,
@@ -101,17 +109,7 @@ fn queue_issue(
     issue_id: &str,
 ) -> Result<bool, DieselError> {
     let key = issue_key(tenant, repository_id, issue_id);
-    let waiting: Found = sql_query(
-        "SELECT EXISTS (SELECT 1 FROM public.jobs WHERE kind = $1 AND state = 'queued' \
-                          AND payload->>'issue_key' = $2) AS found",
-    )
-    .bind::<Text, _>(JOB_KIND)
-    .bind::<Text, _>(&key)
-    .get_result(conn)?;
-    if waiting.found {
-        return Ok(false);
-    }
-    jobs::enqueue(
+    let added = jobs::enqueue_with_conflict(
         conn,
         &NewJob {
             kind: JOB_KIND.to_string(),
@@ -126,8 +124,9 @@ fn queue_issue(
             run_after: None,
             max_tries: MAX_TRIES,
         },
+        QUEUED_ISSUE_KEY,
     )?;
-    Ok(true)
+    Ok(added.is_some())
 }
 
 fn queue_all(conn: &mut PgConnection, keys: Vec<IssueKey>) -> Result<usize, DieselError> {

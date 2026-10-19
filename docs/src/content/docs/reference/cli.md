@@ -270,6 +270,11 @@ credential:
 | A key in the environment | `credential: key from KAIROS_MCP_KEY` (or `KAIROS_KEY`) |
 | The credential cache | `credential: login cached for <URL>` |
 
+A request with an agent key gets the line `key scope:` before `credential:`.
+It gives the capabilities and the boards of the key, for example
+`key scope: manage_tasks, transition_items on each board`. A key with no
+scope gets `key scope: none`.
+
 An agent key and a service-account key have the same format, so the line
 says `key`. `--json` prints the response of the server only, with no
 `credential:` line.
@@ -2561,6 +2566,9 @@ kairos keys create --name <NAME> [--service-account <SERVICE_ACCOUNT>] [OPTIONS]
 | `--service-account <SERVICE_ACCOUNT>` | name or UUID | none | The service account. Without it, the command makes an agent key for you. |
 | `--expires-at <EXPIRES_AT>` | RFC 3339 instant | the default life | Expiry, for example `2027-01-01T00:00:00Z`. Without it, the key expires after the default life of the server: 90 days, unless the operator changed `KAIROS_API_KEY_TTL_DAYS`. |
 | `--no-expiry` | flag | off | The key never expires. Do not use it with `--expires-at`. |
+| `--scope <CAPABILITIES>` | comma list | the default scope | The capabilities of an agent key, for example `manage_tasks,transition_items`. Without it, the key gets each capability but `purge` and `manage_structure`. Not with `--service-account`. |
+| `--read-only` | flag | off | An agent key with no capabilities. The key can only read. Not with `--scope` or `--service-account`. |
+| `--scope-board <BOARD>` | slug or UUID | each board | A board where the agent key can act. Repeat the option, or separate the boards with commas. Not with `--service-account`. |
 
 Without `--service-account`, the command makes an **agent key**. An agent key acts
 as you, with your capabilities. Each member can make agent keys. Log in as
@@ -2568,6 +2576,9 @@ yourself to make one: a request with an agent key cannot make an agent key. Put
 the key in the settings of the agent. For Claude Code, that is the variable
 `KAIROS_MCP_KEY`. Do not put the key in a repository. See
 [Give an agent your key](../../how-to/give-an-agent-your-key/).
+
+The scope of the key can take capabilities away. It cannot add a capability.
+See [The scope of an agent key](../capabilities/#the-scope-of-an-agent-key).
 
 With `--service-account`, the command makes a key for that service account. Only
 an organization admin can do this.
@@ -2584,7 +2595,8 @@ kairos keys list [--service-account <SERVICE_ACCOUNT>] [OPTIONS]
 |---|---|---|---|
 | `--service-account <SERVICE_ACCOUNT>` | name or UUID | none | The service account. Without it, the command lists your agent keys. |
 
-The list shows the start of each key only. It never shows the secret.
+The list shows the start of each key only. It never shows the secret. The
+column `SCOPE` shows the scope of each agent key. A key with no scope shows `-`.
 
 ### `kairos keys rotate`
 

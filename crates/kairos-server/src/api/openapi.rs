@@ -402,7 +402,9 @@ pub(crate) async fn openapi_json() -> impl IntoResponse {
                 board_slug, grants: [..]}], structure: [{scope, board_id, \
                 board_slug}]}`). `structure` lists the grants of \
                 manage_structure (KAIROS-T-0337): scope organization or \
-                board.",
+                board. `agent_key` is `{id, scope}` when the request uses \
+                an agent key (KAIROS-T-0536), else null. `scope` null: the \
+                key has no scope and no limit.",
         ),
         (status = 401, description = "Missing/invalid token", body = kairos_client::types::ErrorEnvelope),
         (status = 403, description = "Not a member of the organization", body = kairos_client::types::ErrorEnvelope),

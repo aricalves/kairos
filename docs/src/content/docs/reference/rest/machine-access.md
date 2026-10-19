@@ -31,7 +31,7 @@ Request body (required): `application/json`, [`CreateApiKeyRequest`](../schemas/
 |---|---|---|
 | `201` | [`ApiKeyCreatedResponse`](../schemas/#apikeycreatedresponse) | Key made; the secret is shown once |
 | `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The caller is a service account, or the request uses an agent key |
-| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Empty name, bad expiry, or expires_at with no_expiry |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Empty name, bad expiry, expires_at with no_expiry, or an unknown capability or board in the scope |
 
 ### `DELETE /api/me/agent-keys/{key_id}`
 
@@ -245,7 +245,7 @@ Request body (required): `application/json`, [`CreateApiKeyRequest`](../schemas/
 | `201` | [`ApiKeyCreatedResponse`](../schemas/#apikeycreatedresponse) | Key minted; secret shown once |
 | `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Org admin required |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown service account |
-| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Empty name, bad expiry, or expires_at with no_expiry |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Empty name, bad expiry, expires_at with no_expiry, or a scope (the key of a service account has none) |
 
 ### `DELETE /api/service-accounts/{id}/keys/{key_id}`
 

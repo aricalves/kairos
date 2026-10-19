@@ -135,6 +135,7 @@ Who decides the triage of intake on a board (KAIROS-T-0428). Intake is a task in
 | `key` | `string` | yes | The full API key. Shown once; store it now. |
 | `name` | `string` | yes |  |
 | `prefix` | `string` | yes |  |
+| `scope` | [`KeyScopeView`](#keyscopeview), nullable | no |  |
 
 ## ApiKeyListResponse
 
@@ -174,6 +175,7 @@ One row of `GET /api/service-accounts/{id}/keys` — never a secret or hash.
 | `prefix` | `string` | yes |  |
 | `replaced_by` | `string`, nullable | no | The key that a rotation made in place of this key (KAIROS-T-0370). The old secret works until `expires_at`, the end of the grace time. |
 | `revoked_at` | `string`, nullable | no |  |
+| `scope` | [`KeyScopeView`](#keyscopeview), nullable | no |  |
 
 ## AppendNoteRequest
 
@@ -572,6 +574,7 @@ The server refuses a body with a field that is not in this table ([Errors](../..
 | `expires_at` | `string`, nullable | no | Optional RFC 3339 expiry. Omitted: the key expires after the default life of the deployment (`KAIROS_API_KEY_TTL_DAYS`, 90 days by default), or never when that setting is 0. |
 | `name` | `string` | yes | Operator label for the key ("gha-main", ...). |
 | `no_expiry` | `boolean` | no | `true`: the key never expires (KAIROS-T-0370). Do not send it with `expires_at`. |
+| `scope` | [`KeyScopeRequest`](#keyscoperequest), nullable | no |  |
 
 The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
 
@@ -1521,6 +1524,35 @@ The jobs of one kind in each state.
 |---|---|---|---|
 | `failures` | array of [`JobFailure`](#jobfailure) | yes | The failed jobs, newest first, at most [`JOB_FAILURE_LIMIT`]. |
 | `kinds` | array of [`JobKindCounts`](#jobkindcounts) | yes | The jobs of each kind in each state, by kind. A finished job stays for 7 days. |
+
+## KeyScopeBoard
+
+One board of a [`KeyScopeView`].
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | `string` | yes |  |
+| `slug` | `string`, nullable | no | The slug of the board; `null` when the board is deleted. |
+
+## KeyScopeRequest
+
+The scope of a new agent key (KAIROS-T-0536). A scope never adds a right. The key does an action when the person can do it and the scope has it.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `boards` | `array`, nullable | no | The boards where the key can act, by slug or id. Omitted: each board. With a list, an action that has no board is refused. |
+| `capabilities` | `array`, nullable | no | The capabilities of the key, from the vocabulary of the capabilities reference: the board capabilities, `manage_structure` and `file_backlog`. `[]` makes a read-only key. Omitted: the default list (each one but `purge` and `manage_structure`). |
+
+The server refuses a body with a field that is not in this table ([Errors](../../errors/#a-field-of-the-body)).
+
+## KeyScopeView
+
+The scope of a key (KAIROS-T-0536). `null` in place of this object: the key has no scope and no limit (a key made before KAIROS-T-0536).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `boards` | `array`, nullable | no | The boards of the key. `null`: each board. |
+| `capabilities` | array of `string` | yes | The capabilities of the key, sorted. Empty: a read-only key. |
 
 ## ListEnvelope_ActivityEntry
 

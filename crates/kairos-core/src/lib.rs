@@ -13,6 +13,7 @@ pub mod forge;
 pub mod forge_filter;
 pub mod graph;
 pub mod items;
+pub mod key_scope;
 pub mod notifications;
 pub mod primary;
 pub mod repositories;

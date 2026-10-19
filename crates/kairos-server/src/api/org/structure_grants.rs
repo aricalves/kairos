@@ -158,6 +158,10 @@ fn require_org_admin_for_grants(
     slug: &str,
     user: Uuid,
 ) -> Result<(), ApiError> {
+    // KAIROS-T-0536: the scope of an agent key must have `manage_structure`.
+    if let Some(refusal) = ApiError::outside_key_scope(kairos_core::abac::MANAGE_STRUCTURE, None) {
+        return Err(refusal);
+    }
     if kairos_db::abac::is_org_admin(conn, slug, user).map_err(map_abac_error)? {
         return Ok(());
     }

@@ -3,9 +3,13 @@ title: "Give an agent your key"
 ---
 
 Let an agent, for example Claude Code, work in Kairos as you. The agent uses an
-**agent key**. The key acts as you. The agent gets your capabilities and no
-more. The history and the activity show each change of the agent with your name
-and a mark. For example, they show "Alice (agent)".
+**agent key**. The key acts as you. The history and the activity show each
+change of the agent with your name and a mark. For example, they show
+"Alice (agent)".
+
+The key has a **scope**: a list of capabilities and, if you want, a list of
+boards. The agent can do an action only when you can do it and the scope has
+it.
 
 **Before you start:** you are a member of the organization. You do not need to
 be an admin.
@@ -40,6 +44,11 @@ kairos keys create --name laptop-claude-code
 ```
 
 You can also make the key on the **Agent keys** page of the GUI.
+
+The key gets the default scope: each capability that you have, but `purge` and
+`manage_structure`. Thus the agent cannot delete a task for good, and it cannot
+change teams, boards or accounts. To choose a different scope, see
+[Choose the scope of the key](#choose-the-scope-of-the-key).
 
 A new key expires after 90 days, unless the operator changed
 `KAIROS_API_KEY_TTL_DAYS`. The option `--expires-at 2027-01-01T00:00:00Z` sets
@@ -93,7 +102,45 @@ Some deployments use OpenID Connect and no agent key. There, leave
 ## 4. Make sure that it works
 
 Start a new session of the agent, so that it reads the variable. Then call the
-`whoami` tool. It shows your name.
+`whoami` tool. It shows your name and the scope of the key.
+
+## Choose the scope of the key
+
+Give the agent only the capabilities that its work needs. A scope cannot give
+the agent a capability that you do not have.
+
+```sh
+# Tasks and moves only, on one board:
+kairos keys create --name ci-bot --scope manage_tasks,transition_items --scope-board web-delivery
+
+# A key that can only read:
+kairos keys create --name reader --read-only
+
+# Each capability, purge and manage_structure too:
+kairos keys create --name admin-bot --scope manage_strategies,manage_initiatives,manage_tasks,manage_documents,manage_adrs,transition_items,configure_boards,administer_members,member,approve_proposals,pages,purge,manage_structure,file_backlog
+```
+
+The names come from [Capabilities](../../reference/capabilities/#the-names-of-a-scope).
+Kairos refuses an unknown name and an unknown board, and it names them. On the
+**Agent keys** page, write the capabilities and the boards with commas between
+them. **Read-only** makes a key with no capabilities.
+
+The work of an organization admin needs `manage_structure` in the scope. That
+work includes accounts, keys, templates and metadata definitions.
+
+When the scope does not have an action, Kairos refuses it with `KEY_SCOPE`
+(403). The refusal names the capability that the scope needs. Make a new key
+with a wider scope, or do the action with your login.
+
+The scope of a key does not change. A rotation keeps the scope. To change the
+scope, make a new key and revoke the old key.
+
+### Keys from before the scope
+
+A key that you made before Kairos had scopes has no scope. That key keeps each
+of your capabilities, so your agents continue to work. `kairos whoami` with
+the key shows `key scope: none`. Replace such a key with a new key to limit the
+agent.
 
 ## 5. Revoke a key
 
@@ -147,3 +194,6 @@ credential that the CLI sends.
 | make an agent key with an agent key | `403` |
 | revoke the key of a different person | `404` |
 | make an agent key as a service account | `403` |
+| do an action that the scope of the key does not have | `403 KEY_SCOPE` |
+| name an unknown capability or board in the scope | `422 VALIDATION` |
+| give a scope to the key of a service account | `422 VALIDATION` |

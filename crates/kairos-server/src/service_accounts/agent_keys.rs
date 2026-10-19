@@ -17,6 +17,12 @@
 //!
 //! The secret is returned once, by `POST`. Only its hash and a display prefix
 //! are kept.
+//!
+//! KAIROS-T-0536: each new agent key has a scope (`kairos_core::key_scope`).
+//! The request can name it; with no `scope`, the key gets the default: each
+//! capability but `purge` and `manage_structure`, on each board. A rotation
+//! keeps the scope. A key made before KAIROS-T-0536 has no scope and no
+//! limit.
 
 use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
@@ -29,7 +35,8 @@ use uuid::Uuid;
 use super::auth::{display_prefix, generate_key, hash_key};
 use super::routes::{
     ApiKeyCreatedResponse, ApiKeyListResponse, ApiKeyRotatedResponse, CreateApiKeyRequest,
-    DeletedResponse, key_view, log_activity, resolve_expiry, rfc3339, rotate,
+    DeletedResponse, key_view_in, log_activity, resolve_expiry, resolve_scope, rfc3339, rotate,
+    scope_view,
 };
 use crate::api::parse_uuid;
 use crate::app::AppState;
@@ -77,7 +84,7 @@ fn require_person(conn: &mut diesel::pg::PgConnection, user: Uuid) -> Result<(),
     responses(
         (status = 201, description = "Key made; the secret is shown once", body = ApiKeyCreatedResponse),
         (status = 403, description = "The caller is a service account, or the request uses an agent key", body = kairos_client::types::ErrorEnvelope),
-        (status = 422, description = "Empty name, bad expiry, or expires_at with no_expiry", body = kairos_client::types::ErrorEnvelope),
+        (status = 422, description = "Empty name, bad expiry, expires_at with no_expiry, or an unknown capability or board in the scope", body = kairos_client::types::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn create_agent_key(
@@ -102,12 +109,14 @@ pub(crate) async fn create_agent_key(
     let token_hash = hash_key(&raw_key);
     let prefix = display_prefix(&raw_key);
     let user = auth.user_id;
+    let requested_scope = body.scope.clone();
 
-    let row = state
+    let (row, scope) = state
         .blocking
         .run(&tenant.slug, move |conn| {
             require_person(conn, user)?;
-            let row = kairos_db::api_keys::create_key(
+            let scope = resolve_scope(conn, requested_scope.as_ref())?;
+            let row = kairos_db::api_keys::create_key_with_scope(
                 conn,
                 NewApiKey {
                     user_id: user,
@@ -117,8 +126,10 @@ pub(crate) async fn create_agent_key(
                     created_by: user,
                     expires_at,
                 },
+                Some(&scope),
             )
             .map_err(ApiError::internal)?;
+            let scope = scope_view(Some(conn), &scope)?;
             log_activity(
                 conn,
                 user,
@@ -127,7 +138,7 @@ pub(crate) async fn create_agent_key(
                 "api_key",
                 format!("agent_key:{}", row.name),
             )?;
-            Ok(row)
+            Ok((row, scope))
         })
         .await?;
 
@@ -140,6 +151,7 @@ pub(crate) async fn create_agent_key(
             prefix: row.prefix,
             created_at: rfc3339(row.created_at),
             expires_at: row.expires_at.map(rfc3339),
+            scope: Some(scope),
         }),
     ))
 }
@@ -160,16 +172,19 @@ pub(crate) async fn list_agent_keys(
     Extension(tenant): Extension<TenantContext>,
 ) -> Result<Json<ApiKeyListResponse>, ApiError> {
     let user = auth.user_id;
-    let rows = state
+    let items = state
         .blocking
         .run(&tenant.slug, move |conn| {
             require_person(conn, user)?;
-            kairos_db::api_keys::list_keys(conn, user).map_err(ApiError::internal)
+            let rows = kairos_db::api_keys::list_keys(conn, user).map_err(ApiError::internal)?;
+            rows.iter()
+                .map(|row| key_view_in(conn, row))
+                .collect::<Result<Vec<_>, _>>()
         })
         .await?;
     Ok(Json(ApiKeyListResponse {
-        total: rows.len() as i64,
-        items: rows.iter().map(key_view).collect(),
+        total: items.len() as i64,
+        items,
     }))
 }
 
