@@ -35,6 +35,25 @@ Feature: Start from the base index
     When I run "kairos index update --json"
     Then stdout is empty, and stderr has the error TOO_FAR: 250 changed files, the limit is 200
 
+  # KAIROS-T-0646: git excludes .claude/kairos.local.md, so a worktree has
+  # none. The CLI reads the file of the main clone, as the plugin hooks do.
+  Scenario: kairos index update in a worktree reads the wiring of its clone
+    Given Kairos has an index of commit A of main
+    And a worktree of a wired clone, on a branch from A with 3 changed files
+    When I run "kairos index update" in the worktree, with no KAIROS_URL and no --repo
+    Then the CLI downloads the index of A
+
+  # KAIROS-T-0646: kairos repos local matches the origin remote of each
+  # clone with the repositories of Kairos. It counts from the local refs.
+  Scenario: kairos repos local gives the repository of each clone of a board folder
+    Given Kairos has an index of commit A of main
+    And a board folder with a clone 1 commit behind, a worktree of it and a clone of another repository
+    When I run "kairos repos local --json" on the board folder, with no KAIROS_URL
+    Then the list has payments-api: repository payments-api, clone, 1 behind origin/main
+    And the list has wt-payments: repository payments-api, worktree of payments-api, 0 behind origin/main
+    And the list has other with no repository and no count
+    And the list has no other entry
+
   # KAIROS-T-0516: a clone that is only behind gets the index of the tip
   # of origin/main, when its diff is smaller than the diff of the index
   # below the checkout.
@@ -135,3 +154,20 @@ Feature: Start from the base index
     When the agent calls fetch_index with the path of the checkout
     Then the server says that it took the summaries from Kairos
     And each symbol of A has its summary from the base index
+
+  # KAIROS-T-0592: a deployment with no builder of the code index gets its
+  # base indexes from `kairos index upload`, for example in a CI job.
+  Scenario: kairos index upload sends the index of the checkout for its HEAD commit
+    Given Kairos has an index of commit A of main
+    And a checkout of a branch from A with 3 changed files and no local index
+    When I run "kairos index update"
+    And I run "kairos index upload"
+    Then Kairos has an index of the HEAD commit of the checkout, for the ref feature
+
+  Scenario: kairos index upload refuses a tree with changes that are not committed
+    Given Kairos has an index of commit A of main
+    And a checkout of a branch from A with 3 changed files and no local index
+    When I run "kairos index update"
+    And a file of the checkout changes, with no commit
+    And I run "kairos index upload"
+    Then the CLI refuses the upload, because pkg/stats.py is not committed

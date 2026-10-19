@@ -99,6 +99,9 @@ pub struct AuthContext {
     /// person (KAIROS-T-0359); `None` for OIDC, a password session, or the key
     /// of a service account. An agent key cannot make more agent keys.
     pub agent_key: Option<Uuid>,
+    /// The scope of that agent key (KAIROS-T-0536). `None`: no limit (no
+    /// agent key, or a key made before KAIROS-T-0536).
+    pub key_scope: Option<std::sync::Arc<kairos_core::key_scope::KeyScope>>,
 }
 
 /// The token claims this crate consumes. `iss`/`aud`/`exp` are enforced by
@@ -877,6 +880,7 @@ pub async fn require_auth(
         display_name: user.display_name,
         email_verified: claims.email_verified == Some(true),
         agent_key: None,
+        key_scope: None,
     });
     Ok(next.run(req).await)
 }

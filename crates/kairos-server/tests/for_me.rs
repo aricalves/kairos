@@ -260,6 +260,7 @@ impl World {
                 name: "laptop".into(),
                 expires_at: None,
                 no_expiry: false,
+                scope: None,
             })
             .await
             .expect("agent key")
@@ -534,6 +535,16 @@ async fn search_finds_the_items_of_a_person() {
     assert!(!error, "{text}");
     assert!(text.contains(&mine) && text.contains(&agents), "{text}");
     assert!(!text.contains(&bobs), "{text}");
+    // KAIROS-T-0561: each line names who has the claim, and an agent key.
+    let line = |code: &str| {
+        text.lines()
+            .find(|line| line.starts_with(&format!("- {code} ")))
+            .unwrap_or_else(|| panic!("no line for {code}: {text}"))
+            .to_string()
+    };
+    assert!(line(&mine).contains(", claimed by "), "{text}");
+    assert!(!line(&mine).contains("(agent)"), "{text}");
+    assert!(line(&agents).contains(" (agent)"), "{text}");
     let (text, error) = mcp
         .call("search", json!({"filter": {"owned_by": "me"}}))
         .await;

@@ -72,6 +72,17 @@ fn require_team(conn: &mut PgConnection, team_id: Uuid) -> Result<(), ApiError> 
         .ok_or_else(|| ApiError::not_found(format!("The team {team_id} does not exist.")))
 }
 
+/// KAIROS-T-0536: a team page and an announcement are documents of the
+/// team. The scope of an agent key must have `manage_documents` for a
+/// write. A team is not a board, so a scope with a list of boards refuses
+/// it.
+fn require_page_scope() -> Result<(), ApiError> {
+    match ApiError::outside_key_scope(kairos_core::abac::MANAGE_DOCUMENTS, None) {
+        Some(refusal) => Err(refusal),
+        None => Ok(()),
+    }
+}
+
 /// Team-page writes require team membership or org admin (the
 /// KAIROS-I-0007 permission model — NOT board ABAC).
 fn require_team_member_or_admin(
@@ -80,6 +91,7 @@ fn require_team_member_or_admin(
     team_id: Uuid,
     user: Uuid,
 ) -> Result<(), ApiError> {
+    require_page_scope()?;
     if tenant.role == kairos_db::models::enums::OrgRole::Admin {
         return Ok(());
     }
@@ -952,6 +964,7 @@ pub(crate) async fn delete_announcement(
 ) -> Result<Json<kairos_client::types_org::OrgDeleteResponse>, ApiError> {
     let announcement_uuid = parse_uuid(&announcement_id, "announcement_id")?;
     let user = auth.user_id;
+    require_page_scope()?;
     let is_admin = tenant.role == kairos_db::models::enums::OrgRole::Admin;
     let slug = tenant.slug.clone();
     state

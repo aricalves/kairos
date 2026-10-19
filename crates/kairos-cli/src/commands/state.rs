@@ -50,6 +50,14 @@ pub struct StateArgs {
 impl StateArgs {
     pub async fn run(self) -> Result<(), CliError> {
         let client = client(&self.common)?;
+        let body = self.body();
+        let task = client.set_task_state(&self.short_code, &body).await?;
+        emit_state(&self.common, &task)
+    }
+
+    /// The body of the patch: an option that is not given stays out of the
+    /// body, so the server keeps that field. A field in `--clear` is `null`.
+    fn body(&self) -> SetTaskStateRequest {
         let field = |value: Option<String>, name: &str| -> Option<Option<String>> {
             if self.clear.iter().any(|c| c == name) {
                 Some(None)
@@ -57,7 +65,7 @@ impl StateArgs {
                 value.map(Some)
             }
         };
-        let body = SetTaskStateRequest {
+        SetTaskStateRequest {
             branch: field(self.branch.clone(), "branch"),
             commit: field(self.commit.clone(), "commit"),
             pushed: if self.pushed {
@@ -70,9 +78,7 @@ impl StateArgs {
             pr_url: field(self.pr_url.clone(), "pr"),
             next_step: field(self.next_step.clone(), "next"),
             expected_updated_at: self.expected_updated_at.clone(),
-        };
-        let task = client.set_task_state(&self.short_code, &body).await?;
-        emit_state(&self.common, &task)
+        }
     }
 }
 
@@ -127,6 +133,32 @@ pub fn state_text(state: &TaskState) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(flatten)]
+        state: StateArgs,
+    }
+
+    fn body_of(args: &[&str]) -> serde_json::Value {
+        let cli = Cli::try_parse_from(args).expect("the arguments parse");
+        serde_json::to_value(cli.state.body()).expect("the body serializes")
+    }
+
+    // KAIROS-T-0663: the CLI sends a patch. A field that you do not name
+    // stays out of the body, so the server keeps it.
+    #[test]
+    fn the_body_is_a_patch() {
+        assert_eq!(
+            body_of(&["state", "ACME-T-0001", "--next", "Open the PR"]),
+            serde_json::json!({"next_step": "Open the PR"})
+        );
+        assert_eq!(
+            body_of(&["state", "ACME-T-0001", "--clear", "pr", "--not-pushed"]),
+            serde_json::json!({"pr_url": null, "pushed": false})
+        );
+    }
 
     #[test]
     fn the_text_names_each_field() {

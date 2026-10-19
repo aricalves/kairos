@@ -55,6 +55,7 @@ fn key_request(name: &str, no_expiry: bool) -> CreateApiKeyRequest {
         name: name.into(),
         expires_at: None,
         no_expiry,
+        scope: None,
     }
 }
 
@@ -214,7 +215,17 @@ async fn an_org_admin_revokes_any_agent_key_and_a_removal_revokes_the_keys() {
         (page.total, page.items.len(), page.limit, page.offset),
         (4, 1, 1, 1)
     );
-    for filter in ["alice@kairos.test".to_string(), alice_id.to_string()] {
+    // KAIROS-T-0589: the filter takes the user name too.
+    let alice_user_name: String = users::table
+        .filter(users::id.eq(alice_id))
+        .select(users::user_name)
+        .first(&mut conn)
+        .expect("alice's user name");
+    for filter in [
+        "alice@kairos.test".to_string(),
+        alice_id.to_string(),
+        alice_user_name,
+    ] {
         let mine = admin
             .list_org_agent_keys(&by_user(&filter))
             .await

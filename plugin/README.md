@@ -65,6 +65,9 @@ reads the file of the clone, the folder above `git rev-parse --git-common-dir` (
 In a board folder (`~/Boards/<board>/`: clones and worktrees, no `.git` of its own) the hook
 lists each checkout with its origin remote, its branch and the count of commits behind the
 origin default branch, from the local refs with no fetch (KAIROS-T-0521).
+When the `kairos` CLI has `kairos repos local` (KAIROS-T-0646), the hook runs it with the
+wired `deployment_url`, and each line also names the repository of the clone. The CLI uses
+its own credentials. An older CLI, or a CLI that fails, gives the listing of the hook.
 Hooks cannot drive the client's OAuth flow (KAIROS-A-0011) and tokens live with the MCP client
 (KAIROS-A-0014), so the hook deliberately never authenticates; offline degrades to a note.
 That holds on the agent-key path too: the MCP client sends the agent key, and the hook

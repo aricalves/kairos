@@ -73,6 +73,8 @@ pub mod kinds {
     pub const GITHUB_WRITEBACK: &str = kairos_db::writeback::JOB_KIND;
     /// The import of the open issues of a repository (KAIROS-T-0487).
     pub const ISSUE_IMPORT: &str = crate::forge::import::KIND;
+    /// The write-back of one issue that became a task (KAIROS-T-0575).
+    pub const ISSUE_WRITEBACK: &str = kairos_db::issue_writeback::JOB_KIND;
 }
 
 /// The priorities of the jobs (COLLIERY-I-0613): a higher one runs first.
@@ -93,6 +95,8 @@ pub mod priority {
     pub const GITHUB_WRITEBACK: i32 = kairos_db::writeback::JOB_PRIORITY;
     /// The import of the open issues of a repository (KAIROS-T-0487).
     pub const ISSUE_IMPORT: i32 = crate::forge::import::PRIORITY;
+    /// The write-back of an issue (KAIROS-T-0575).
+    pub const ISSUE_WRITEBACK: i32 = kairos_db::issue_writeback::JOB_PRIORITY;
     /// A periodic pass.
     pub const PERIODIC: i32 = 10;
 }
@@ -137,6 +141,7 @@ impl Default for JobSettings {
                 (kinds::WEBHOOK_DELIVERY, 4),
                 (kinds::GITHUB_WRITEBACK, 2),
                 (kinds::ISSUE_IMPORT, 2),
+                (kinds::ISSUE_WRITEBACK, 2),
             ]
             .into_iter()
             .map(|(kind, limit)| (kind.to_string(), limit))
@@ -918,6 +923,9 @@ impl Worker {
                             ..
                         }) => match db::release(conn, id, instance, &reason, retry_after)? {
                             Some(row) if row.state == "queued" => Ended::Requeued,
+                            // A waiting job of its key does the work
+                            // (KAIROS-T-0637).
+                            Some(row) if row.state == "done" => Ended::Done,
                             Some(_) => Ended::Failed,
                             None => Ended::Lost,
                         },

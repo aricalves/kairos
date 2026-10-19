@@ -3,11 +3,16 @@
 //! capabilities. With `--service-account`: the keys of a service account
 //! (KAIROS-A-0017 / KAIROS-T-0060, org-admin). The made key is shown ONCE;
 //! store it immediately.
+//!
+//! KAIROS-T-0536: an agent key has a scope. With no `--scope`, the key gets
+//! each capability but `purge` and `manage_structure`. `--scope` names the
+//! capabilities, `--read-only` gives none, and `--scope-board` limits the
+//! key to some boards.
 
-use kairos_client::types_service_accounts::{ApiKey, CreateApiKeyRequest};
+use kairos_client::types_service_accounts::{ApiKey, CreateApiKeyRequest, KeyScopeRequest};
 
 use crate::commands::entities::require_confirm;
-use crate::context::{Common, client, print_json};
+use crate::context::{Common, client, print_json, service_account_id};
 use crate::error::CliError;
 use crate::listing::print_whole;
 use crate::table::Table;
@@ -18,8 +23,9 @@ pub enum KeysCommand {
     /// Make an agent key that acts as you, or a key for a service account (the
     /// raw key is shown ONCE)
     Create {
-        /// Service account id (UUID). Omit it to make your own agent key.
-        #[arg(long = "service-account")]
+        /// The service account: its name or its id (UUID). Omit it to make
+        /// your own agent key.
+        #[arg(long = "service-account", value_name = "SERVICE_ACCOUNT")]
         service_account: Option<String>,
         /// Label for the key (e.g. "laptop-claude-code" or "gha-main")
         #[arg(long)]
@@ -32,6 +38,28 @@ pub enum KeysCommand {
         /// The key never expires
         #[arg(long = "no-expiry")]
         no_expiry: bool,
+        /// The capabilities of an agent key, separated by commas (for
+        /// example manage_tasks,transition_items). Omitted: each capability
+        /// but purge and manage_structure. The key can never do more than you
+        #[arg(
+            long,
+            value_delimiter = ',',
+            value_name = "CAPABILITIES",
+            conflicts_with_all = ["read_only", "service_account"]
+        )]
+        scope: Option<Vec<String>>,
+        /// An agent key with no capabilities: it can only read
+        #[arg(long = "read-only", conflicts_with = "service_account")]
+        read_only: bool,
+        /// A board (slug or id) where the agent key can act. Repeat it, or
+        /// separate the boards with commas. Omitted: each board
+        #[arg(
+            long = "scope-board",
+            value_delimiter = ',',
+            value_name = "BOARD",
+            conflicts_with = "service_account"
+        )]
+        scope_board: Vec<String>,
         #[command(flatten)]
         common: Common,
     },
@@ -41,8 +69,9 @@ pub enum KeysCommand {
     Rotate {
         /// Key id (UUID; see `kairos keys list`)
         key_id: String,
-        /// The service account of the key. Omit it to rotate your own agent key.
-        #[arg(long = "service-account")]
+        /// The service account of the key: its name or its id (UUID). Omit
+        /// it to rotate your own agent key.
+        #[arg(long = "service-account", value_name = "SERVICE_ACCOUNT")]
         service_account: Option<String>,
         #[command(flatten)]
         common: Common,
@@ -50,8 +79,9 @@ pub enum KeysCommand {
     /// List your agent keys, or the keys of a service account (prefixes only;
     /// never the secret)
     List {
-        /// Service account id (UUID). Omit it to list your own agent keys.
-        #[arg(long = "service-account")]
+        /// The service account: its name or its id (UUID). Omit it to list
+        /// your own agent keys.
+        #[arg(long = "service-account", value_name = "SERVICE_ACCOUNT")]
         service_account: Option<String>,
         #[command(flatten)]
         common: Common,
@@ -60,8 +90,9 @@ pub enum KeysCommand {
     Revoke {
         /// Key id (UUID; see `kairos keys list`)
         key_id: String,
-        /// The service account of the key. Omit it to revoke your own agent key.
-        #[arg(long = "service-account")]
+        /// The service account of the key: its name or its id (UUID). Omit
+        /// it to revoke your own agent key.
+        #[arg(long = "service-account", value_name = "SERVICE_ACCOUNT")]
         service_account: Option<String>,
         /// Actually revoke it
         #[arg(long)]
@@ -80,6 +111,7 @@ fn key_table(keys: &[ApiKey]) -> Table {
         "LAST_USED",
         "REVOKED",
         "REPLACED_BY",
+        "SCOPE",
     ]);
     for k in keys {
         table.row(vec![
@@ -90,9 +122,38 @@ fn key_table(keys: &[ApiKey]) -> Table {
             k.last_used_at.clone().unwrap_or_else(|| "-".to_string()),
             k.revoked_at.clone().unwrap_or_else(|| "-".to_string()),
             k.replaced_by.clone().unwrap_or_else(|| "-".to_string()),
+            k.scope
+                .as_ref()
+                .map(|scope| scope.describe())
+                .unwrap_or_else(|| "-".to_string()),
         ]);
     }
     table
+}
+
+/// The scope of a new agent key from the flags (KAIROS-T-0536). `None`:
+/// no flag, so the server gives the default scope.
+pub(crate) fn scope_request(
+    scope: Option<Vec<String>>,
+    read_only: bool,
+    boards: Vec<String>,
+) -> Option<KeyScopeRequest> {
+    let capabilities = match (scope, read_only) {
+        (_, true) => Some(Vec::new()),
+        (Some(names), false) => Some(
+            names
+                .into_iter()
+                .map(|n| n.trim().to_string())
+                .filter(|n| !n.is_empty())
+                .collect(),
+        ),
+        (None, false) => None,
+    };
+    let boards = (!boards.is_empty()).then_some(boards);
+    (capabilities.is_some() || boards.is_some()).then_some(KeyScopeRequest {
+        capabilities,
+        boards,
+    })
 }
 
 impl KeysCommand {
@@ -103,6 +164,9 @@ impl KeysCommand {
                 name,
                 expires_at,
                 no_expiry,
+                scope,
+                read_only,
+                scope_board,
                 common,
             } => {
                 let client = client(&common)?;
@@ -110,9 +174,14 @@ impl KeysCommand {
                     name,
                     expires_at,
                     no_expiry,
+                    scope: scope_request(scope, read_only, scope_board),
                 };
                 let created = match &service_account {
-                    Some(sa) => client.create_api_key(sa, &request).await?,
+                    Some(sa) => {
+                        client
+                            .create_api_key(&service_account_id(&client, sa).await?, &request)
+                            .await?
+                    }
                     None => client.create_agent_key(&request).await?,
                 };
                 if common.json {
@@ -127,6 +196,9 @@ impl KeysCommand {
                 println!("    {}", created.key);
                 println!();
                 println!("Keep the key in a safe place now. Kairos does NOT show it again.");
+                if let Some(scope) = &created.scope {
+                    println!("Scope: {}.", scope.describe());
+                }
                 if service_account.is_none() {
                     println!(
                         "Put the key in the settings of your agent. For Claude Code, set the \
@@ -142,7 +214,11 @@ impl KeysCommand {
             } => {
                 let client = client(&common)?;
                 let rotated = match &service_account {
-                    Some(sa) => client.rotate_api_key(sa, &key_id).await?,
+                    Some(sa) => {
+                        client
+                            .rotate_api_key(&service_account_id(&client, sa).await?, &key_id)
+                            .await?
+                    }
                     None => client.rotate_agent_key(&key_id).await?,
                 };
                 if common.json {
@@ -169,7 +245,11 @@ impl KeysCommand {
             } => {
                 let client = client(&common)?;
                 let list = match &service_account {
-                    Some(sa) => client.list_api_keys(sa).await?,
+                    Some(sa) => {
+                        client
+                            .list_api_keys(&service_account_id(&client, sa).await?)
+                            .await?
+                    }
                     None => client.list_agent_keys().await?,
                 };
                 if common.json {
@@ -192,7 +272,11 @@ impl KeysCommand {
                 require_confirm(confirm, &format!("the API key {key_id}"))?;
                 let client = client(&common)?;
                 let deleted = match &service_account {
-                    Some(sa) => client.revoke_api_key(sa, &key_id).await?,
+                    Some(sa) => {
+                        client
+                            .revoke_api_key(&service_account_id(&client, sa).await?, &key_id)
+                            .await?
+                    }
                     None => client.revoke_agent_key(&key_id).await?,
                 };
                 if common.json {

@@ -470,10 +470,12 @@ task, ADR.
 `?include_deleted=true` adds the archived cards back, in the column
 each was put away in and marked with `archived_at` (KAIROS-T-0159).
 That is an audit view, not a board view — "what was in Done last
-quarter?" rather than "what is on the board now?". The children-
-progress rollup and the blocks summary are deliberately NOT widened by
-it: ADR-20 rule 5 says archived work is not live work, so the counts
-keep counting live rows however the listing is asked for.
+quarter?" rather than "what is on the board now?". The opt-in does not
+change the counts. The blocks summary counts live rows only: ADR-20
+rule 5 says archived work is not live work. The children-progress
+rollup counts an archived child by the column that it was archived
+from (KAIROS-T-0571): from a done column as done, from another column
+in `removed`.
 
 `blocks_summary` counts only the `blocks` edges that can still block
 (COLLIERY-T-0214). Done work does not block, and nothing blocks done
@@ -1458,7 +1460,7 @@ on are free (KAIROS-T-0531). Org-admin-only.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `user_id` | path | yes | `string` | User id (UUID) |
+| `user_id` | path | yes | `string` | The member: a user id (UUID), an email or a user name |
 
 | Response | Body | Meaning |
 |---|---|---|
@@ -1474,7 +1476,7 @@ Change a member's role. Demoting the LAST admin is rejected (422
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
-| `user_id` | path | yes | `string` | User id (UUID) |
+| `user_id` | path | yes | `string` | The member: a user id (UUID), an email or a user name |
 
 Request body (required): `application/json`, [`UpdateOrgMemberRequest`](../schemas/#updateorgmemberrequest)
 

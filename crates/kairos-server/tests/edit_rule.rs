@@ -541,6 +541,7 @@ async fn edit_rule_and_link_rule_against_live_stack() {
         content: "original content".into(),
         decision_maker: None,
         decision_date: None,
+        parent: None,
     };
     let adr_one = svc
         .create_adr(&adr_request("ADR one"))
@@ -1660,14 +1661,21 @@ async fn edit_rule_and_link_rule_against_live_stack() {
             })
             .await,
     );
-    checks.refused(
+    // KAIROS-T-0566: a task in a column that is not the entry column is
+    // refused for every caller, so the answer is a 422 on column_id.
+    let in_todo = alice
+        .create_task(&CreateTaskRequest {
+            column_id: Some(todo.clone()),
+            ..task_on(&platform_board, "In Todo by alice")
+        })
+        .await;
+    checks.check(
         "13: nor a task in a column that is not the entry column",
-        alice
-            .create_task(&CreateTaskRequest {
-                column_id: Some(todo.clone()),
-                ..task_on(&platform_board, "In Todo by alice")
-            })
-            .await,
+        matches!(
+            &in_todo,
+            Err(Error::Validation { status: 422, field: Some(field), .. }) if field == "column_id"
+        ),
+        format!("expected 422 VALIDATION on column_id, got {in_todo:?}"),
     );
     checks.refused(
         "13: alice cannot add a column to the board of platform",

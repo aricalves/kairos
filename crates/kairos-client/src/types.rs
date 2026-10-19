@@ -526,7 +526,9 @@ pub struct CreateTaskRequest {
     /// Until then a `repository` alone chose the board (KAIROS-T-0104).
     #[serde(default)]
     pub board_id: Option<String>,
-    /// Column to place it in (UUID); defaults to the board's first column.
+    /// The entry column of the board (UUID), the default (KAIROS-T-0566).
+    /// A task starts there, for every caller: any other column is a 422
+    /// that names the entry column. Create the task, then move it.
     #[serde(default)]
     pub column_id: Option<String>,
     pub title: String,
@@ -684,6 +686,14 @@ pub struct CreateAdrRequest {
     /// `YYYY-MM-DD`.
     #[serde(default)]
     pub decision_date: Option<String>,
+    /// The short code of the item that the ADR supports: a strategy, an
+    /// initiative or a task (KAIROS-T-0591). The server writes the
+    /// `supports` edge in the transaction of the create: a refused parent
+    /// leaves no ADR. A retired code finds its item.
+    // Sent only with a value, so that an older server gets the body that it
+    // knows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
 }
 
 /// Body of `PATCH /api/{family}/{short_code}` â the KAIROS-A-0004

@@ -2,10 +2,10 @@
 //! column (KAIROS-A-0015: "board views per level with column layout";
 //! `GET /api/boards` + `GET /api/boards/{id}/items`).
 
-use crate::commands::entities::ListArgs;
-use crate::context::{Common, client, print_json};
+use crate::commands::entities::{ListArgs, require_confirm};
+use crate::context::{Common, client, find_column, print_json, team_id};
 use crate::error::CliError;
-use crate::listing::fetch;
+use crate::listing::{fetch, print_whole};
 use crate::table::Table;
 
 use kairos_client::types_org::{
@@ -43,7 +43,8 @@ pub enum BoardsCommand {
         #[command(flatten)]
         common: Common,
     },
-    /// Show a board's live items grouped by column (one page)
+    /// Show a board's live items grouped by column (one page, or each
+    /// page with --all)
     Show {
         /// Board slug or id (UUID)
         #[arg(value_name = "BOARD")]
@@ -54,6 +55,10 @@ pub enum BoardsCommand {
         /// Items to skip
         #[arg(long)]
         offset: Option<i64>,
+        /// Read each page: the CLI asks for one page after the other, and
+        /// shows each item. Not with --limit or --offset
+        #[arg(long, conflicts_with_all = ["limit", "offset"])]
+        all: bool,
         /// Show only the strategies and the initiatives of this team (slug
         /// or UUID), from tasks or set by hand. Tasks and ADRs are not
         /// changed
@@ -77,12 +82,13 @@ pub enum BoardsCommand {
         /// Board slug or id (UUID)
         #[arg(value_name = "BOARD")]
         board: String,
-        /// The first day, YYYY-MM-DD (default: 89 days before --to)
-        #[arg(long)]
+        /// The first day, YYYY-MM-DD (default: 89 days before --until)
+        #[arg(long, value_name = "DATE")]
         from: Option<String>,
-        /// The last day, YYYY-MM-DD (default: today, UTC)
-        #[arg(long)]
-        to: Option<String>,
+        /// The last day, YYYY-MM-DD (default: today, UTC). The old name
+        /// --to still works
+        #[arg(long = "until", alias = "to", value_name = "DATE")]
+        until: Option<String>,
         #[command(flatten)]
         common: Common,
     },
@@ -144,6 +150,40 @@ pub enum BoardsCommand {
         #[command(subcommand)]
         command: crate::commands::dispatch::DispatchCommand,
     },
+    /// List the members of a board and their board capabilities
+    Members {
+        /// Board slug or id (UUID)
+        #[arg(value_name = "BOARD")]
+        board: String,
+        #[command(flatten)]
+        common: Common,
+    },
+    /// Change the name or the slug of a board (needs configure_boards)
+    Update {
+        /// Board slug or id (UUID)
+        #[arg(value_name = "BOARD")]
+        board: String,
+        /// The new name
+        #[arg(long)]
+        name: Option<String>,
+        /// The new slug (^[a-z][a-z0-9_-]{1,62}$)
+        #[arg(long)]
+        slug: Option<String>,
+        #[command(flatten)]
+        common: Common,
+    },
+    /// Delete an empty board (requires --confirm). Kairos refuses a board
+    /// that has items
+    Delete {
+        /// Board slug or id (UUID)
+        #[arg(value_name = "BOARD")]
+        board: String,
+        /// Delete the board
+        #[arg(long)]
+        confirm: bool,
+        #[command(flatten)]
+        common: Common,
+    },
     /// Archive each task in the done columns of a delivery board, cancelled
     /// tasks too (requires --confirm). You can restore each task
     #[command(name = "archive-completed")]
@@ -173,8 +213,7 @@ impl BoardsCommand {
                 let client = client(&common)?;
                 // The body takes the id of the team. A slug is read first.
                 let team_id = match team {
-                    Some(team) if looks_like_uuid(&team) => Some(team),
-                    Some(team) => Some(client.get_team_by_slug(&team).await?.id),
+                    Some(team) => Some(team_id(&client, &team).await?),
                     None => None,
                 };
                 let detail = client
@@ -209,6 +248,13 @@ impl BoardsCommand {
                 if envelope.items.is_empty() {
                     println!("(none)");
                 } else {
+                    // KAIROS-T-0589: the TEAM column shows the slug of the
+                    // team, from one read of the teams.
+                    let paging = crate::listing::Paging {
+                        all: true,
+                        ..Default::default()
+                    };
+                    let teams = fetch(paging, |page| client.list_teams(page)).await?;
                     let mut table = Table::new(&["ID", "NAME", "SLUG", "LEVEL", "TEAM"]);
                     for board in &envelope.items {
                         table.row(vec![
@@ -216,7 +262,7 @@ impl BoardsCommand {
                             board.name.clone(),
                             board.slug.clone(),
                             board.board_level.clone(),
-                            board.team_id.clone().unwrap_or_else(|| "-".to_string()),
+                            team_cell(board.team_id.as_deref(), &teams.items),
                         ]);
                     }
                     print!("{}", table.render());
@@ -228,13 +274,15 @@ impl BoardsCommand {
                 board_id,
                 limit,
                 offset,
+                all,
                 team,
                 no_team,
                 details,
                 common,
             } => {
                 let client = client(&common)?;
-                // COLLIERY-T-0261: one page of the board.
+                // COLLIERY-T-0261: one page of the board, or each page
+                // (KAIROS-T-0592).
                 let query = BoardItemsQuery {
                     limit,
                     offset,
@@ -243,12 +291,20 @@ impl BoardsCommand {
                     with_metadata: details,
                     ..BoardItemsQuery::default()
                 };
-                let items = client.board_items(&board_id, &query).await?;
+                let items = if all {
+                    client.board_items_all(&board_id, &query).await?
+                } else {
+                    client.board_items(&board_id, &query).await?
+                };
                 if common.json {
                     return print_json(&items);
                 }
                 print_board_items(&items, details);
                 println!();
+                if all {
+                    println!("total: {}", items.total);
+                    return Ok(());
+                }
                 println!(
                     "total: {} (limit {}, offset {})",
                     items.total, items.limit, items.offset
@@ -260,20 +316,77 @@ impl BoardsCommand {
                 }
                 Ok(())
             }
+            Self::Members { board, common } => {
+                let client = client(&common)?;
+                let members = client.list_board_members(&board).await?;
+                if common.json {
+                    return print_whole(&members);
+                }
+                print!("{}", members_text(&members));
+                Ok(())
+            }
+            Self::Update {
+                board,
+                name,
+                slug,
+                common,
+            } => {
+                if name.is_none() && slug.is_none() {
+                    return Err(CliError::Failure(
+                        "Give --name or --slug: the command has nothing to change.".to_string(),
+                    ));
+                }
+                let client = client(&common)?;
+                // A change of a board takes the id (KAIROS-T-0589).
+                let id = client.get_board(&board).await?.board.id;
+                let updated = client
+                    .update_board(
+                        &id,
+                        &UpdateBoardRequest {
+                            name,
+                            slug,
+                            ..UpdateBoardRequest::default()
+                        },
+                    )
+                    .await?;
+                if common.json {
+                    return print_json(&updated);
+                }
+                println!(
+                    "The board {board} has the name {} and the slug {}.",
+                    updated.name, updated.slug
+                );
+                Ok(())
+            }
+            Self::Delete {
+                board,
+                confirm,
+                common,
+            } => {
+                require_confirm(confirm, &format!("the board {board}"))?;
+                let client = client(&common)?;
+                let id = client.get_board(&board).await?.board.id;
+                let deleted = client.delete_board(&id).await?;
+                if common.json {
+                    return print_json(&deleted);
+                }
+                println!("Kairos deleted the board {board}.");
+                Ok(())
+            }
             Self::Dispatch { command } => command.run().await,
             Self::Columns { command } => command.run().await,
             Self::Transitions { command } => command.run().await,
             Self::Flow {
                 board,
                 from,
-                to,
+                until,
                 common,
             } => {
                 let client = client(&common)?;
                 let flow = client
                     .board_flow(
                         &board,
-                        &kairos_client::types_org::BoardFlowQuery { from, to },
+                        &kairos_client::types_org::BoardFlowQuery { from, to: until },
                     )
                     .await?;
                 if common.json {
@@ -291,21 +404,7 @@ impl BoardsCommand {
             } => {
                 let client = client(&common)?;
                 let detail = client.get_board(&board).await?;
-                let target = detail
-                    .columns
-                    .iter()
-                    .find(|c| c.id == column || c.name.eq_ignore_ascii_case(&column))
-                    .ok_or_else(|| {
-                        CliError::Failure(format!(
-                            "The board {board} has no column {column:?}. The columns are: {}.",
-                            detail
-                                .columns
-                                .iter()
-                                .map(|c| c.name.as_str())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ))
-                    })?;
+                let target = find_column(&detail, &column)?;
                 let wip_limit = if none { None } else { limit };
                 let updated = client
                     .update_column(
@@ -387,6 +486,35 @@ impl BoardsCommand {
                 Ok(())
             }
         }
+    }
+}
+
+/// The text of `boards members` (KAIROS-T-0592): one row for each member,
+/// with the capabilities. Pure.
+fn members_text(members: &[kairos_client::types_org::BoardMember]) -> String {
+    if members.is_empty() {
+        return "(none)\ntotal: 0\n".to_string();
+    }
+    let mut table = Table::new(&["EMAIL", "NAME", "CAPABILITIES"]);
+    for member in members {
+        table.row(vec![
+            member.email.clone(),
+            member.display_name.clone(),
+            member.capabilities.join(", "),
+        ]);
+    }
+    format!("{}total: {}\n", table.render(), members.len())
+}
+
+/// The TEAM cell of `boards list`: the slug of the team, or its id when
+/// the team is not in `teams`, or `-`. Pure.
+fn team_cell(team_id: Option<&str>, teams: &[kairos_client::types_org::Team]) -> String {
+    match team_id {
+        None => "-".to_string(),
+        Some(id) => teams
+            .iter()
+            .find(|team| team.id == id)
+            .map_or_else(|| id.to_string(), |team| team.slug.clone()),
     }
 }
 
@@ -629,17 +757,6 @@ fn archived_completed_text(
     )
 }
 
-/// Whether `value` has the form of a UUID (8-4-4-4-12 hex digits). A team
-/// slug cannot have that form (COLLIERY-T-0260).
-fn looks_like_uuid(value: &str) -> bool {
-    let parts: Vec<&str> = value.split('-').collect();
-    parts.len() == 5
-        && parts
-            .iter()
-            .zip([8, 4, 4, 4, 12])
-            .all(|(part, len)| part.len() == len && part.chars().all(|c| c.is_ascii_hexdigit()))
-}
-
 #[cfg(test)]
 mod archive_completed_tests {
     use super::*;
@@ -665,6 +782,51 @@ mod archive_completed_tests {
             "{text}"
         );
         assert!(text.contains("tasks restore"), "{text}");
+    }
+}
+
+#[cfg(test)]
+mod members_tests {
+    use super::members_text;
+
+    /// KAIROS-T-0592: `boards members` shows the email, the name and the
+    /// capabilities of each member.
+    #[test]
+    fn the_members_text_has_a_row_for_each_member() {
+        let member = kairos_client::types_org::BoardMember {
+            user_id: "u-1".into(),
+            email: "robin@example.com".into(),
+            display_name: "Robin".into(),
+            capabilities: vec!["manage_tasks".into(), "transition_items".into()],
+        };
+        let text = members_text(&[member]);
+        assert!(text.starts_with("EMAIL"), "{text}");
+        assert!(
+            text.contains("robin@example.com  Robin  manage_tasks, transition_items"),
+            "{text}"
+        );
+        assert!(text.ends_with("total: 1\n"), "{text}");
+        assert_eq!(members_text(&[]), "(none)\ntotal: 0\n");
+    }
+}
+
+#[cfg(test)]
+mod team_cell_tests {
+    use super::team_cell;
+
+    /// KAIROS-T-0589: `boards list` shows the slug of the team, not its id.
+    #[test]
+    fn the_team_cell_is_the_slug() {
+        let team: kairos_client::types_org::Team = serde_json::from_value(serde_json::json!({
+            "id": "t-1", "name": "Platform", "slug": "platform",
+            "team_type": "platform", "delivery_board_id": "b-1",
+            "created_at": "2026-10-18T00:00:00Z", "updated_at": "2026-10-18T00:00:00Z"
+        }))
+        .expect("a team");
+        let teams = [team];
+        assert_eq!(team_cell(Some("t-1"), &teams), "platform");
+        assert_eq!(team_cell(Some("t-9"), &teams), "t-9");
+        assert_eq!(team_cell(None, &teams), "-");
     }
 }
 

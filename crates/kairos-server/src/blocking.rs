@@ -69,22 +69,60 @@ tokio::task_local! {
     /// The agent key of the request in scope (KAIROS-T-0359). Set by
     /// [`with_agent_key`]; read by [`BlockingTenantPool::run`].
     static AGENT_KEY: Option<uuid::Uuid>;
+    /// The principal and the scope of that agent key (KAIROS-T-0536).
+    /// `None`: no limit.
+    static KEY_SCOPE: Option<kairos_db::key_scope::RequestScope>;
 }
 
 /// Run `future` with `agent_key` as the agent key of the request: each
 /// [`BlockingTenantPool::run`] called in it marks its writes with the key
 /// (module docs). The tenant middleware wraps each request in it, and the
 /// MCP service wraps each tool call.
+///
+/// KAIROS-T-0536: `scope` is the principal and the scope of the key. `run`
+/// sets it on the blocking thread around the closure
+/// (`kairos_db::key_scope`), so each check of `kairos_db::abac` in the
+/// request sees it.
 pub async fn with_agent_key<F: std::future::Future>(
     agent_key: Option<uuid::Uuid>,
+    scope: Option<kairos_db::key_scope::RequestScope>,
     future: F,
 ) -> F::Output {
-    AGENT_KEY.scope(agent_key, future).await
+    AGENT_KEY
+        .scope(agent_key, KEY_SCOPE.scope(scope, future))
+        .await
 }
 
 /// The agent key of the request in scope, or `None` outside of a request.
 pub fn current_agent_key() -> Option<uuid::Uuid> {
     AGENT_KEY.try_with(|key| *key).ok().flatten()
+}
+
+/// The principal and the scope of the agent key of the request
+/// (KAIROS-T-0536): in the task of the request, the task-local; on a
+/// blocking thread of [`run`], the thread-local of `kairos_db::key_scope`.
+/// `None`: no limit.
+///
+/// [`run`]: BlockingTenantPool::run
+fn current_request_scope() -> Option<kairos_db::key_scope::RequestScope> {
+    match KEY_SCOPE.try_with(Clone::clone) {
+        Ok(scope) => scope,
+        Err(_) => kairos_db::key_scope::current(),
+    }
+}
+
+/// The scope of the agent key of the request (KAIROS-T-0536), or `None`:
+/// no limit. The scope limits the principal of the key, the caller.
+pub fn current_key_scope() -> Option<Arc<kairos_core::key_scope::KeyScope>> {
+    current_request_scope().map(|(_, scope)| scope)
+}
+
+/// [`current_key_scope`] when `user` is the principal of the key, else
+/// `None`: a check for a different user does not see the scope.
+pub fn key_scope_of(user: uuid::Uuid) -> Option<Arc<kairos_core::key_scope::KeyScope>> {
+    current_request_scope()
+        .filter(|(principal, _)| *principal == user)
+        .map(|(_, scope)| scope)
 }
 
 /// The sync pool. Cheap to clone (r2d2 pools are `Arc`s internally).
@@ -191,6 +229,8 @@ impl BlockingTenantPool {
         let schema = tenant_schema_name(slug);
         // KAIROS-T-0359: read here, in the task of the request (module docs).
         let agent_key = kairos_db::agent_mark::set_statement(current_agent_key());
+        // KAIROS-T-0536: the scope of the key, read here too.
+        let key_scope = current_request_scope();
         // KAIROS-T-0359: the sink of the claim warnings, read here too.
         let sink = crate::claims::current_sink();
         let pool = self.pool.clone();
@@ -207,7 +247,9 @@ impl BlockingTenantPool {
                     "SET search_path TO \"{schema}\", public; {agent_key}"
                 ))
                 .map_err(ApiError::internal)?;
-                let result = crate::claims::with_blocking_sink(sink, || f(&mut conn));
+                let result = kairos_db::key_scope::with_scope(key_scope, || {
+                    crate::claims::with_blocking_sink(sink, || f(&mut conn))
+                });
                 // Defense-in-depth only — see module docs.
                 let _ = conn.batch_execute("SET search_path TO public");
                 result

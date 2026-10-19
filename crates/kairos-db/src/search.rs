@@ -965,3 +965,76 @@ impl Ranking<'_> {
         Ok(query.load(conn)?)
     }
 }
+
+// ---------------------------------------------------------------------------
+// The facts of a task line (KAIROS-T-0561)
+// ---------------------------------------------------------------------------
+
+/// What a search line of a task shows besides the row of the task: the
+/// board and the column, the claim, the open blockers and the repository.
+#[derive(Debug, Clone, PartialEq, Eq, QueryableByName)]
+pub struct TaskLineFacts {
+    /// The task.
+    #[diesel(sql_type = SqlUuid)]
+    pub id: Uuid,
+    /// The slug of the board of the task.
+    #[diesel(sql_type = diesel::sql_types::Nullable<Text>)]
+    pub board_slug: Option<String>,
+    /// The name of the column of the task, removed columns too.
+    #[diesel(sql_type = diesel::sql_types::Nullable<Text>)]
+    pub column_name: Option<String>,
+    /// The display name of who has the claim, or the user id.
+    #[diesel(sql_type = diesel::sql_types::Nullable<Text>)]
+    pub claim_holder: Option<String>,
+    /// The claim was made with an agent key.
+    #[diesel(sql_type = Bool)]
+    pub claim_agent: bool,
+    /// The count of open blockers, as `board_items` counts them
+    /// (COLLIERY-T-0214).
+    #[diesel(sql_type = BigInt)]
+    pub blocked_by: i64,
+    /// The slug of the live repository of the task.
+    #[diesel(sql_type = diesel::sql_types::Nullable<Text>)]
+    pub repository_slug: Option<String>,
+}
+
+/// The [`TaskLineFacts`] of the tasks `ids`, in ONE statement for a page of
+/// search results (KAIROS-T-0561), so that an agent needs no `get_item`
+/// for each hit. The blocker count has the rule of
+/// [`crate::graph::blocks_summary`]: a live blocker that is not done, or a
+/// cancelled one; a task in a done column is blocked by nothing.
+pub fn task_line_facts(
+    conn: &mut PgConnection,
+    ids: &[Uuid],
+) -> Result<HashMap<Uuid, TaskLineFacts>, DieselError> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let item_columns = crate::graph::ITEM_COLUMNS_SQL;
+    let rows: Vec<TaskLineFacts> = sql_query(format!(
+        "SELECT t.id, b.slug AS board_slug, c.name AS column_name, \
+                COALESCE(u.display_name, cl.user_id::text) AS claim_holder, \
+                (cl.agent_key_id IS NOT NULL) AS claim_agent, \
+                CASE WHEN COALESCE(c.is_done, false) THEN 0 ELSE \
+                  (SELECT count(*) FROM item_relationships r \
+                     JOIN entity_directory o ON o.id = r.source_id AND o.deleted_at IS NULL \
+                     LEFT JOIN ({item_columns}) op ON op.id = o.id \
+                     LEFT JOIN board_columns oc ON oc.id = op.column_id \
+                    WHERE r.target_id = t.id AND r.relationship = 'blocks' \
+                      AND (NOT COALESCE(oc.is_done, false) \
+                           OR EXISTS (SELECT 1 FROM task_cancellations k \
+                                       WHERE k.task_id = o.id))) \
+                END AS blocked_by, \
+                rp.slug AS repository_slug \
+           FROM tasks t \
+           LEFT JOIN boards b ON b.id = t.board_id \
+           LEFT JOIN board_columns c ON c.id = t.column_id \
+           LEFT JOIN task_claims cl ON cl.task_id = t.id \
+           LEFT JOIN public.users u ON u.id = cl.user_id \
+           LEFT JOIN repositories rp ON rp.id = t.repository_id AND rp.deleted_at IS NULL \
+          WHERE t.id = ANY($1)"
+    ))
+    .bind::<Array<SqlUuid>, _>(ids)
+    .load(conn)?;
+    Ok(rows.into_iter().map(|row| (row.id, row)).collect())
+}

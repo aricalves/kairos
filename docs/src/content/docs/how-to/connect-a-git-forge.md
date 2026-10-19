@@ -161,9 +161,13 @@ The board triages the task as it triages each request. A person decides, or
 an agent decides when the board lets agents decide. Kairos makes one task for one issue. A
 second delivery of the same event makes no second task.
 
-After that, Kairos does not sync the issue. A close, a reopen, an edit, a
-comment or a label on the forge does not change the task. Kairos writes
-nothing to the issue. Kairos does not take a GitLab confidential issue.
+After that, Kairos does not read the issue again. A close, a reopen, an
+edit, a comment or a label on the forge does not change the task. Kairos does
+not take a GitLab confidential issue.
+
+With a write token on the repository, the issue follows the task. A done task
+closes the issue, and a reopened task opens it again. See
+[Turn on forge write-back](../turn-on-github-write-back/#write-back-to-issues).
 
 ### Import the open issues
 
@@ -233,9 +237,9 @@ webhook in the forge too, or it will keep delivering to a dead endpoint.
 - **PR state never moves cards** — so do not wire a column to a merge. Move
   cards from Kairos. (Why:
   [Flight levels](../../explanation/flight-levels/#why-the-boards-are-configurable).)
-- **Kairos writes to a pull request only with a write token.** See
-  [Turn on GitHub write-back](../turn-on-github-write-back/). Kairos never
-  writes to an issue.
+- **Kairos writes to a pull request or an issue only with a write token.**
+  See [Turn on forge write-back](../turn-on-github-write-back/). Kairos writes
+  to an issue only when the issue became a task.
 - **An issue closed on the forge stays open in Kairos.** Close the task in
   Kairos.
 - **Editing a short code out of a PR removes that link.** Re-add the code to get

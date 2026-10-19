@@ -143,6 +143,7 @@ The limits are for each server: with 2 servers, 2 embedded builds can run.
 | `webhook_delivery` | One signed webhook delivery. | `KAIROS_JOB_LIMIT_WEBHOOK_DELIVERY` (4) |
 | `github_writeback` | The comment and the status of one pull request. | `KAIROS_JOB_LIMIT_GITHUB_WRITEBACK` (2) |
 | `issue_import` | The import of the open issues of one repository. | `KAIROS_JOB_LIMIT_ISSUE_IMPORT` (2) |
+| `issue_writeback` | The comment and the state of one issue that became a task. | `KAIROS_JOB_LIMIT_ISSUE_WRITEBACK` (2) |
 | `periodic` | A periodic pass. | `KAIROS_JOB_LIMIT_PERIODIC` (1) |
 
 The limit of the embedded builds keeps the CPU of a server for one model at
@@ -179,8 +180,18 @@ that takes seconds holds no connection of the pool.
 | A webhook delivery | `webhook_delivery` | The change that fires it, in its transaction | delivery |
 | A GitHub write-back | `github_writeback` | The change of a linked item, in its transaction | pull request (one queued job) |
 | An import of the open issues | `issue_import` | The API, when an organization admin asks | repository |
+| An issue write-back | `issue_writeback` | The change of the task of an issue, in its transaction; a new write token | issue (one queued job) |
 | The retention pass | `periodic` | Each server at its start; then each run adds the next run | pass |
 | The sweep of the code index | `periodic` | Each server at its start; then each run adds the next run | pass |
+
+A write-back job (`github_writeback`, `issue_writeback`) has no
+`dedupe_key`. A unique index on the key of a queued job holds one queued job
+for each pull request or issue. When 2 changes add a job at the same time,
+the second change waits for the first, and adds no job (KAIROS-T-0637). A
+job that runs does not count: a change during the run adds a job, because
+the job that runs can have read the items before the change. When the job
+that runs goes back to the queue (a retry) and a job of its key waits, it
+ends `done`. The job that waits does the write.
 
 A periodic pass adds its next run in the transaction that writes its end.
 The next run is due one interval after the run was due. So a pass has one

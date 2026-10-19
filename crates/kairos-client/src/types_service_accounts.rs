@@ -37,6 +37,64 @@ pub struct CreateApiKeyRequest {
     /// `true`: the key never expires (KAIROS-T-0370).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub no_expiry: bool,
+    /// The scope of an agent key (KAIROS-T-0536). `None`: the default scope,
+    /// each capability but `purge` and `manage_structure`, on each board.
+    /// The key of a service account has no scope.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<KeyScopeRequest>,
+}
+
+/// The scope of a new agent key (KAIROS-T-0536).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyScopeRequest {
+    /// The capabilities of the key. `Some(vec![])`: a read-only key.
+    /// `None`: the default list.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<Vec<String>>,
+    /// The boards of the key, by slug or id. `None`: each board.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub boards: Option<Vec<String>>,
+}
+
+/// The scope of a key (KAIROS-T-0536). A key with no scope (made before
+/// KAIROS-T-0536) has `None` in place of this.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct KeyScope {
+    /// The capabilities of the key, sorted. Empty: a read-only key.
+    pub capabilities: Vec<String>,
+    /// The boards of the key. `None`: each board.
+    #[serde(default)]
+    pub boards: Option<Vec<KeyScopeBoard>>,
+}
+
+/// One board of a [`KeyScope`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct KeyScopeBoard {
+    pub id: String,
+    /// `None` when the board is deleted.
+    #[serde(default)]
+    pub slug: Option<String>,
+}
+
+impl KeyScope {
+    /// One line for a person: `manage_tasks, transition_items on each
+    /// board`, or `read-only on web, ops`.
+    pub fn describe(&self) -> String {
+        let capabilities = if self.capabilities.is_empty() {
+            "read-only".to_string()
+        } else {
+            self.capabilities.join(", ")
+        };
+        let boards = match &self.boards {
+            None => "each board".to_string(),
+            Some(boards) => boards
+                .iter()
+                .map(|b| b.slug.clone().unwrap_or_else(|| b.id.clone()))
+                .collect::<Vec<_>>()
+                .join(", "),
+        };
+        format!("{capabilities} on {boards}")
+    }
 }
 
 /// `POST /api/service-accounts/{id}/keys` response — the ONLY place the raw
@@ -49,6 +107,9 @@ pub struct ApiKeyCreated {
     pub prefix: String,
     pub created_at: String,
     pub expires_at: Option<String>,
+    /// The scope of an agent key (KAIROS-T-0536).
+    #[serde(default)]
+    pub scope: Option<KeyScope>,
 }
 
 /// One key row (`GET /api/service-accounts/{id}/keys`) — prefix only.
@@ -64,6 +125,9 @@ pub struct ApiKey {
     /// The key that a rotation made in place of this key (KAIROS-T-0370).
     #[serde(default)]
     pub replaced_by: Option<String>,
+    /// The scope of the key (KAIROS-T-0536). `None`: no scope, no limit.
+    #[serde(default)]
+    pub scope: Option<KeyScope>,
 }
 
 /// The response of a rotation (KAIROS-T-0370): the new key with its secret

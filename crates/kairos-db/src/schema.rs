@@ -61,6 +61,8 @@ diesel::table! {
         revoked_at -> Nullable<Timestamptz>,
         replaced_by -> Nullable<Uuid>,
         expiring_notified_at -> Nullable<Timestamptz>,
+        scope_capabilities -> Nullable<Array<Nullable<Text>>>,
+        scope_boards -> Nullable<Array<Nullable<Uuid>>>,
     }
 }
 
@@ -275,6 +277,9 @@ diesel::table! {
         author -> Text,
         source -> Text,
         created_at -> Timestamptz,
+        written_state -> Text,
+        comment_state -> Nullable<Text>,
+        busy_until -> Nullable<Timestamptz>,
     }
 }
 

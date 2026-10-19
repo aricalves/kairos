@@ -264,6 +264,27 @@ journey(
       };
     });
 
+    await step(alice, 'links the new decision to the initiative from the CLI, reads it, and removes the link', async () => {
+      // KAIROS-T-0591: `kairos link` and `unlink` make each relationship,
+      // and `show` lists the relationships from the side of the item. The
+      // ADR is in the ledger, so a failed step leaves no edge after cleanup.
+      const cli = await alice.cli();
+      const made = await cli.ok(['link', initiative, 'supports', replacement]);
+      expect(made).toContain(`${replacement} supports ${initiative}.`);
+      const shown = await cli.ok(['adrs', 'show', replacement]);
+      expect(shown).toContain(`supports: ${initiative} — `);
+      expect(shown).toContain(`supersedes: ${decision} — `);
+      const removed = await cli.ok(['unlink', initiative, 'supports', replacement]);
+      expect(removed).toContain(`Kairos removed the link: ${initiative} -[supports]-> ${replacement}.`);
+      const again = await cli.run(['unlink', initiative, 'supports', replacement]);
+      expect(again.code).toBe(1);
+      return {
+        linked: `${initiative} -[supports]-> ${replacement}`,
+        shown_from: replacement,
+        unlinked: true,
+      };
+    });
+
     await step(bob, 'reads both decisions and can get from either one to the other', async () => {
       const page = await bob.gui();
       await openBoard(page, 'adrs');

@@ -623,9 +623,15 @@ pub fn record_try(
         .execute(conn)?;
         let mut turned_off = false;
         if result.ok {
-            sql_query("UPDATE webhook_targets SET consecutive_failures = 0 WHERE id = $1")
-                .bind::<SqlUuid, _>(delivery.target_id)
-                .execute(conn)?;
+            // KAIROS-T-0637: no write when the count is 0 already. Up to 4
+            // deliveries of one target end at the same time, and each write
+            // of the row waits for the one before it.
+            sql_query(
+                "UPDATE webhook_targets SET consecutive_failures = 0 \
+                 WHERE id = $1 AND consecutive_failures <> 0",
+            )
+            .bind::<SqlUuid, _>(delivery.target_id)
+            .execute(conn)?;
         } else {
             let target: Option<Target> = sql_query(format!(
                 "UPDATE webhook_targets t SET consecutive_failures = consecutive_failures + 1 \

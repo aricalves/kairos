@@ -282,8 +282,10 @@ async fn cli_command_tree_golden_path_live() {
         web_client_id: "kairos-web".to_string(),
         api_bearer: kairos_server::config::ApiBearer::AccessToken,
         web_client_secret: None,
-        public_url: None,
-        webhook_signing_key: None,
+        // KAIROS-T-0592: `repos webhook add` needs a signing key and a
+        // public URL. The CLI sends a bearer, so the URL changes no login.
+        public_url: Some("http://kairos.test".to_string()),
+        webhook_signing_key: Some("cli-t0592-webhook-signing-key".to_string()),
         // COLLIERY-T-3105: `repos credential set` needs a key.
         secrets_key: Some(kairos_server::secrets::SecretsKey::from_bytes([9u8; 32])),
 
@@ -569,7 +571,7 @@ async fn cli_command_tree_golden_path_live() {
     assert_eq!(code, 0, "valid transition failed: {stderr}");
     assert_eq!(
         stdout.trim(),
-        format!("Kairos moved the task {task_code} to the column {todo}.")
+        format!("Kairos moved the task {task_code} to the column Todo.")
     );
 
     // --- search finds it: flags, --json, and the --query-json escape hatch -----
@@ -1279,6 +1281,926 @@ async fn cli_command_tree_golden_path_live() {
     assert!(
         stderr.contains("final") && stderr.contains("published"),
         "{stderr}"
+    );
+
+    // --- KAIROS-T-0589: a name or a slug for each reference -------------------
+    let text_dir = tempfile::tempdir().expect("temp text dir");
+    let content_path = text_dir.path().join("content.md");
+    std::fs::write(&content_path, "Content from a file.").expect("content file");
+    let note_path = text_dir.path().join("note.md");
+    std::fs::write(&note_path, "A note from a file.").expect("note file");
+    let content_file = content_path.to_str().expect("path").to_string();
+    let note_file = note_path.to_str().expect("path").to_string();
+
+    // tasks create: --team by slug, --column by name, --kind, --content-file.
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &[
+            "tasks",
+            "create",
+            "--team",
+            "platform",
+            "--column",
+            "backlog",
+            "--title",
+            "Named references",
+            "--kind",
+            "bug",
+            "--content-file",
+            &content_file,
+            "--json",
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "tasks create by names failed: {stderr}");
+    let named: serde_json::Value = serde_json::from_str(&stdout).expect("task DTO JSON");
+    let named_code = named["short_code"].as_str().expect("code").to_string();
+    // A task starts in the entry column (KAIROS-T-0566).
+    assert_eq!(
+        named["column_id"].as_str(),
+        Some(backlog.as_str()),
+        "{stdout}"
+    );
+    assert_eq!(
+        named["team_id"].as_str(),
+        Some(team.id.as_str()),
+        "{stdout}"
+    );
+    assert_eq!(named["task_type"], "bug");
+    assert_eq!(named["content"], "Content from a file.");
+    // An unknown column is refused before the write, and each column is named.
+    let (code, _, stderr) = run_cli(
+        config_dir.path(),
+        &[
+            "tasks",
+            "create",
+            "--board",
+            &delivery_board_id,
+            "--column",
+            "Nowhere",
+            "--title",
+            "x",
+        ],
+    )
+    .await;
+    assert_eq!(code, 1, "an unknown column: {stderr}");
+    assert!(
+        stderr.contains("\"Nowhere\"") && stderr.contains("Backlog"),
+        "{stderr}"
+    );
+
+    // transition --to a column name; the line names the column.
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["tasks", "transition", &named_code, "--to", "todo"],
+    )
+    .await;
+    assert_eq!(code, 0, "transition by name failed: {stderr}");
+    assert_eq!(
+        stdout.trim(),
+        format!("Kairos moved the task {named_code} to the column Todo.")
+    );
+
+    // note --text-file; show, and get as its alias.
+    let (code, _, stderr) = run_cli(
+        config_dir.path(),
+        &["tasks", "note", &named_code, "--text-file", &note_file],
+    )
+    .await;
+    assert_eq!(code, 0, "note --text-file failed: {stderr}");
+    for verb in ["show", "get"] {
+        let (code, stdout, stderr) =
+            run_cli(config_dir.path(), &["tasks", verb, &named_code]).await;
+        assert_eq!(code, 0, "tasks {verb} failed: {stderr}");
+        assert!(stdout.contains("A note from a file."), "{stdout}");
+    }
+
+    // documents create --template by slug.
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &[
+            "documents",
+            "create",
+            "--title",
+            "From a template",
+            "--board",
+            &delivery_board_id,
+            "--template",
+            "paging-two",
+            "--json",
+        ],
+    )
+    .await;
+    assert_eq!(
+        code, 0,
+        "documents create --template <slug> failed: {stderr}"
+    );
+    let templated: serde_json::Value = serde_json::from_str(&stdout).expect("document JSON");
+    assert!(templated["template_id"].is_string(), "{stdout}");
+
+    // boards list shows the slug of the team.
+    let (code, stdout, stderr) = run_cli(config_dir.path(), &["boards", "list"]).await;
+    assert_eq!(code, 0, "boards list failed: {stderr}");
+    let delivery_row = stdout
+        .lines()
+        .find(|line| line.starts_with(&delivery_board_id))
+        .expect("the delivery board row");
+    assert!(delivery_row.trim_end().ends_with("platform"), "{stdout}");
+
+    // members set-role by email.
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &[
+            "members",
+            "set-role",
+            "alice@kairos.test",
+            "--role",
+            "admin",
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "members set-role by email failed: {stderr}");
+    assert!(stdout.contains("has the role admin"), "{stdout}");
+
+    // service accounts and keys by the name of the account.
+    let (code, _, stderr) = run_cli(
+        config_dir.path(),
+        &["service-accounts", "create", "--name", "ci-deploy"],
+    )
+    .await;
+    assert_eq!(code, 0, "service-accounts create failed: {stderr}");
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["keys", "list", "--service-account", "ci-deploy"],
+    )
+    .await;
+    assert_eq!(code, 0, "keys list by account name failed: {stderr}");
+    assert!(stdout.contains("total: 0"), "{stdout}");
+    let (code, _, stderr) = run_cli(
+        config_dir.path(),
+        &["keys", "list", "--service-account", "no-such-account"],
+    )
+    .await;
+    assert_eq!(code, 1, "an unknown account: {stderr}");
+    assert!(stderr.contains("no-such-account"), "{stderr}");
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["service-accounts", "delete", "ci-deploy", "--confirm"],
+    )
+    .await;
+    assert_eq!(code, 0, "service-accounts delete by name failed: {stderr}");
+    assert!(stdout.contains("ci-deploy"), "{stdout}");
+
+    // streams by slug, and their teams by slug.
+    let (code, _, stderr) = run_cli(
+        config_dir.path(),
+        &[
+            "streams", "create", "--name", "Payments", "--slug", "payments",
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "streams create failed: {stderr}");
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["streams", "teams", "add", "payments", "--team", "platform"],
+    )
+    .await;
+    assert_eq!(code, 0, "streams teams add by slugs failed: {stderr}");
+    assert!(stdout.contains("platform"), "{stdout}");
+    let (code, stdout, stderr) =
+        run_cli(config_dir.path(), &["streams", "teams", "list", "payments"]).await;
+    assert_eq!(code, 0, "streams teams list by slug failed: {stderr}");
+    assert!(stdout.contains("platform"), "{stdout}");
+    let (code, stdout, stderr) = run_cli(config_dir.path(), &["streams", "show", "payments"]).await;
+    assert_eq!(code, 0, "streams show by slug failed: {stderr}");
+    assert!(stdout.contains("Payments"), "{stdout}");
+
+    // boards flow --until, and the old name --to.
+    for flag in ["--until", "--to"] {
+        let (code, _, stderr) = run_cli(
+            config_dir.path(),
+            &["boards", "flow", &delivery_board_id, flag, "2026-10-18"],
+        )
+        .await;
+        assert_eq!(code, 0, "boards flow {flag} failed: {stderr}");
+    }
+
+    // --- KAIROS-T-0592: diff, links, archive --preview -------------------------
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &[
+            "tasks",
+            "create",
+            "--board",
+            "platform-delivery",
+            "--title",
+            "Diff me",
+            "--content",
+            "one\ntwo\nthree\n",
+            "--json",
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "tasks create failed: {stderr}");
+    let diff_task: serde_json::Value = serde_json::from_str(&stdout).expect("task JSON");
+    let diff_code = diff_task["short_code"].as_str().expect("code").to_string();
+    let (code, _, stderr) = run_cli(
+        config_dir.path(),
+        &[
+            "tasks",
+            "edit",
+            &diff_code,
+            "--title",
+            "Diff me again",
+            "--content",
+            "one\n2\nthree\n",
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "tasks edit failed: {stderr}");
+    let (code, stdout, stderr) =
+        run_cli(config_dir.path(), &["tasks", "diff", &diff_code, "2"]).await;
+    assert_eq!(code, 0, "tasks diff failed: {stderr}");
+    assert!(
+        stdout.starts_with(&format!("--- {diff_code} v1 (")),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("title: \"Diff me\" -> \"Diff me again\"\n"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("\n-two\n+2\n"), "{stdout}");
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["tasks", "diff", &diff_code, "1", "2", "--json"],
+    )
+    .await;
+    assert_eq!(code, 0, "tasks diff --json failed: {stderr}");
+    let diff: serde_json::Value = serde_json::from_str(&stdout).expect("diff JSON");
+    assert_eq!(diff["from"]["version"], 1, "{stdout}");
+    assert_eq!(diff["to"]["version"], 2, "{stdout}");
+    assert!(
+        diff["diff"].as_str().is_some_and(|d| d.contains("+2\n")),
+        "{stdout}"
+    );
+    let (code, _, stderr) = run_cli(config_dir.path(), &["tasks", "diff", &diff_code, "0"]).await;
+    assert_eq!(code, 1, "version 0: {stderr}");
+    assert!(stderr.contains("The first version is 1"), "{stderr}");
+
+    let (code, stdout, stderr) = run_cli(config_dir.path(), &["tasks", "links", &diff_code]).await;
+    assert_eq!(code, 0, "tasks links failed: {stderr}");
+    assert_eq!(
+        stdout,
+        format!("No branch, pull request or issue of a forge links to {diff_code}.\n")
+    );
+    let (code, stdout, stderr) =
+        run_cli(config_dir.path(), &["tasks", "links", &diff_code, "--json"]).await;
+    assert_eq!(code, 0, "tasks links --json failed: {stderr}");
+    let links: serde_json::Value = serde_json::from_str(&stdout).expect("links JSON");
+    assert_eq!(
+        links,
+        serde_json::json!({ "items": [], "total": 0, "next_offset": null })
+    );
+
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["tasks", "archive", &diff_code, "--preview"],
+    )
+    .await;
+    assert_eq!(code, 0, "archive --preview failed: {stderr}");
+    assert!(
+        stdout.starts_with(&format!(
+            "An archive of {diff_code} takes no other item. Kairos archived nothing."
+        )),
+        "{stdout}"
+    );
+    let (code, _, stderr) = run_cli(config_dir.path(), &["tasks", "show", &diff_code]).await;
+    assert_eq!(code, 0, "the preview archived the task: {stderr}");
+    let (code, _, stderr) = run_cli(
+        config_dir.path(),
+        &["tasks", "archive", &diff_code, "--preview", "--confirm"],
+    )
+    .await;
+    assert_eq!(code, 64, "--preview with --confirm: {stderr}");
+
+    // --- KAIROS-T-0592: activity -------------------------------------------------
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["activity", "--item", &diff_code, "--json"],
+    )
+    .await;
+    assert_eq!(code, 0, "activity --item failed: {stderr}");
+    let feed: serde_json::Value = serde_json::from_str(&stdout).expect("activity JSON");
+    let rows = feed["items"].as_array().expect("items");
+    assert!(!rows.is_empty(), "{stdout}");
+    assert!(
+        rows.iter()
+            .all(|row| row["entity_short_code"] == diff_code.as_str()),
+        "{stdout}"
+    );
+    let (code, stdout, stderr) =
+        run_cli(config_dir.path(), &["activity", "--item", &diff_code]).await;
+    assert_eq!(code, 0, "activity text failed: {stderr}");
+    assert!(stdout.starts_with("WHEN"), "{stdout}");
+    assert!(stdout.contains(&diff_code), "{stdout}");
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["activity", "--actor", "me", "--limit", "1", "--json"],
+    )
+    .await;
+    assert_eq!(code, 0, "activity --actor me failed: {stderr}");
+    let feed: serde_json::Value = serde_json::from_str(&stdout).expect("activity JSON");
+    assert_eq!(feed["items"].as_array().map(Vec::len), Some(1), "{stdout}");
+    assert_eq!(feed["next_offset"], 1, "{stdout}");
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &[
+            "activity",
+            "--actor",
+            "alice@kairos.test",
+            "--action",
+            "create",
+            "--since",
+            "2020-01-01",
+            "--json",
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "activity by email failed: {stderr}");
+    let feed: serde_json::Value = serde_json::from_str(&stdout).expect("activity JSON");
+    let rows = feed["items"].as_array().expect("items");
+    assert!(!rows.is_empty(), "{stdout}");
+    assert!(rows.iter().all(|row| row["action"] == "create"), "{stdout}");
+    let (code, _, stderr) = run_cli(
+        config_dir.path(),
+        &["activity", "--actor", "nobody@kairos.test"],
+    )
+    .await;
+    assert_eq!(code, 1, "an unknown actor: {stderr}");
+    assert!(stderr.contains("nobody@kairos.test"), "{stderr}");
+
+    // --- KAIROS-T-0592: boards members, show --all, update, delete ---------------
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["boards", "members", "platform-delivery", "--json"],
+    )
+    .await;
+    assert_eq!(code, 0, "boards members failed: {stderr}");
+    let members: serde_json::Value = serde_json::from_str(&stdout).expect("members JSON");
+    assert_eq!(
+        members["total"].as_u64(),
+        members["items"].as_array().map(|a| a.len() as u64),
+        "{stdout}"
+    );
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["boards", "show", "platform-delivery", "--all"],
+    )
+    .await;
+    assert_eq!(code, 0, "boards show --all failed: {stderr}");
+    assert!(stdout.contains(&diff_code), "{stdout}");
+    assert!(
+        stdout
+            .lines()
+            .last()
+            .is_some_and(|line| line.starts_with("total: ") && !line.contains("limit")),
+        "{stdout}"
+    );
+    let (code, _, stderr) = run_cli(
+        config_dir.path(),
+        &[
+            "boards",
+            "show",
+            "platform-delivery",
+            "--all",
+            "--limit",
+            "1",
+        ],
+    )
+    .await;
+    assert_eq!(code, 64, "--all with --limit: {stderr}");
+    let (code, _, stderr) = run_cli(
+        config_dir.path(),
+        &[
+            "boards",
+            "create",
+            "--name",
+            "Sandbox",
+            "--slug",
+            "sandbox",
+            "--level",
+            "strategy",
+            "--code-prefix",
+            "SANDBOX",
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "boards create failed: {stderr}");
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["boards", "update", "sandbox", "--name", "Sandbox two"],
+    )
+    .await;
+    assert_eq!(code, 0, "boards update failed: {stderr}");
+    assert_eq!(
+        stdout,
+        "The board sandbox has the name Sandbox two and the slug sandbox.\n"
+    );
+    let (code, _, stderr) = run_cli(config_dir.path(), &["boards", "update", "sandbox"]).await;
+    assert_eq!(code, 1, "an update with nothing to change: {stderr}");
+    let (code, _, stderr) = run_cli(config_dir.path(), &["boards", "delete", "sandbox"]).await;
+    assert_eq!(code, 1, "a delete with no --confirm: {stderr}");
+    assert!(stderr.contains("--confirm"), "{stderr}");
+    let (code, _, stderr) = run_cli(
+        config_dir.path(),
+        &["boards", "delete", "initiatives", "--confirm", "--json"],
+    )
+    .await;
+    assert_eq!(code, 1, "a board with items: {stderr}");
+    assert!(stderr.contains("BOARD_NOT_EMPTY"), "{stderr}");
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["boards", "delete", "sandbox", "--confirm"],
+    )
+    .await;
+    assert_eq!(code, 0, "boards delete failed: {stderr}");
+    assert_eq!(stdout, "Kairos deleted the board sandbox.\n");
+    let (code, _, _) = run_cli(config_dir.path(), &["boards", "show", "sandbox"]).await;
+    assert_ne!(code, 0, "the board is gone");
+
+    // --- KAIROS-T-0592: repos webhook ---------------------------------------------
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["repos", "webhook", "add", "payments-api"],
+    )
+    .await;
+    assert_eq!(code, 0, "repos webhook add failed: {stderr}");
+    assert!(
+        stdout.starts_with("Kairos connected the webhook of the repository payments-api (github)."),
+        "{stdout}"
+    );
+    let secret_line = stdout
+        .lines()
+        .find(|line| line.trim_start().starts_with("Secret:"))
+        .expect("the secret line");
+    let secret = secret_line
+        .trim_start()
+        .trim_start_matches("Secret:")
+        .trim()
+        .to_string();
+    assert!(!secret.is_empty(), "{stdout}");
+    assert!(
+        stdout.contains("  Payload URL: http://kairos.test/webhooks/github/"),
+        "{stdout}"
+    );
+    let (code, stdout, stderr) = run_cli(config_dir.path(), &["repos", "webhook", "list"]).await;
+    assert_eq!(code, 0, "repos webhook list failed: {stderr}");
+    assert!(stdout.contains("payments-api"), "{stdout}");
+    assert!(
+        !stdout.contains(&secret),
+        "the list shows no secret: {stdout}"
+    );
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["repos", "webhook", "list", "payments-api", "--json"],
+    )
+    .await;
+    assert_eq!(code, 0, "repos webhook list --json failed: {stderr}");
+    assert!(!stdout.contains(&secret), "{stdout}");
+    let hooks: serde_json::Value = serde_json::from_str(&stdout).expect("list JSON");
+    assert_eq!(hooks["total"], 1, "{stdout}");
+    let first_id = hooks["items"][0]["id"].as_str().expect("id").to_string();
+    let (code, stdout, stderr) =
+        run_cli(config_dir.path(), &["repos", "show", "payments-api"]).await;
+    assert_eq!(code, 0, "repos show failed: {stderr}");
+    assert!(
+        stdout.contains(&format!("webhook:        {first_id}")),
+        "{stdout}"
+    );
+    let (code, _, stderr) = run_cli(
+        config_dir.path(),
+        &["repos", "webhook", "add", "payments-api"],
+    )
+    .await;
+    assert_eq!(code, 1, "a second add: {stderr}");
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["repos", "webhook", "rotate", "payments-api", "--json"],
+    )
+    .await;
+    assert_eq!(code, 0, "repos webhook rotate failed: {stderr}");
+    let rotated: serde_json::Value = serde_json::from_str(&stdout).expect("rotate JSON");
+    assert_ne!(rotated["id"].as_str(), Some(first_id.as_str()), "{stdout}");
+    assert!(
+        rotated["webhook_secret"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty() && s != secret),
+        "{stdout}"
+    );
+    let (code, _, stderr) = run_cli(
+        config_dir.path(),
+        &["repos", "webhook", "remove", "payments-api"],
+    )
+    .await;
+    assert_eq!(code, 1, "a remove with no --confirm: {stderr}");
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["repos", "webhook", "remove", "payments-api", "--confirm"],
+    )
+    .await;
+    assert_eq!(code, 0, "repos webhook remove failed: {stderr}");
+    assert!(
+        stdout.starts_with("Kairos removed the webhook connection"),
+        "{stdout}"
+    );
+    let (code, _, stderr) = run_cli(
+        config_dir.path(),
+        &["repos", "webhook", "rotate", "payments-api"],
+    )
+    .await;
+    assert_eq!(code, 1, "rotate with no connection: {stderr}");
+    assert!(
+        stderr.contains("kairos repos webhook add payments-api"),
+        "{stderr}"
+    );
+
+    // --- KAIROS-T-0592: admin read-tokens ------------------------------------------
+    const ORG_TOKEN: &str = "github_pat_cli_t0592_SECRET";
+    let (code, stdout, stderr) = run_cli_stdin(
+        config_dir.path(),
+        &["admin", "read-tokens", "set", "github.com"],
+        ORG_TOKEN,
+    )
+    .await;
+    assert_eq!(code, 0, "admin read-tokens set failed: {stderr}");
+    assert!(!stdout.contains(ORG_TOKEN), "{stdout}");
+    let (code, stdout, stderr) =
+        run_cli(config_dir.path(), &["admin", "read-tokens", "list"]).await;
+    assert_eq!(code, 0, "admin read-tokens list failed: {stderr}");
+    assert!(stdout.contains("github.com"), "{stdout}");
+    assert!(!stdout.contains(ORG_TOKEN), "{stdout}");
+    let (code, _, stderr) = run_cli(
+        config_dir.path(),
+        &["admin", "read-tokens", "remove", "github.com"],
+    )
+    .await;
+    assert_eq!(code, 1, "a remove with no --confirm: {stderr}");
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &[
+            "admin",
+            "read-tokens",
+            "remove",
+            "github.com",
+            "--confirm",
+            "--json",
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "admin read-tokens remove failed: {stderr}");
+    let left: serde_json::Value = serde_json::from_str(&stdout).expect("tokens JSON");
+    assert_eq!(left["total"], 0, "{stdout}");
+
+    // --- KAIROS-T-0592: notifications ----------------------------------------------
+    for text in [
+        "Robin wrote @alice in a note.",
+        "Sam wrote @alice in a note.",
+    ] {
+        sql_query(format!(
+            "INSERT INTO org_{TENANT}.notifications (user_id, kind, text) \
+             VALUES ('{alice_id}', 'mention', '{text}')"
+        ))
+        .execute(&mut conn)
+        .expect("a notification");
+    }
+    let (code, stdout, stderr) = run_cli(config_dir.path(), &["notifications", "list"]).await;
+    assert_eq!(code, 0, "notifications list failed: {stderr}");
+    assert!(
+        stdout.starts_with("You have 2 unread notifications.\n"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("Sam wrote @alice"), "{stdout}");
+    let (code, stdout, stderr) =
+        run_cli(config_dir.path(), &["notifications", "list", "--json"]).await;
+    assert_eq!(code, 0, "notifications list --json failed: {stderr}");
+    let list: serde_json::Value = serde_json::from_str(&stdout).expect("list JSON");
+    assert_eq!(list["unread"], 2, "{stdout}");
+    let newest = list["items"][0]["id"].as_str().expect("an id").to_string();
+    let (code, stdout, stderr) =
+        run_cli(config_dir.path(), &["notifications", "read", &newest]).await;
+    assert_eq!(code, 0, "notifications read failed: {stderr}");
+    assert_eq!(
+        stdout,
+        "Kairos marked 1 notification read. You have 1 unread now.\n"
+    );
+    let (code, stdout, stderr) =
+        run_cli(config_dir.path(), &["notifications", "read", "--all"]).await;
+    assert_eq!(code, 0, "notifications read --all failed: {stderr}");
+    assert_eq!(
+        stdout,
+        "Kairos marked 1 notification read. You have 0 unread now.\n"
+    );
+    let (code, stdout, stderr) =
+        run_cli(config_dir.path(), &["notifications", "read", "--all"]).await;
+    assert_eq!(code, 0, "a second read --all failed: {stderr}");
+    assert_eq!(stdout, "You have no unread notification.\n");
+    let (code, _, stderr) = run_cli(config_dir.path(), &["notifications", "read"]).await;
+    assert_eq!(code, 64, "read with no id and no --all: {stderr}");
+
+    // --- KAIROS-T-0591: link and unlink, --parent, metadata values, show -----
+    let cfg = config_dir.path();
+    let created_code = |stdout: &str| -> String {
+        let item: serde_json::Value = serde_json::from_str(stdout).expect("item DTO JSON");
+        item["short_code"].as_str().expect("code").to_string()
+    };
+    let (code, stdout, stderr) = run_cli(
+        cfg,
+        &[
+            "tasks",
+            "create",
+            "--board",
+            &delivery_board_id,
+            "--title",
+            "Blocker",
+            "--parent",
+            &initiative_code,
+            "--json",
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "tasks create --parent failed: {stderr}");
+    let blocker = created_code(&stdout);
+    let (code, stdout, stderr) = run_cli(
+        cfg,
+        &[
+            "tasks",
+            "create",
+            "--board",
+            &delivery_board_id,
+            "--title",
+            "Waiter",
+            "--parent",
+            &initiative_code,
+            "--repo",
+            "payments-api",
+            "--json",
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "tasks create --parent --repo failed: {stderr}");
+    let waiter = created_code(&stdout);
+
+    // link: an edge between two items, with its meaning.
+    let (code, stdout, stderr) = run_cli(cfg, &["link", &blocker, "blocks", &waiter]).await;
+    assert_eq!(code, 0, "link blocks failed: {stderr}");
+    assert_eq!(
+        stdout,
+        format!(
+            "Kairos made the link: {blocker} -[blocks]-> {waiter}. {waiter} waits for {blocker}.\n"
+        )
+    );
+    let (code, _, stderr) = run_cli(cfg, &["link", &blocker, "blocks", &waiter]).await;
+    assert_eq!(code, 1, "a second blocks edge is refused: {stderr}");
+    let (code, _, stderr) = run_cli(cfg, &["link", &waiter, "blocks", &blocker]).await;
+    assert_eq!(code, 1, "a cycle of blocks is refused: {stderr}");
+    let (code, stdout, stderr) =
+        run_cli(cfg, &["link", &blocker, "informs", &waiter, "--json"]).await;
+    assert_eq!(code, 0, "link informs --json failed: {stderr}");
+    let edge: serde_json::Value = serde_json::from_str(&stdout).expect("edge JSON");
+    assert_eq!(edge["relationship"], "informs", "{stdout}");
+    assert_eq!(edge["source_short_code"], blocker.as_str(), "{stdout}");
+    // --label is for external only; an unknown relationship is usage (64).
+    let (code, _, stderr) =
+        run_cli(cfg, &["link", &blocker, "blocks", &waiter, "--label", "x"]).await;
+    assert_eq!(code, 1, "--label with blocks: {stderr}");
+    assert!(stderr.contains("not to blocks"), "{stderr}");
+    let (code, _, stderr) = run_cli(cfg, &["link", &blocker, "child", &waiter]).await;
+    assert_eq!(code, 64, "an unknown relationship: {stderr}");
+
+    // adrs create --parent: the ADR and its supports edge are one write.
+    let adr_total = || async {
+        let (code, stdout, stderr) = run_cli(cfg, &["adrs", "list", "--json"]).await;
+        assert_eq!(code, 0, "adrs list failed: {stderr}");
+        let envelope: serde_json::Value = serde_json::from_str(&stdout).expect("envelope");
+        envelope["total"].as_i64().expect("total")
+    };
+    let before = adr_total().await;
+    let (code, _, stderr) = run_cli(
+        cfg,
+        &[
+            "adrs",
+            "create",
+            "--board",
+            "adrs",
+            "--title",
+            "Refused parent",
+            "--parent",
+            &document_code,
+        ],
+    )
+    .await;
+    assert_eq!(code, 1, "a document is no parent of an ADR: {stderr}");
+    assert_eq!(adr_total().await, before, "a refused parent leaves no ADR");
+    let (code, stdout, stderr) = run_cli(
+        cfg,
+        &[
+            "adrs",
+            "create",
+            "--board",
+            "adrs",
+            "--title",
+            "Queue decision",
+            "--parent",
+            &waiter,
+            "--json",
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "adrs create --parent failed: {stderr}");
+    let adr = created_code(&stdout);
+    let (code, stdout, stderr) = run_cli(
+        cfg,
+        &[
+            "adrs",
+            "create",
+            "--board",
+            "adrs",
+            "--title",
+            "Queue decision 2",
+            "--json",
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "adrs create failed: {stderr}");
+    let adr_two = created_code(&stdout);
+    let (code, stdout, stderr) = run_cli(cfg, &["link", &adr_two, "supersedes", &adr]).await;
+    assert_eq!(code, 0, "link supersedes failed: {stderr}");
+    assert!(
+        stdout.ends_with(&format!("{adr_two} replaces {adr}.\n")),
+        "{stdout}"
+    );
+    let (code, stdout, stderr) =
+        run_cli(cfg, &["link", &initiative_code, "supports", &document_code]).await;
+    assert_eq!(code, 0, "link supports failed: {stderr}");
+    assert!(
+        stdout.ends_with(&format!("{document_code} supports {initiative_code}.\n")),
+        "{stdout}"
+    );
+    let (code, stdout, stderr) =
+        run_cli(cfg, &["link", &document_code, "impacts", "payments-api"]).await;
+    assert_eq!(code, 0, "link impacts failed: {stderr}");
+    assert!(
+        stdout.ends_with(&format!(
+            "{document_code} is about the repository payments-api.\n"
+        )),
+        "{stdout}"
+    );
+    let (code, _, stderr) = run_cli(
+        cfg,
+        &[
+            "link",
+            &waiter,
+            "external",
+            "https://example.com/rfc",
+            "--label",
+            "RFC 42",
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "link external failed: {stderr}");
+
+    // metadata set and unset.
+    let (code, _, stderr) = run_cli(
+        cfg,
+        &[
+            "metadata",
+            "create",
+            "--name",
+            "Rollout risk",
+            "--slug",
+            "risk",
+            "--type",
+            "enum",
+            "--option",
+            "high",
+            "--option",
+            "low",
+        ],
+    )
+    .await;
+    assert_eq!(code, 0, "metadata create enum failed: {stderr}");
+    let (code, stdout, stderr) =
+        run_cli(cfg, &["tasks", "metadata", "set", &waiter, "risk=high"]).await;
+    assert_eq!(code, 0, "tasks metadata set failed: {stderr}");
+    assert_eq!(
+        stdout,
+        format!("Kairos changed the metadata of {waiter}.\n  metadata:\n    risk: high\n")
+    );
+    let (code, _, stderr) = run_cli(cfg, &["tasks", "metadata", "set", &waiter, "risk"]).await;
+    assert_eq!(code, 64, "a pair without = is usage: {stderr}");
+    let (code, _, stderr) =
+        run_cli(cfg, &["tasks", "metadata", "set", &waiter, "risk=urgent"]).await;
+    assert_eq!(code, 1, "a value outside the enum: {stderr}");
+    let (code, _, stderr) = run_cli(
+        cfg,
+        &["tasks", "metadata", "set", &waiter, "no-such-field=x"],
+    )
+    .await;
+    assert_eq!(code, 1, "an unknown slug: {stderr}");
+    assert!(stderr.contains("no-such-field"), "{stderr}");
+    let (code, stdout, stderr) = run_cli(
+        cfg,
+        &["adrs", "metadata", "set", &adr, "risk=low", "--json"],
+    )
+    .await;
+    assert_eq!(code, 0, "adrs metadata set --json failed: {stderr}");
+    let values: serde_json::Value = serde_json::from_str(&stdout).expect("metadata JSON");
+    assert_eq!(values["values"][0]["value"], "low", "{stdout}");
+
+    // show: repository, metadata, relationships and external references.
+    let (code, stdout, stderr) = run_cli(cfg, &["tasks", "show", &waiter]).await;
+    assert_eq!(code, 0, "tasks show failed: {stderr}");
+    for line in [
+        "  repository: payments-api\n".to_string(),
+        "  metadata:\n    risk: high\n".to_string(),
+        format!("    parent: {initiative_code} — CLI golden path initiative\n"),
+        format!("    blocked by: {blocker} — Blocker\n"),
+        format!("    informed by: {blocker} — Blocker\n"),
+        format!("    supported by: {adr} — Queue decision\n"),
+        "  external:\n    RFC 42 <https://example.com/rfc>\n".to_string(),
+    ] {
+        assert!(
+            stdout.contains(&line),
+            "tasks show has no {line:?}: {stdout}"
+        );
+    }
+    let (code, stdout, stderr) = run_cli(cfg, &["tasks", "show", &waiter, "--json"]).await;
+    assert_eq!(code, 0, "tasks show --json failed: {stderr}");
+    let shown: serde_json::Value = serde_json::from_str(&stdout).expect("task DTO JSON");
+    assert_eq!(shown["short_code"], waiter.as_str());
+    assert!(shown.get("relationships").is_none(), "{stdout}");
+    let (code, stdout, stderr) = run_cli(cfg, &["initiatives", "show", &initiative_code]).await;
+    assert_eq!(code, 0, "initiatives show failed: {stderr}");
+    assert!(
+        stdout.contains(&format!("    child: {waiter} — Waiter\n")),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(&format!(
+            "    supported by: {document_code} — Rollout note\n"
+        )),
+        "{stdout}"
+    );
+    let (code, stdout, stderr) = run_cli(cfg, &["adrs", "show", &adr]).await;
+    assert_eq!(code, 0, "adrs show failed: {stderr}");
+    assert!(
+        stdout.contains(&format!("    supports: {waiter} — Waiter\n")),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(&format!(
+            "    superseded by: {adr_two} — Queue decision 2\n"
+        )),
+        "{stdout}"
+    );
+    assert!(stdout.contains("  external: -\n"), "{stdout}");
+
+    // unlink each relationship; a second unlink fails with exit 1.
+    let (code, _, stderr) = run_cli(cfg, &["tasks", "metadata", "unset", &waiter, "risk"]).await;
+    assert_eq!(code, 0, "tasks metadata unset failed: {stderr}");
+    let (code, stdout, stderr) = run_cli(cfg, &["unlink", &blocker, "blocks", &waiter]).await;
+    assert_eq!(code, 0, "unlink blocks failed: {stderr}");
+    assert_eq!(
+        stdout,
+        format!("Kairos removed the link: {blocker} -[blocks]-> {waiter}.\n")
+    );
+    let (code, _, stderr) = run_cli(cfg, &["unlink", &blocker, "blocks", &waiter]).await;
+    assert_eq!(code, 1, "a second unlink: {stderr}");
+    assert!(stderr.contains("has no link"), "{stderr}");
+    for (source, relationship, target) in [
+        (blocker.as_str(), "informs", waiter.as_str()),
+        (adr_two.as_str(), "supersedes", adr.as_str()),
+        (initiative_code.as_str(), "supports", document_code.as_str()),
+        (document_code.as_str(), "impacts", "payments-api"),
+        (waiter.as_str(), "external", "https://example.com/rfc"),
+        (initiative_code.as_str(), "parent", blocker.as_str()),
+    ] {
+        let (code, stdout, stderr) = run_cli(cfg, &["unlink", source, relationship, target]).await;
+        assert_eq!(code, 0, "unlink {relationship} failed: {stderr}");
+        assert!(stdout.starts_with("Kairos removed the link: "), "{stdout}");
+    }
+    let (code, stdout, stderr) = run_cli(cfg, &["tasks", "show", &waiter]).await;
+    assert_eq!(code, 0, "tasks show failed: {stderr}");
+    assert!(stdout.contains("  metadata: -\n"), "{stdout}");
+    assert!(stdout.contains("  external: -\n"), "{stdout}");
+    assert!(!stdout.contains("blocked by:"), "{stdout}");
+    // The parent edge comes back with link.
+    let (code, stdout, stderr) =
+        run_cli(cfg, &["link", &initiative_code, "parent", &blocker]).await;
+    assert_eq!(code, 0, "link parent failed: {stderr}");
+    assert!(
+        stdout.ends_with(&format!("{initiative_code} is the parent of {blocker}.\n")),
+        "{stdout}"
     );
 
     // --- teardown ----------------------------------------------------------------

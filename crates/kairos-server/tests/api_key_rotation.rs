@@ -40,6 +40,7 @@ fn request(name: &str) -> CreateApiKeyRequest {
         name: name.into(),
         expires_at: None,
         no_expiry: false,
+        scope: None,
     }
 }
 
@@ -123,6 +124,7 @@ async fn keys_expire_by_default_and_rotate_with_a_grace_time() {
     let forever = alice
         .create_agent_key(&CreateApiKeyRequest {
             no_expiry: true,
+            scope: None,
             ..request("forever")
         })
         .await
@@ -133,6 +135,7 @@ async fn keys_expire_by_default_and_rotate_with_a_grace_time() {
             name: "both".into(),
             expires_at: Some("2030-01-01T00:00:00Z".into()),
             no_expiry: true,
+            scope: None,
         })
         .await;
     match both {

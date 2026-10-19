@@ -9,17 +9,23 @@ use std::path::{Path, PathBuf};
 
 use clap::Args;
 
-use kairos_client::EntityKind;
 use kairos_client::types::{
     Adr, AppendNoteResponse, CreateAdrRequest, CreateDocumentRequest, CreateInitiativeRequest,
     CreateStrategyRequest, CreateTaskRequest, DeleteResponse, Document, ImpactListQuery,
     Initiative, ItemNote, ListQuery, Pagination, PromoteNoteRequest, PromoteNoteResponse,
     RestoreResponse, Strategy, Task, UpdateContentRequest,
 };
-use kairos_client::types_meta::SetParentResponse;
+use kairos_client::types_meta::{
+    ItemMetadataResponse, ItemRelationshipsResponse, MetadataValue, RelatedItem, SetParentResponse,
+    UpdateMetadataRequest,
+};
 use kairos_client::types_repositories::Impact;
+use kairos_client::{EntityKind, KairosClient};
 
-use crate::context::{Common, client, print_json};
+use crate::commands::links::reference_text;
+use crate::context::{
+    Common, client, column_id, find_column, is_uuid, print_json, team_id, template_id,
+};
 use crate::error::CliError;
 use crate::listing::{Listing, Paging, fetch};
 use crate::table::Table;
@@ -194,10 +200,29 @@ pub struct NoteArgs {
     /// The item's short code (e.g. ACME-T-0001)
     pub short_code: String,
     /// The markdown text of the note
-    #[arg(long)]
-    pub text: String,
+    #[arg(
+        long,
+        conflicts_with = "text_file",
+        required_unless_present = "text_file"
+    )]
+    pub text: Option<String>,
+    /// Read the markdown text of the note from a file (`-` reads stdin)
+    #[arg(long, value_name = "FILE")]
+    pub text_file: Option<PathBuf>,
     #[command(flatten)]
     pub common: Common,
+}
+
+impl NoteArgs {
+    /// The text of the note: `--text`, or the file of `--text-file`.
+    pub fn text(&self) -> Result<String, CliError> {
+        Ok(read_text(
+            self.text.as_deref(),
+            self.text_file.as_deref(),
+            "--text-file",
+        )?
+        .unwrap_or_default())
+    }
 }
 
 /// Arguments of `promote-note` (KAIROS-T-0505): turn a note into a draft
@@ -229,20 +254,11 @@ impl EditArgs {
         current_version: i32,
         current_content: &str,
     ) -> Result<UpdateContentRequest, CliError> {
-        let content = match (&self.content, &self.content_file) {
-            (Some(content), _) => Some(content.clone()),
-            (None, Some(path)) if path == Path::new("-") => {
-                let mut text = String::new();
-                std::io::stdin().read_to_string(&mut text).map_err(|err| {
-                    CliError::Failure(format!("The CLI cannot read standard input: {err}."))
-                })?;
-                Some(text)
-            }
-            (None, Some(path)) => Some(std::fs::read_to_string(path).map_err(|err| {
-                CliError::Failure(format!("The CLI cannot read {}: {err}.", path.display()))
-            })?),
-            (None, None) => None,
-        };
+        let content = read_text(
+            self.content.as_deref(),
+            self.content_file.as_deref(),
+            "--content-file",
+        )?;
         if self.title.is_none() && content.is_none() {
             return Err(CliError::Failure(
                 "The command has no change. Use --title, --content or --content-file.".to_string(),
@@ -261,9 +277,10 @@ impl EditArgs {
 pub struct TransitionArgs {
     /// The item's short code (e.g. ACME-T-0001)
     pub short_code: String,
-    /// Target column id (UUID); a move outside the board's transition
-    /// graph is rejected with 422 listing the allowed targets
-    #[arg(long = "to", value_name = "COLUMN_ID")]
+    /// Target column: a name of a column of the board of the item, or an
+    /// id (UUID). A move outside the board's transition graph is rejected
+    /// with 422 listing the allowed targets
+    #[arg(long = "to", value_name = "COLUMN")]
     pub to_column: String,
     #[command(flatten)]
     pub common: Common,
@@ -334,6 +351,10 @@ pub struct DeleteArgs {
     /// brings each one back)
     #[arg(long)]
     pub confirm: bool,
+    /// Archive nothing: show the items that the archive takes, and the
+    /// items that it cannot reach. Not with --confirm
+    #[arg(long, conflicts_with = "confirm")]
+    pub preview: bool,
     #[command(flatten)]
     pub common: Common,
 }
@@ -398,6 +419,125 @@ pub struct LifecycleArgs {
     pub to: String,
     #[command(flatten)]
     pub common: Common,
+}
+
+/// `kairos <noun> metadata` (KAIROS-T-0591): write the metadata values of
+/// an item. The fields are the metadata definitions of the organization
+/// (`kairos metadata list`).
+#[derive(clap::Subcommand, Debug)]
+pub enum ItemMetadataCommand {
+    /// Set metadata values of an item: each value is SLUG=VALUE. The server
+    /// checks each value against its definition (an enum option, a date
+    /// YYYY-MM-DD). The edit rule applies
+    Set(MetadataSetArgs),
+    /// Remove metadata values of an item, by the slug of the field. The
+    /// edit rule applies
+    Unset(MetadataUnsetArgs),
+}
+
+/// Arguments of `kairos <noun> metadata set`.
+#[derive(Args, Debug)]
+pub struct MetadataSetArgs {
+    /// The item's short code (e.g. ACME-T-0001)
+    pub short_code: String,
+    /// One or more values, each `SLUG=VALUE` (e.g. priority=high)
+    #[arg(
+        value_name = "SLUG=VALUE",
+        required = true,
+        num_args = 1..,
+        value_parser = parse_metadata_pair
+    )]
+    pub values: Vec<(String, String)>,
+    #[command(flatten)]
+    pub common: Common,
+}
+
+/// Arguments of `kairos <noun> metadata unset`.
+#[derive(Args, Debug)]
+pub struct MetadataUnsetArgs {
+    /// The item's short code (e.g. ACME-T-0001)
+    pub short_code: String,
+    /// One or more slugs of fields (e.g. priority)
+    #[arg(value_name = "SLUG", required = true, num_args = 1..)]
+    pub slugs: Vec<String>,
+    #[command(flatten)]
+    pub common: Common,
+}
+
+/// The parser of one `SLUG=VALUE` of `metadata set`. A pair without `=`,
+/// an empty slug or an empty value is a usage error (exit 64).
+fn parse_metadata_pair(text: &str) -> Result<(String, String), String> {
+    let Some((slug, value)) = text.split_once('=') else {
+        return Err(format!(
+            "{text:?} has no `=`. Give the slug of the field, `=` and the value, for example \
+             priority=high."
+        ));
+    };
+    if slug.is_empty() {
+        return Err(format!("{text:?} has no slug before `=`."));
+    }
+    if value.is_empty() {
+        return Err(format!(
+            "{slug}= has no value. To remove the value, use `metadata unset`."
+        ));
+    }
+    Ok((slug.to_string(), value.to_string()))
+}
+
+/// The body of `metadata set` or `metadata unset`: slug to value, `None`
+/// to remove. A slug that the command gives twice is refused.
+fn metadata_request<'a>(
+    entries: impl IntoIterator<Item = (&'a str, Option<&'a str>)>,
+) -> Result<UpdateMetadataRequest, CliError> {
+    let mut values = std::collections::BTreeMap::new();
+    for (slug, value) in entries {
+        if values
+            .insert(slug.to_string(), value.map(str::to_string))
+            .is_some()
+        {
+            return Err(CliError::Failure(format!(
+                "The field {slug} is in the command more than once. Give each field once."
+            )));
+        }
+    }
+    Ok(UpdateMetadataRequest { values })
+}
+
+impl ItemMetadataCommand {
+    pub async fn run(self, kind: EntityKind) -> Result<(), CliError> {
+        let (short_code, common, request) = match &self {
+            Self::Set(args) => (
+                &args.short_code,
+                &args.common,
+                metadata_request(
+                    args.values
+                        .iter()
+                        .map(|(slug, value)| (slug.as_str(), Some(value.as_str()))),
+                )?,
+            ),
+            Self::Unset(args) => (
+                &args.short_code,
+                &args.common,
+                metadata_request(args.slugs.iter().map(|slug| (slug.as_str(), None)))?,
+            ),
+        };
+        let client = client(common)?;
+        let response = client.update_metadata(kind, short_code, &request).await?;
+        emit_metadata(common, &response)
+    }
+}
+
+/// `metadata set` and `metadata unset` output: the values of the item
+/// after the call.
+pub fn emit_metadata(common: &Common, response: &ItemMetadataResponse) -> Result<(), CliError> {
+    if common.json {
+        return print_json(response);
+    }
+    println!("Kairos changed the metadata of {}.", response.short_code);
+    for line in metadata_lines(&response.values) {
+        println!("{line}");
+    }
+    Ok(())
 }
 
 /// Arguments of `kairos tasks purge` (KAIROS-T-0362).
@@ -551,6 +691,8 @@ pub trait EntityView: serde::Serialize + utoipa::ToSchema {
     fn version(&self) -> i32;
     fn content(&self) -> &str;
     fn column_id(&self) -> Option<&str>;
+    /// The board of the item (an off-board ADR has none).
+    fn board_id(&self) -> Option<&str>;
     /// When this work was put away, if it was (KAIROS-A-0020). `get`
     /// prints a banner for it: archived work reads normally, so without
     /// one there is nothing to tell a reader they are looking at a record
@@ -608,6 +750,9 @@ impl EntityView for Strategy {
     fn column_id(&self) -> Option<&str> {
         Some(&self.column_id)
     }
+    fn board_id(&self) -> Option<&str> {
+        Some(&self.board_id)
+    }
     fn archived_at(&self) -> Option<&str> {
         self.archived_at.as_deref()
     }
@@ -654,6 +799,9 @@ impl EntityView for Initiative {
     }
     fn column_id(&self) -> Option<&str> {
         Some(&self.column_id)
+    }
+    fn board_id(&self) -> Option<&str> {
+        Some(&self.board_id)
     }
     fn archived_at(&self) -> Option<&str> {
         self.archived_at.as_deref()
@@ -704,6 +852,9 @@ impl EntityView for Task {
     fn column_id(&self) -> Option<&str> {
         Some(&self.column_id)
     }
+    fn board_id(&self) -> Option<&str> {
+        Some(&self.board_id)
+    }
     fn archived_at(&self) -> Option<&str> {
         self.archived_at.as_deref()
     }
@@ -723,6 +874,15 @@ impl EntityView for Task {
             ("column", self.column_id.clone()),
             ("type", self.task_type.clone()),
             ("team", or_dash(&self.team_id)),
+            // KAIROS-T-0591: the repository by its slug.
+            (
+                "repository",
+                self.repository
+                    .as_ref()
+                    .map(|repository| repository.slug.clone())
+                    .or_else(|| self.repository_id.clone())
+                    .unwrap_or_else(|| "-".to_string()),
+            ),
             (
                 "claim",
                 self.claim.as_ref().map_or_else(
@@ -778,6 +938,9 @@ impl EntityView for Document {
     fn column_id(&self) -> Option<&str> {
         None
     }
+    fn board_id(&self) -> Option<&str> {
+        Some(&self.board_id)
+    }
     fn archived_at(&self) -> Option<&str> {
         self.archived_at.as_deref()
     }
@@ -827,6 +990,9 @@ impl EntityView for Adr {
     }
     fn column_id(&self) -> Option<&str> {
         self.column_id.as_deref()
+    }
+    fn board_id(&self) -> Option<&str> {
+        self.board_id.as_deref()
     }
     fn archived_at(&self) -> Option<&str> {
         self.archived_at.as_deref()
@@ -886,7 +1052,14 @@ pub fn emit_list<T: EntityView>(common: &Common, envelope: &Listing<T>) -> Resul
     Ok(())
 }
 
-pub fn emit_get<T: EntityView>(common: &Common, item: &T) -> Result<(), CliError> {
+/// `show` output: the fields, then `context` (the lines of the metadata,
+/// the relationships and the external references, KAIROS-T-0591), then the
+/// content.
+pub fn emit_get<T: EntityView>(
+    common: &Common,
+    item: &T,
+    context: &[String],
+) -> Result<(), CliError> {
     if common.json {
         return print_json(item);
     }
@@ -896,6 +1069,9 @@ pub fn emit_get<T: EntityView>(common: &Common, item: &T) -> Result<(), CliError
     }
     for (label, value) in item.fields() {
         println!("  {label}: {value}");
+    }
+    for line in context {
+        println!("{line}");
     }
     println!();
     if item.notes().is_empty() {
@@ -919,6 +1095,112 @@ fn notes_text(notes: &[ItemNote]) -> String {
             promoted_to: note.promoted_to.as_deref(),
         }
     }))
+}
+
+/// The lines of `show` for the metadata, the relationships and the
+/// external references of an item (KAIROS-T-0591). Three reads, at the
+/// same time. Each read includes an archived item.
+async fn item_context(
+    client: &KairosClient,
+    kind: EntityKind,
+    short_code: &str,
+) -> Result<Vec<String>, CliError> {
+    let (metadata, relationships, external) = tokio::try_join!(
+        client.metadata(kind, short_code),
+        client.relationships(kind, short_code),
+        client.item_external_refs(kind, short_code),
+    )?;
+    let mut lines = metadata_lines(&metadata.values);
+    lines.extend(relationship_lines(&relationships));
+    lines.extend(external_lines(&external.external));
+    Ok(lines)
+}
+
+/// A labelled list: `  label: -` when it is empty, else the label and one
+/// indented line for each entry.
+fn labelled(label: &str, entries: Vec<String>) -> Vec<String> {
+    if entries.is_empty() {
+        return vec![format!("  {label}: -")];
+    }
+    let mut lines = vec![format!("  {label}:")];
+    lines.extend(entries.into_iter().map(|entry| format!("    {entry}")));
+    lines
+}
+
+/// The lines of the metadata values: `slug: value`, by slug.
+fn metadata_lines(values: &[MetadataValue]) -> Vec<String> {
+    labelled(
+        "metadata",
+        values
+            .iter()
+            .map(|value| format!("{}: {}", value.slug, value.value))
+            .collect(),
+    )
+}
+
+/// The label of a relationship from the side of the item, and its rank
+/// in the list. `outgoing` is true when the item is the source.
+fn relationship_label(relationship: &str, outgoing: bool) -> (usize, String) {
+    let known = match (relationship, outgoing) {
+        ("parent", false) => Some((0, "parent")),
+        ("parent", true) => Some((1, "child")),
+        ("blocks", false) => Some((2, "blocked by")),
+        ("blocks", true) => Some((3, "blocks")),
+        ("supports", true) => Some((4, "supported by")),
+        ("supports", false) => Some((5, "supports")),
+        ("informs", false) => Some((6, "informed by")),
+        ("informs", true) => Some((7, "informs")),
+        ("supersedes", false) => Some((8, "superseded by")),
+        ("supersedes", true) => Some((9, "supersedes")),
+        _ => None,
+    };
+    match known {
+        Some((rank, label)) => (rank, label.to_string()),
+        None if outgoing => (10, relationship.to_string()),
+        None => (10, format!("{relationship} (from)")),
+    }
+}
+
+/// One neighbour: `CODE — title`, with the marks `[archived]`,
+/// `[cancelled]` or `[done]`.
+fn neighbour_text(item: &RelatedItem) -> String {
+    let mut text = format!("{} — {}", item.short_code, item.title);
+    if item.archived_at.is_some() {
+        text.push_str(" [archived]");
+    }
+    if item.cancelled {
+        text.push_str(" [cancelled]");
+    } else if item.done {
+        text.push_str(" [done]");
+    }
+    text
+}
+
+/// The lines of the relationships of an item, both directions: parent,
+/// children, blockers, then the documents and the ADRs.
+fn relationship_lines(relationships: &ItemRelationshipsResponse) -> Vec<String> {
+    let mut entries: Vec<(usize, String)> = Vec::new();
+    for (groups, outgoing) in [
+        (&relationships.incoming, false),
+        (&relationships.outgoing, true),
+    ] {
+        for group in groups {
+            let (rank, label) = relationship_label(&group.relationship, outgoing);
+            for item in &group.items {
+                entries.push((rank, format!("{label}: {}", neighbour_text(item))));
+            }
+        }
+    }
+    entries.sort_by_key(|(rank, _)| *rank);
+    labelled(
+        "relationships",
+        entries.into_iter().map(|(_, entry)| entry).collect(),
+    )
+}
+
+/// The lines of the external references of an item.
+fn external_lines(references: &[kairos_client::types_meta::ExternalRef]) -> Vec<String> {
+    labelled("external", references.iter().map(reference_text).collect())
 }
 
 pub fn emit_created<T: EntityView>(common: &Common, item: &T) -> Result<(), CliError> {
@@ -948,17 +1230,42 @@ pub fn emit_edited<T: EntityView>(common: &Common, item: &T) -> Result<(), CliEr
     Ok(())
 }
 
-pub fn emit_transitioned<T: EntityView>(common: &Common, item: &T) -> Result<(), CliError> {
+/// `transition` output: the name of the column after the move
+/// (KAIROS-T-0589), from the columns of the board of the item.
+pub fn emit_transitioned<T: EntityView>(
+    common: &Common,
+    item: &T,
+    detail: &kairos_client::types_org::BoardDetail,
+) -> Result<(), CliError> {
     if common.json {
         return print_json(item);
     }
     println!(
-        "Kairos moved the {} {} to the column {}.",
-        T::NOUN,
-        item.short_code(),
-        item.column_id().unwrap_or("-")
+        "{}",
+        transitioned_line(T::NOUN, item.short_code(), item.column_id(), detail)
     );
     Ok(())
+}
+
+/// The line of [`emit_transitioned`]: the column by its name, or by its id
+/// when the board has no such column. Pure.
+fn transitioned_line(
+    noun: &str,
+    short_code: &str,
+    column_id: Option<&str>,
+    detail: &kairos_client::types_org::BoardDetail,
+) -> String {
+    let column = column_id.map_or_else(
+        || "-".to_string(),
+        |id| {
+            detail
+                .columns
+                .iter()
+                .find(|c| c.id == id)
+                .map_or_else(|| id.to_string(), |c| c.name.clone())
+        },
+    );
+    format!("Kairos moved the {noun} {short_code} to the column {column}.")
 }
 
 /// Render the claim of a task after a claim, a hand-off or a release
@@ -1166,24 +1473,75 @@ fn not_reached_lines(items: &[kairos_client::types::NotReached]) -> Vec<String> 
         if items.len() == 1 { "" } else { "s" }
     )];
     for item in items {
-        let reason = match (&item.below, &item.required_capability, &item.board_id) {
-            (Some(stop), _, _) => format!("It is below {stop}."),
-            (None, Some(capability), Some(board)) => {
-                format!("You need {capability} on the board {board}.")
-            }
-            (None, Some(capability), None) => {
-                format!("It has no board for {capability}. Ask an organization admin.")
-            }
-            (None, None, _) => "You cannot edit it.".to_string(),
-        };
-        lines.push(format!("    - {}: {reason}", item.short_code));
+        lines.push(format!(
+            "    - {}: {}",
+            item.short_code,
+            not_reached_reason(item)
+        ));
     }
     lines
+}
+
+/// Why the archive does not reach one descendant (COLLIERY-T-0234). Pure.
+pub fn not_reached_reason(item: &kairos_client::types::NotReached) -> String {
+    match (&item.below, &item.required_capability, &item.board_id) {
+        (Some(stop), _, _) => format!("It is below {stop}."),
+        (None, Some(capability), Some(board)) => {
+            format!("You need {capability} on the board {board}.")
+        }
+        (None, Some(capability), None) => {
+            format!("It has no board for {capability}. Ask an organization admin.")
+        }
+        (None, None, _) => "You cannot edit it.".to_string(),
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Per-family create arguments
 // ---------------------------------------------------------------------------
+
+/// The markdown of `--content` or of `--content-file` (`-` reads standard
+/// input), or `None` when neither is given (KAIROS-T-0589).
+pub fn read_text(
+    text: Option<&str>,
+    file: Option<&Path>,
+    flags: &str,
+) -> Result<Option<String>, CliError> {
+    match (text, file) {
+        (Some(text), _) => Ok(Some(text.to_string())),
+        (None, Some(path)) if path == Path::new("-") => {
+            let mut text = String::new();
+            std::io::stdin().read_to_string(&mut text).map_err(|err| {
+                CliError::Failure(format!(
+                    "The CLI cannot read standard input for {flags}: {err}."
+                ))
+            })?;
+            Ok(Some(text))
+        }
+        (None, Some(path)) => std::fs::read_to_string(path).map(Some).map_err(|err| {
+            CliError::Failure(format!("The CLI cannot read {}: {err}.", path.display()))
+        }),
+        (None, None) => Ok(None),
+    }
+}
+
+/// The id of the column `--column` of a create (KAIROS-T-0589): a name in
+/// the board `board`, or an id. A name with no board is an error.
+async fn create_column(
+    client: &KairosClient,
+    board: Option<&str>,
+    column: Option<&str>,
+) -> Result<Option<String>, CliError> {
+    match (column, board) {
+        (None, _) => Ok(None),
+        (Some(column), _) if is_uuid(column) => Ok(Some(column.to_string())),
+        (Some(column), Some(board)) => Ok(Some(column_id(client, board, column).await?)),
+        (Some(column), None) => Err(CliError::Failure(format!(
+            "The column {column:?} is a name, and the command names no board. Give --board, \
+             or the id of the column."
+        ))),
+    }
+}
 
 /// Arguments of `kairos strategies create`.
 #[derive(Args, Debug)]
@@ -1191,15 +1549,19 @@ pub struct StrategyCreateArgs {
     /// Board to create the strategy on (slug or UUID)
     #[arg(long, value_name = "BOARD")]
     pub board: String,
-    /// Column to place it in (UUID; defaults to the board's first column)
-    #[arg(long, value_name = "COLUMN_ID")]
+    /// Column to place it in: a name or an id (UUID). Default: the first
+    /// column of the board
+    #[arg(long, value_name = "COLUMN")]
     pub column: Option<String>,
     /// Title
     #[arg(long)]
     pub title: String,
     /// Markdown content (defaults to empty)
-    #[arg(long, default_value = "")]
-    pub content: String,
+    #[arg(long, conflicts_with = "content_file")]
+    pub content: Option<String>,
+    /// Read the markdown content from a file (`-` reads stdin)
+    #[arg(long, value_name = "FILE")]
+    pub content_file: Option<PathBuf>,
     /// Strategy hypothesis
     #[arg(long)]
     pub hypothesis: Option<String>,
@@ -1208,14 +1570,19 @@ pub struct StrategyCreateArgs {
 }
 
 impl StrategyCreateArgs {
-    fn request(&self) -> CreateStrategyRequest {
-        CreateStrategyRequest {
+    async fn request(&self, client: &KairosClient) -> Result<CreateStrategyRequest, CliError> {
+        Ok(CreateStrategyRequest {
             board_id: self.board.clone(),
-            column_id: self.column.clone(),
+            column_id: create_column(client, Some(&self.board), self.column.as_deref()).await?,
             title: self.title.clone(),
-            content: self.content.clone(),
+            content: read_text(
+                self.content.as_deref(),
+                self.content_file.as_deref(),
+                "--content-file",
+            )?
+            .unwrap_or_default(),
             hypothesis: self.hypothesis.clone(),
-        }
+        })
     }
 }
 
@@ -1225,15 +1592,19 @@ pub struct InitiativeCreateArgs {
     /// Board to create the initiative on (slug or UUID)
     #[arg(long, value_name = "BOARD")]
     pub board: String,
-    /// Column to place it in (UUID; defaults to the board's first column)
-    #[arg(long, value_name = "COLUMN_ID")]
+    /// Column to place it in: a name or an id (UUID). Default: the first
+    /// column of the board
+    #[arg(long, value_name = "COLUMN")]
     pub column: Option<String>,
     /// Title
     #[arg(long)]
     pub title: String,
     /// Markdown content (defaults to empty)
-    #[arg(long, default_value = "")]
-    pub content: String,
+    #[arg(long, conflicts_with = "content_file")]
+    pub content: Option<String>,
+    /// Read the markdown content from a file (`-` reads stdin)
+    #[arg(long, value_name = "FILE")]
+    pub content_file: Option<PathBuf>,
     /// T-shirt sizing: xs|s|m|l|xl
     #[arg(long)]
     pub complexity: Option<String>,
@@ -1249,16 +1620,21 @@ pub struct InitiativeCreateArgs {
 }
 
 impl InitiativeCreateArgs {
-    fn request(&self) -> CreateInitiativeRequest {
-        CreateInitiativeRequest {
+    async fn request(&self, client: &KairosClient) -> Result<CreateInitiativeRequest, CliError> {
+        Ok(CreateInitiativeRequest {
             board_id: self.board.clone(),
-            column_id: self.column.clone(),
+            column_id: create_column(client, Some(&self.board), self.column.as_deref()).await?,
             title: self.title.clone(),
-            content: self.content.clone(),
+            content: read_text(
+                self.content.as_deref(),
+                self.content_file.as_deref(),
+                "--content-file",
+            )?
+            .unwrap_or_default(),
             complexity: self.complexity.clone(),
             bucket_type: self.bucket_type.clone(),
             parent: self.parent.clone(),
-        }
+        })
     }
 }
 
@@ -1270,25 +1646,31 @@ pub struct TaskCreateArgs {
     /// The board decides the team of the task (COLLIERY-A-0023)
     #[arg(long, value_name = "BOARD", required_unless_present = "team")]
     pub board: Option<String>,
-    /// Column to place it in (UUID; defaults to the board's first column)
-    #[arg(long, value_name = "COLUMN_ID")]
+    /// The entry column of the board: a name or an id (UUID), the default.
+    /// A task starts there; any other column is refused: move the task after
+    /// the create
+    #[arg(long, value_name = "COLUMN")]
     pub column: Option<String>,
     /// Title
     #[arg(long)]
     pub title: String,
     /// Markdown content (defaults to empty)
-    #[arg(long, default_value = "")]
-    pub content: String,
-    /// Task type: task|bug|tech_debt|support (defaults to task)
-    #[arg(long = "type", value_name = "TASK_TYPE")]
+    #[arg(long, conflicts_with = "content_file")]
+    pub content: Option<String>,
+    /// Read the markdown content from a file (`-` reads stdin)
+    #[arg(long, value_name = "FILE")]
+    pub content_file: Option<PathBuf>,
+    /// The kind of the task: task|bug|tech_debt|support (defaults to
+    /// task). The old name --type still works
+    #[arg(long = "kind", alias = "type", value_name = "KIND")]
     pub task_type: Option<String>,
     /// Planned/Support lane: planned|support (KAIROS-T-0077; defaults to
     /// support for support-type tasks, else planned)
     #[arg(long = "work-class", value_name = "WORK_CLASS")]
     pub work_class: Option<String>,
-    /// Team (UUID). Without --board, the task goes to the delivery board
-    /// of this team. With --board, it must be the team of that board
-    #[arg(long, value_name = "TEAM_ID")]
+    /// Team (slug or UUID). Without --board, the task goes to the delivery
+    /// board of this team. With --board, it must be the team of that board
+    #[arg(long, value_name = "TEAM")]
     pub team: Option<String>,
     /// Repository the task links to (slug or UUID). It can be any
     /// repository, of any team. It does not choose the board
@@ -1308,19 +1690,37 @@ pub struct TaskCreateArgs {
 }
 
 impl TaskCreateArgs {
-    fn request(&self) -> CreateTaskRequest {
-        CreateTaskRequest {
+    async fn request(&self, client: &KairosClient) -> Result<CreateTaskRequest, CliError> {
+        let team = match &self.team {
+            Some(team) => Some(team_id(client, team).await?),
+            None => None,
+        };
+        // A column name needs a board: --board, else the delivery board of
+        // --team.
+        let board = match (&self.board, &team, &self.column) {
+            (Some(board), _, _) => Some(board.clone()),
+            (None, Some(team), Some(column)) if !is_uuid(column) => {
+                client.get_team(team).await?.delivery_board_id
+            }
+            _ => None,
+        };
+        Ok(CreateTaskRequest {
             board_id: self.board.clone(),
             repository: self.repo.clone(),
-            column_id: self.column.clone(),
+            column_id: create_column(client, board.as_deref(), self.column.as_deref()).await?,
             title: self.title.clone(),
-            content: self.content.clone(),
+            content: read_text(
+                self.content.as_deref(),
+                self.content_file.as_deref(),
+                "--content-file",
+            )?
+            .unwrap_or_default(),
             task_type: self.task_type.clone(),
             work_class: self.work_class.clone(),
-            team_id: self.team.clone(),
+            team_id: team,
             from_team: self.from_team.clone(),
             parent: self.parent.clone(),
-        }
+        })
     }
 }
 
@@ -1342,24 +1742,35 @@ pub struct DocumentCreateArgs {
     pub parent: Option<String>,
     /// Markdown content (omit with --template to stamp the template's
     /// content)
-    #[arg(long)]
+    #[arg(long, conflicts_with = "content_file")]
     pub content: Option<String>,
-    /// Template to stamp content + metadata defaults from (UUID)
-    #[arg(long, value_name = "TEMPLATE_ID")]
+    /// Read the markdown content from a file (`-` reads stdin)
+    #[arg(long, value_name = "FILE")]
+    pub content_file: Option<PathBuf>,
+    /// Template to stamp content + metadata defaults from (slug or UUID)
+    #[arg(long, value_name = "TEMPLATE")]
     pub template: Option<String>,
     #[command(flatten)]
     pub common: Common,
 }
 
 impl DocumentCreateArgs {
-    fn request(&self) -> CreateDocumentRequest {
-        CreateDocumentRequest {
+    async fn request(&self, client: &KairosClient) -> Result<CreateDocumentRequest, CliError> {
+        let template_id = match &self.template {
+            Some(template) => Some(template_id(client, template).await?),
+            None => None,
+        };
+        Ok(CreateDocumentRequest {
             title: self.title.clone(),
             board: self.board.clone(),
-            content: self.content.clone(),
-            template_id: self.template.clone(),
+            content: read_text(
+                self.content.as_deref(),
+                self.content_file.as_deref(),
+                "--content-file",
+            )?,
+            template_id,
             parent_short_code: self.parent.clone(),
-        }
+        })
     }
 }
 
@@ -1372,32 +1783,47 @@ pub struct AdrCreateArgs {
     /// ADR board (slug or UUID); omit for an off-board ADR (org-admin only)
     #[arg(long, value_name = "BOARD")]
     pub board: Option<String>,
-    /// Column to place it in (UUID; defaults to the board's first column)
-    #[arg(long, value_name = "COLUMN_ID")]
+    /// Column to place it in: a name (with --board) or an id (UUID).
+    /// Default: the first column of the board
+    #[arg(long, value_name = "COLUMN")]
     pub column: Option<String>,
     /// Markdown content (defaults to empty)
-    #[arg(long, default_value = "")]
-    pub content: String,
+    #[arg(long, conflicts_with = "content_file")]
+    pub content: Option<String>,
+    /// Read the markdown content from a file (`-` reads stdin)
+    #[arg(long, value_name = "FILE")]
+    pub content_file: Option<PathBuf>,
     /// Decision maker
     #[arg(long)]
     pub decision_maker: Option<String>,
     /// Decision date (YYYY-MM-DD)
     #[arg(long, value_name = "DATE")]
     pub decision_date: Option<String>,
+    /// The item that the ADR supports (short code of a strategy, an
+    /// initiative or a task). The ADR and the `supports` edge are one
+    /// write: a refused parent leaves no ADR
+    #[arg(long, value_name = "SHORT_CODE")]
+    pub parent: Option<String>,
     #[command(flatten)]
     pub common: Common,
 }
 
 impl AdrCreateArgs {
-    fn request(&self) -> CreateAdrRequest {
-        CreateAdrRequest {
+    async fn request(&self, client: &KairosClient) -> Result<CreateAdrRequest, CliError> {
+        Ok(CreateAdrRequest {
             board_id: self.board.clone(),
-            column_id: self.column.clone(),
+            column_id: create_column(client, self.board.as_deref(), self.column.as_deref()).await?,
             title: self.title.clone(),
-            content: self.content.clone(),
+            content: read_text(
+                self.content.as_deref(),
+                self.content_file.as_deref(),
+                "--content-file",
+            )?
+            .unwrap_or_default(),
             decision_maker: self.decision_maker.clone(),
             decision_date: self.decision_date.clone(),
-        }
+            parent: self.parent.clone(),
+        })
     }
 }
 
@@ -1443,8 +1869,16 @@ macro_rules! entity_family_cli {
                                       "s (paginated; --include-deleted adds archived work)"))]
             List($list_args),
             #[command(about = concat!("Show one ", $noun,
-                                      ", including its markdown content"))]
-            Get(GetArgs),
+                                      ", including its markdown content"),
+                      alias = "get")]
+            Show(GetArgs),
+            #[command(about = concat!("Compare two versions of a ", $noun,
+                                      ": the title and a unified diff of the content. ",
+                                      "With one version, compare it with the version before"))]
+            Diff(crate::commands::item_views::DiffArgs),
+            #[command(about = concat!("List the branches, pull requests and issues ",
+                                      "of the forge that link to a ", $noun))]
+            Links(GetArgs),
             #[command(about = concat!("Create a ", $noun))]
             Create($create_args),
             #[command(about = concat!("Edit a ", $noun, "'s title and/or content ",
@@ -1515,9 +1949,12 @@ macro_rules! entity_family_cli {
                                       "(the edit rule applies)"))]
             $lifecycle_variant(LifecycleArgs),
             )?
+            #[command(about = concat!("Set or remove the metadata values of a ", $noun),
+                      subcommand)]
+            Metadata(ItemMetadataCommand),
             #[command(about = concat!("Archive a ", $noun,
                                       " and its children (requires --confirm; ",
-                                      "`restore` brings it back)"),
+                                      "`restore` brings it back; --preview archives nothing)"),
                       alias = "delete")]
             Archive(DeleteArgs),
             #[command(about = concat!("Put an archived ", $noun,
@@ -1536,7 +1973,7 @@ macro_rules! entity_family_cli {
                         .await?;
                         emit_list(&args.common, &listing)
                     }
-                    Self::Get(args) => {
+                    Self::Show(args) => {
                         let client = client(&args.common)?;
                         let item = client.$get(&args.short_code).await?;
                         // COLLIERY-T-3100: a retired code finds the item.
@@ -1547,11 +1984,50 @@ macro_rules! entity_family_cli {
                         {
                             eprintln!("{notice}");
                         }
-                        emit_get(&args.common, &item)
+                        // KAIROS-T-0591: the text gives the metadata, the
+                        // relationships and the external references too.
+                        // `--json` stays the item of the server.
+                        let context = if args.common.json {
+                            Vec::new()
+                        } else {
+                            item_context(&client, $kind, &item.short_code).await?
+                        };
+                        emit_get(&args.common, &item, &context)
+                    }
+                    Self::Diff(args) => {
+                        let client = client(&args.common)?;
+                        let (from, to) = args.versions()?;
+                        let old = match from {
+                            Some(version) => Some(
+                                client
+                                    .history_snapshot($kind, &args.short_code, version)
+                                    .await?,
+                            ),
+                            None => None,
+                        };
+                        let new = client
+                            .history_snapshot($kind, &args.short_code, to)
+                            .await?;
+                        crate::commands::item_views::emit_diff(
+                            &args.common,
+                            &args.short_code,
+                            old.as_ref(),
+                            &new,
+                        )
+                    }
+                    Self::Links(args) => {
+                        let client = client(&args.common)?;
+                        let links = client.item_links($kind, &args.short_code).await?;
+                        crate::commands::item_views::emit_links(
+                            &args.common,
+                            &args.short_code,
+                            &links,
+                        )
                     }
                     Self::Create(args) => {
                         let client = client(&args.common)?;
-                        let item = client.$create_fn(&args.request()).await?;
+                        let request = args.request(&client).await?;
+                        let item = client.$create_fn(&request).await?;
                         emit_created(&args.common, &item)
                     }
                     Self::Edit(args) => {
@@ -1565,7 +2041,7 @@ macro_rules! entity_family_cli {
                     Self::Note(args) => {
                         let client = client(&args.common)?;
                         let response =
-                            client.append_note($kind, &args.short_code, &args.text).await?;
+                            client.append_note($kind, &args.short_code, &args.text()?).await?;
                         emit_noted(&args.common, &response)
                     }
                     Self::PromoteNote(args) => {
@@ -1583,10 +2059,19 @@ macro_rules! entity_family_cli {
                     $(
                     Self::$transition_variant(args) => {
                         let client = client(&args.common)?;
-                        let item = client
-                            .$transition_fn(&args.short_code, &args.to_column)
-                            .await?;
-                        emit_transitioned(&args.common, &item)
+                        // KAIROS-T-0589: the column is a name in the board
+                        // of the item, or an id.
+                        let current = client.$get(&args.short_code).await?;
+                        let board = current.board_id().ok_or_else(|| {
+                            CliError::Failure(format!(
+                                "{} is on no board, so it has no column.",
+                                current.short_code()
+                            ))
+                        })?;
+                        let detail = client.get_board(board).await?;
+                        let column = find_column(&detail, &args.to_column)?.id.clone();
+                        let item = client.$transition_fn(&args.short_code, &column).await?;
+                        emit_transitioned(&args.common, &item, &detail)
                     }
                     )?
                     $(
@@ -1671,6 +2156,12 @@ macro_rules! entity_family_cli {
                         emit_lifecycle(&args.common, &document)
                     }
                     )?
+                    Self::Metadata(command) => command.run($kind).await,
+                    Self::Archive(args) if args.preview => {
+                        let client = client(&args.common)?;
+                        let preview = client.cascade_preview($kind, &args.short_code).await?;
+                        crate::commands::item_views::emit_preview(&args.common, &preview)
+                    }
                     Self::Archive(args) => {
                         require_archive_confirm(args.confirm, &args.short_code)?;
                         let client = client(&args.common)?;
@@ -1953,6 +2444,51 @@ mod tests {
         );
     }
 
+    /// KAIROS-T-0589: `transition` names the column, not its id.
+    #[test]
+    fn the_transition_line_names_the_column() {
+        let detail: kairos_client::types_org::BoardDetail =
+            serde_json::from_value(serde_json::json!({
+                "id": "b-1", "name": "Platform", "slug": "platform-delivery",
+                "board_level": "delivery", "team_id": null, "code_prefix": "PLAT",
+                "created_at": "2026-10-18T00:00:00Z", "updated_at": "2026-10-18T00:00:00Z",
+                "columns": [{
+                    "id": "c-2", "board_id": "b-1", "name": "Todo", "position": 1,
+                    "created_at": "2026-10-18T00:00:00Z", "updated_at": "2026-10-18T00:00:00Z"
+                }],
+                "transitions": []
+            }))
+            .expect("a board detail");
+        assert_eq!(
+            transitioned_line("task", "ACME-T-0001", Some("c-2"), &detail),
+            "Kairos moved the task ACME-T-0001 to the column Todo."
+        );
+        assert_eq!(
+            transitioned_line("task", "ACME-T-0001", Some("c-9"), &detail),
+            "Kairos moved the task ACME-T-0001 to the column c-9."
+        );
+    }
+
+    /// KAIROS-T-0589: `--content` wins; with neither flag there is no text.
+    #[test]
+    fn the_text_comes_from_the_flag_or_the_file() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("body.md");
+        std::fs::write(&path, "from a file").expect("a file");
+        assert_eq!(
+            read_text(Some("inline"), None, "--content-file").expect("text"),
+            Some("inline".to_string())
+        );
+        assert_eq!(
+            read_text(None, Some(&path), "--content-file").expect("file"),
+            Some("from a file".to_string())
+        );
+        assert_eq!(read_text(None, None, "--content-file").expect("none"), None);
+        let missing = dir.path().join("missing.md");
+        let err = read_text(None, Some(&missing), "--content-file").expect_err("no file");
+        assert!(err.to_string().contains("missing.md"), "{err}");
+    }
+
     /// COLLIERY-T-0269: an archived repository is marked.
     #[test]
     fn the_impacts_of_an_item_are_the_slugs_of_the_repositories() {
@@ -2026,5 +2562,250 @@ mod tests {
         let err = require_purge_confirm(false, "ACME-T-0001").expect_err("must refuse");
         assert!(err.to_string().contains("cannot undo"), "{err}");
         require_purge_confirm(true, "ACME-T-0001").expect("confirmed passes");
+    }
+
+    /// A task from the JSON of the server, with `extra` fields.
+    fn task_from(extra: serde_json::Value) -> Task {
+        let mut task = serde_json::json!({
+            "id": "t-1", "short_code": "ACME-T-0001", "title": "A task", "content": "",
+            "board_id": "b-1", "column_id": "c-1", "task_type": "task",
+            "work_class": "planned", "team_id": null, "version": 1,
+            "created_by": "u-1", "updated_by": "u-1",
+            "created_at": "2026-10-18T00:00:00Z", "updated_at": "2026-10-18T00:00:00Z"
+        });
+        for (key, value) in extra.as_object().expect("an object") {
+            task[key] = value.clone();
+        }
+        serde_json::from_value(task).expect("a task")
+    }
+
+    fn field(task: &Task, label: &str) -> String {
+        task.fields()
+            .into_iter()
+            .find(|(name, _)| *name == label)
+            .map(|(_, value)| value)
+            .unwrap_or_else(|| panic!("no field {label}"))
+    }
+
+    /// KAIROS-T-0591: `tasks show` names the repository by its slug, or `-`.
+    #[test]
+    fn tasks_show_names_the_repository() {
+        assert_eq!(field(&task_from(serde_json::json!({})), "repository"), "-");
+        let bound = task_from(serde_json::json!({
+            "repository_id": "r-1",
+            "repository": {
+                "id": "r-1", "slug": "web", "forge": "github",
+                "repo_full_name": "acme/web", "team_id": "team-1"
+            }
+        }));
+        assert_eq!(field(&bound, "repository"), "web");
+        let id_only = task_from(serde_json::json!({ "repository_id": "r-1" }));
+        assert_eq!(field(&id_only, "repository"), "r-1");
+    }
+
+    fn related(code: &str, done: bool, cancelled: bool, archived: bool) -> RelatedItem {
+        RelatedItem {
+            relationship_id: format!("e-{code}"),
+            id: format!("id-{code}"),
+            short_code: code.to_string(),
+            entity_type: "task".into(),
+            title: format!("title {code}"),
+            archived_at: archived.then(|| "2026-10-01T00:00:00Z".to_string()),
+            done,
+            cancelled,
+        }
+    }
+
+    fn group(
+        relationship: &str,
+        items: Vec<RelatedItem>,
+    ) -> kairos_client::types_meta::RelationshipGroup {
+        kairos_client::types_meta::RelationshipGroup {
+            relationship: relationship.into(),
+            items,
+        }
+    }
+
+    /// KAIROS-T-0591: the relationships of `show` read from the side of the
+    /// item, parent first, with the marks of each neighbour.
+    #[test]
+    fn show_lists_the_relationships_from_the_side_of_the_item() {
+        let relationships = ItemRelationshipsResponse {
+            short_code: "ACME-T-0001".into(),
+            outgoing: vec![
+                group(
+                    "supports",
+                    vec![related("ACME-D-0005", false, false, false)],
+                ),
+                group("blocks", vec![related("ACME-T-0004", false, false, true)]),
+            ],
+            incoming: vec![
+                group(
+                    "blocks",
+                    vec![
+                        related("ACME-T-0003", true, false, false),
+                        related("ACME-T-0006", true, true, false),
+                    ],
+                ),
+                group("parent", vec![related("ACME-I-0002", false, false, false)]),
+            ],
+        };
+        assert_eq!(
+            relationship_lines(&relationships),
+            vec![
+                "  relationships:",
+                "    parent: ACME-I-0002 — title ACME-I-0002",
+                "    blocked by: ACME-T-0003 — title ACME-T-0003 [done]",
+                "    blocked by: ACME-T-0006 — title ACME-T-0006 [cancelled]",
+                "    blocks: ACME-T-0004 — title ACME-T-0004 [archived]",
+                "    supported by: ACME-D-0005 — title ACME-D-0005",
+            ]
+        );
+        let none = ItemRelationshipsResponse {
+            short_code: "ACME-T-0001".into(),
+            outgoing: vec![],
+            incoming: vec![],
+        };
+        assert_eq!(relationship_lines(&none), vec!["  relationships: -"]);
+        assert_eq!(relationship_label("parent", true).1, "child");
+        assert_eq!(relationship_label("supports", false).1, "supports");
+        assert_eq!(relationship_label("informs", false).1, "informed by");
+        assert_eq!(relationship_label("supersedes", false).1, "superseded by");
+    }
+
+    /// KAIROS-T-0591: the metadata and the external references of `show`.
+    #[test]
+    fn show_lists_the_metadata_and_the_external_references() {
+        let value = MetadataValue {
+            definition_id: "d-1".into(),
+            slug: "priority".into(),
+            name: "Priority".into(),
+            field_type: "enum".into(),
+            value: "high".into(),
+        };
+        assert_eq!(
+            metadata_lines(&[value]),
+            vec!["  metadata:", "    priority: high"]
+        );
+        assert_eq!(metadata_lines(&[]), vec!["  metadata: -"]);
+        let reference = kairos_client::types_meta::ExternalRef {
+            id: "r-1".into(),
+            relationship: "external".into(),
+            uri: "https://example.com/rfc".into(),
+            label: Some("RFC 42".into()),
+            created_by: "u-1".into(),
+            created_at: "2026-10-15T00:00:00Z".into(),
+        };
+        assert_eq!(
+            external_lines(&[reference]),
+            vec!["  external:", "    RFC 42 <https://example.com/rfc>"]
+        );
+        assert_eq!(external_lines(&[]), vec!["  external: -"]);
+    }
+
+    /// KAIROS-T-0591: `metadata set` takes SLUG=VALUE pairs; a bad pair is
+    /// a usage error that names it. `metadata unset` takes slugs.
+    #[test]
+    fn metadata_set_and_unset_parse_their_arguments() {
+        use clap::Parser;
+        #[derive(Parser, Debug)]
+        struct Cli {
+            #[command(subcommand)]
+            command: TasksCommand,
+        }
+        let parsed = Cli::try_parse_from([
+            "tasks",
+            "metadata",
+            "set",
+            "ACME-T-0001",
+            "priority=high",
+            "note=a=b",
+        ])
+        .expect("parses");
+        match parsed.command {
+            TasksCommand::Metadata(ItemMetadataCommand::Set(args)) => {
+                assert_eq!(args.short_code, "ACME-T-0001");
+                assert_eq!(
+                    args.values,
+                    vec![
+                        ("priority".to_string(), "high".to_string()),
+                        ("note".to_string(), "a=b".to_string()),
+                    ]
+                );
+            }
+            other => panic!("not metadata set: {other:?}"),
+        }
+        let parsed = Cli::try_parse_from(["tasks", "metadata", "unset", "ACME-T-0001", "priority"])
+            .expect("parses");
+        match parsed.command {
+            TasksCommand::Metadata(ItemMetadataCommand::Unset(args)) => {
+                assert_eq!(args.slugs, vec!["priority".to_string()]);
+            }
+            other => panic!("not metadata unset: {other:?}"),
+        }
+        for (bad, says) in [
+            ("priority", "has no `=`"),
+            ("=high", "has no slug"),
+            ("priority=", "has no value"),
+        ] {
+            let refused = Cli::try_parse_from(["tasks", "metadata", "set", "ACME-T-0001", bad])
+                .expect_err("a bad pair");
+            assert_eq!(refused.kind(), clap::error::ErrorKind::ValueValidation);
+            assert!(refused.to_string().contains(says), "{refused}");
+        }
+        // At least one value.
+        assert!(Cli::try_parse_from(["tasks", "metadata", "set", "ACME-T-0001"]).is_err());
+        assert!(Cli::try_parse_from(["tasks", "metadata", "unset", "ACME-T-0001"]).is_err());
+    }
+
+    /// KAIROS-T-0591: the body of `metadata set` and `unset`; a slug given
+    /// twice is refused and named.
+    #[test]
+    fn the_metadata_body_has_each_slug_once() {
+        let body = metadata_request([("priority", Some("high")), ("due", None)]).expect("body");
+        assert_eq!(body.values.get("priority"), Some(&Some("high".to_string())));
+        assert_eq!(body.values.get("due"), Some(&None));
+        let refused =
+            metadata_request([("priority", Some("high")), ("priority", None)]).expect_err("twice");
+        assert_eq!(refused.exit_code(), EXIT_FAILURE);
+        assert!(refused.to_string().contains("priority"), "{refused}");
+    }
+
+    /// KAIROS-T-0591: `adrs create --parent` sends the parent; without it
+    /// the body has no `parent` key, for an older server.
+    #[test]
+    fn adrs_create_sends_the_parent() {
+        use clap::Parser;
+        #[derive(Parser, Debug)]
+        struct Cli {
+            #[command(subcommand)]
+            command: AdrsCommand,
+        }
+        let parsed = Cli::try_parse_from([
+            "adrs",
+            "create",
+            "--title",
+            "T",
+            "--board",
+            "adrs",
+            "--parent",
+            "ACME-I-0002",
+        ])
+        .expect("parses");
+        match parsed.command {
+            AdrsCommand::Create(args) => assert_eq!(args.parent.as_deref(), Some("ACME-I-0002")),
+            other => panic!("not create: {other:?}"),
+        }
+        let body = CreateAdrRequest {
+            board_id: None,
+            column_id: None,
+            title: "T".into(),
+            content: String::new(),
+            decision_maker: None,
+            decision_date: None,
+            parent: None,
+        };
+        let json = serde_json::to_value(&body).expect("json");
+        assert!(json.get("parent").is_none(), "{json}");
     }
 }

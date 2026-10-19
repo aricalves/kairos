@@ -68,7 +68,7 @@ a deployment, use [`kairos login --email`](../cli/#kairos-login).
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
-| `KAIROS_POOL_SIZE` | integer | `16` | The connections of each of the two pools of a server: the async pool of the middleware and the blocking pool of the handlers. A server holds up to twice this many connections, plus the job pool and one for `LISTEN`. Size it against `max_connections` of PostgreSQL and the number of replicas. |
+| `KAIROS_POOL_SIZE` | integer | `16` | The connections of each of the two pools of a server: the async pool of the middleware and the blocking pool of the handlers. A server holds up to twice this many connections, plus the job pool, one for `LISTEN` and one for the event emitter. Size it against `max_connections` of PostgreSQL and the number of replicas. |
 | `KAIROS_POOL_MIN_IDLE` | integer | `2` | The connections the blocking pool opens at start and keeps idle, so the first requests after a start do not pay the connect. Capped at `KAIROS_POOL_SIZE`. |
 | `KAIROS_JOB_POOL_SIZE` | integer | `6` | The connections of the pool of the job worker and the jobs, at least 1. A burst of jobs fills this pool and leaves the handlers their pool. Raise it when you raise the job limits. |
 
@@ -875,6 +875,12 @@ It reads `activity_log` one page of rows at a time. It reads
 the code indexes one page of repositories at a time, with no structure. Each
 delete removes one batch of rows at most.
 
+The pass keeps each `activity_log` row that moves an item: the actions
+`transition`, `cancel` and `board_move`. It keeps them at each age, also past
+`KAIROS_ACTIVITY_RETENTION_DAYS`. The flow metrics of a board read these rows.
+Without them, a task in progress for more than the window has no start and no
+age.
+
 In the mode `archive` with no `KAIROS_ARCHIVE_TARGET`, the pass reads no row
 of `item_history`, `team_page_history` and `activity_log`, and removes none. The `retention_sweep`
 row and the record of the job then say `skipped: no target`. `/readyz` adds a
@@ -905,7 +911,7 @@ fallback to the default:
 |---|---|---|---|
 | `KAIROS_HISTORY_HOT_DAYS` | unsigned integer (days) | `90` | Hot window. `item_history` snapshots edited within this window are never touched. |
 | `KAIROS_HISTORY_KEEP_LATEST` | unsigned integer | `5` | Latest-N guard. The newest N versions of an item are never prune candidates regardless of age. |
-| `KAIROS_ACTIVITY_RETENTION_DAYS` | unsigned integer (days) | `365` | `activity_log` window. Rows older than this are archive-then-delete candidates, with no compaction tiers. |
+| `KAIROS_ACTIVITY_RETENTION_DAYS` | unsigned integer (days) | `365` | `activity_log` window. Rows older than this are archive-then-delete candidates, with no compaction tiers. The rows that move an item (`transition`, `cancel`, `board_move`) stay at each age. |
 | `KAIROS_ARCHIVE_TARGET` | filesystem path or `s3://…` URL | unset | Where prune candidates are offloaded as NDJSON. A `file://` prefix is stripped. An `s3://` value parses to a distinct S3 target that the shipped code rejects with a typed not-implemented error, rather than being misread as a directory name. Empty means no target. |
 | `KAIROS_NOTIFICATIONS_READ_DAYS` | unsigned integer (days) | `30` | The days that a read notification stays. `0` keeps read notifications. |
 | `KAIROS_NOTIFICATIONS_UNREAD_DAYS` | unsigned integer (days) | `180` | The days that an unread notification stays after the server made it. `0` keeps unread notifications. |
@@ -964,6 +970,7 @@ the limits and what to watch, see [The job queue](../../explanation/job-queue/).
 | `KAIROS_JOB_LIMIT_WEBHOOK_DELIVERY` | whole number | `4` | The webhook deliveries that one server sends at the same time. |
 | `KAIROS_JOB_LIMIT_GITHUB_WRITEBACK` | whole number | `2` | The GitHub write-backs that one server runs at the same time. |
 | `KAIROS_JOB_LIMIT_ISSUE_IMPORT` | whole number | `2` | The imports of open issues that one server runs at the same time. |
+| `KAIROS_JOB_LIMIT_ISSUE_WRITEBACK` | whole number | `2` | The issue write-backs that one server runs at the same time. |
 
 ### Webhook deliveries
 
@@ -1002,7 +1009,13 @@ seals the secrets of the targets again.
 
 A GitHub repository can have a write token (KAIROS-T-0386). Then Kairos writes
 a comment and the status `kairos` on each linked pull request. Each write is a job of the job queue. A failed write is
-tried again. See [Turn on GitHub write-back](../../how-to/turn-on-github-write-back/).
+tried again. See [Turn on forge write-back](../../how-to/turn-on-github-write-back/).
+
+A GitHub or GitLab repository with a write token also writes to its issues
+(KAIROS-T-0575). Kairos comments on an issue that became a task, and closes
+the issue when the task ends. The comment links to the item only when
+`KAIROS_PUBLIC_URL` has a public host. A private address or a tailnet name
+gives no link.
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
@@ -1152,6 +1165,11 @@ index. The output says so. The tool `fetch_index` of the code tools does the sam
 | `--repository`, then `repository` in `.claude/kairos.local.md` | The repository in Kairos. With neither, the CLI uses the repository whose `repo_url` is the `origin` remote of the checkout. |
 | `--max-changed` | The most files that can change since the base index. When the update runs a model, the default is 200. With `--link-only` or on a hosted repository, there is no default limit. |
 | `--link-only` | Do not run the summary model. The update links the summaries that are in the pool of the index, and it does not make new summaries. The background update of the Claude Code plugin uses this option. |
+
+Git excludes `.claude/kairos.local.md`, so a worktree has no such file. In
+a worktree, the CLI reads the file of the main clone. The main clone is the
+folder above `git rev-parse --git-common-dir`. The plugin hooks use the same
+rule.
 
 A repository can opt in to the hosted provider of its organization
 (`code_index_summaries = hosted`). On such a repository, the update makes

@@ -45,6 +45,10 @@
 //!   ([`crate::task_claims::notify_stale_claims`], KAIROS-T-0531). The
 //!   holder and the owner of the initiative of the task are told, once for
 //!   each quiet period. Kairos is the actor.
+//! - `proposal_decided`: a decision of an edge proposal
+//!   ([`crate::proposals::confirm`], [`crate::proposals::reject`],
+//!   KAIROS-T-0558). The proposer is told the state and the decider. An
+//!   agent key proposes as its person, so the person is told.
 //! - `key_expiring`: a key expires within 7 days
 //!   ([`crate::api_keys::notify_expiring_keys`], KAIROS-T-0540). The person
 //!   of an agent key is told, or the organization admins for a key of a
@@ -59,8 +63,9 @@
 //! (`notification_settings`). [`notify`] applies the 3 rules in its one
 //! insert.
 //!
-//! Each new notification sends the event `notification_created` to its
-//! person only ([`crate::events::emit_notification_event`]).
+//! The new notifications of one write send one event
+//! `notification_created` to their persons only, with the list of the
+//! persons ([`crate::events::emit_notification_event`], KAIROS-T-0632).
 
 use std::collections::BTreeMap;
 
@@ -154,15 +159,14 @@ pub fn notify(
     let short_code = item.map_or("", |(_, code)| code);
     let mut users: Vec<Uuid> = told.into_iter().map(|r| r.user_id).collect();
     users.sort();
-    for user in &users {
-        events::emit_notification_event(
-            conn,
-            events::NOTIFICATION_CREATED,
-            *user,
-            short_code,
-            actor,
-        )?;
-    }
+    // KAIROS-T-0632: one event with the list of the persons told.
+    events::emit_notification_event(
+        conn,
+        events::NOTIFICATION_CREATED,
+        &users,
+        short_code,
+        actor,
+    )?;
     Ok(users)
 }
 
@@ -259,6 +263,42 @@ pub fn on_key_expiring(
         None,
         &text,
         Uuid::nil(),
+    )?;
+    Ok(())
+}
+
+/// `proposal_decided` (KAIROS-T-0558): `actor` confirmed or rejected the
+/// edge proposal. The proposer is told, with the edge and the state. The
+/// notification is on the source of the edge.
+pub fn on_proposal_decided(
+    conn: &mut PgConnection,
+    proposal: &crate::proposals::EdgeProposal,
+    actor: Uuid,
+) -> Result<(), DieselError> {
+    let code = |conn: &mut PgConnection, id: Uuid| -> Result<String, DieselError> {
+        Ok(item_row(conn, id)?.map_or_else(|| id.to_string(), |row| row.short_code))
+    };
+    let source = code(conn, proposal.source_id)?;
+    let target = code(conn, proposal.target_id)?;
+    let outcome = if proposal.state == "confirmed" {
+        "The edge exists now."
+    } else {
+        "Kairos made no edge."
+    };
+    let text = format!(
+        "{} {} your proposal {source} -[{}]-> {target} ({}). {outcome}",
+        name_of(conn, actor)?,
+        proposal.state,
+        proposal.relationship,
+        proposal.id
+    );
+    notify(
+        conn,
+        &[proposal.proposed_by],
+        NotificationKind::ProposalDecided,
+        Some((proposal.source_id, &source)),
+        &text,
+        actor,
     )?;
     Ok(())
 }
@@ -1114,7 +1154,7 @@ pub fn mark_read(
         events::emit_notification_event(
             conn,
             events::NOTIFICATIONS_READ,
-            reader.user,
+            &[reader.user],
             "",
             reader.user,
         )?;

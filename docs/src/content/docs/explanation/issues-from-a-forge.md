@@ -45,14 +45,24 @@ finds the key and makes nothing.
 
 ## What is not synced
 
-After intake, Kairos does not read the issue again, and it writes nothing to
-it:
+After intake, Kairos does not read the issue again:
 
 - A close, a reopen or an edit on the forge does not change the task. An
   issue closed on the forge stays open in Kairos until a person closes the
   task.
 - A comment or a label on the forge does not come to Kairos.
-- Kairos writes no comment and no label to the issue.
+
+Kairos writes to the issue in one direction only, and only with a write
+token on the repository (KAIROS-T-0575). The end of the task closes the
+issue:
+
+- A done task writes a comment with the code of the task, and closes the
+  issue.
+- A cancelled task writes the reason, and closes the issue as not planned.
+- A reopened task opens the issue again.
+
+Kairos writes no label, and it does not change the title or the text of the
+issue. See [Turn on forge write-back](../../how-to/turn-on-github-write-back/).
 
 This is on purpose. Two-way sync of two trackers needs a rule for each
 conflict, and the forge and Kairos have different states and different

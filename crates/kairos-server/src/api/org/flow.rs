@@ -49,7 +49,7 @@ fn parse_day(raw: &str, parameter: &str) -> Result<NaiveDate, ApiError> {
             "The value {raw:?} of {parameter} is not a date. Send a date as YYYY-MM-DD, for \
              example 2026-10-01."
         ))
-        .with_details(serde_json::json!({ "argument": parameter }))
+        .with_details(serde_json::json!({ "field": parameter }))
     })
 }
 
@@ -72,7 +72,7 @@ pub fn resolve_range(
         return Err(ApiError::validation(format!(
             "The range starts on {from} and ends on {to}. Send a from that is on or before to."
         ))
-        .with_details(serde_json::json!({ "argument": "from" })));
+        .with_details(serde_json::json!({ "field": "from" })));
     }
     let days = (to - from).num_days() + 1;
     if days > MAX_RANGE_DAYS {
@@ -80,7 +80,7 @@ pub fn resolve_range(
             "The range has {days} days. A range has {MAX_RANGE_DAYS} days at most. Send a \
              shorter range."
         ))
-        .with_details(serde_json::json!({ "argument": "from" })));
+        .with_details(serde_json::json!({ "field": "from" })));
     }
     Ok((from, to))
 }
@@ -205,7 +205,8 @@ pub fn flow_of_board(
     to: NaiveDate,
     now: DateTime<Utc>,
 ) -> Result<Flow, ApiError> {
-    let board = flow::load_board(conn, board_id).map_err(ApiError::internal)?;
+    let board =
+        flow::load_board(conn, board_id, flow::start_of(from)).map_err(ApiError::internal)?;
     let key = (board_id, from, to, board.stamp);
     if let Some(mut flow) = cached(&key) {
         flow.age_at(now);
