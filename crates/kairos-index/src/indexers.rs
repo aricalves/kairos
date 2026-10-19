@@ -496,12 +496,22 @@ impl PythonRunner {
             None => on_path("uv").ok_or_else(|| "uv is not on PATH".to_string())?,
         };
         let mut sync = Command::new(&uv);
-        sync.args(["sync", "--frozen", "--no-progress", "--python"])
-            .arg(python)
+        sync.args(["sync", "--frozen", "--no-progress"])
             .current_dir(root);
+        // `environment` clears the variables, so the others come after it.
         environment(&mut sync, &self.tools, Some(deps), &[bin_of(python)]);
+        if self.tools.python_downloads {
+            // uv chooses the Python from `.python-version` and
+            // `requires-python`: the Python of the runner (it is on `PATH`)
+            // when it fits, else a CPython that uv fetches into the cache.
+            sync.env("UV_PYTHON_DOWNLOADS", "automatic")
+                .env("UV_PYTHON_INSTALL_DIR", deps.join("uv-python"));
+        } else {
+            sync.arg("--python")
+                .arg(python)
+                .env("UV_PYTHON_DOWNLOADS", "never");
+        }
         sync.env("UV_PROJECT_ENVIRONMENT", venv)
-            .env("UV_PYTHON_DOWNLOADS", "never")
             .env("UV_CACHE_DIR", deps.join("uv"));
         run_step(&mut sync, "uv sync")
             .map(|_| ())
@@ -883,6 +893,21 @@ mod tests {
             reason.contains("the lock file needs to be updated"),
             "{reason}"
         );
+    }
+
+    /// KAIROS-T-0668: with the setting on, uv chooses the Python and may fetch it.
+    #[test]
+    fn python_downloads_let_uv_choose_the_python() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = python_project(dir.path(), &["pyproject.toml", "uv.lock"]);
+        let mut tools = fake_python_tools(dir.path(), FAKE_UV);
+        tools.python_downloads = true;
+        run_python(dir.path(), &root, tools);
+        let venv = venv_of(dir.path());
+        let args = std::fs::read_to_string(venv.join("uv.args")).unwrap();
+        assert!(!args.contains("--python"), "{args}");
+        let env = std::fs::read_to_string(venv.join("uv.env")).unwrap();
+        assert!(env.starts_with("automatic "), "{env}");
     }
 
     /// KAIROS-T-0486: a failed `uv sync` is the fallback with a warning.

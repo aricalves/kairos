@@ -231,6 +231,7 @@ impl Deployment {
             code_index_deps_cap_mb: 10240,
             code_index_min_free_mb: 5120,
             code_index_deps_env: Vec::new(),
+            code_index_python_downloads: false,
             dev_ui: false,
             web_dist: None,
             web_client_id: "kairos-web".to_string(),

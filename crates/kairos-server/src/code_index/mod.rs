@@ -234,6 +234,9 @@ pub struct DependencySettings {
     /// `KAIROS_CODE_INDEX_DEPS_ENV`: more variables of the environment that
     /// a dependency step gets.
     pub pass_variables: Vec<String>,
+    /// `KAIROS_CODE_INDEX_PYTHON_DOWNLOADS`: uv may fetch the CPython that a
+    /// project asks for (KAIROS-T-0668).
+    pub python_downloads: bool,
 }
 
 impl Default for DependencySettings {
@@ -242,6 +245,7 @@ impl Default for DependencySettings {
             cap_bytes: 10 * 1024 * 1024 * 1024,
             min_free_bytes: 5 * 1024 * 1024 * 1024,
             pass_variables: Vec::new(),
+            python_downloads: false,
         }
     }
 }
@@ -496,6 +500,7 @@ impl CodeIndexService {
                     min_free_bytes: self.deps.min_free_bytes,
                 }),
                 pass_variables: self.deps.pass_variables.clone(),
+                python_downloads: self.deps.python_downloads,
                 ..Default::default()
             };
         }

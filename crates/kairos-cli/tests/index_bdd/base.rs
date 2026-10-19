@@ -385,6 +385,7 @@ fn config(scratch_url: &str) -> AppConfig {
         code_index_deps_cap_mb: 10240,
         code_index_min_free_mb: 5120,
         code_index_deps_env: Vec::new(),
+        code_index_python_downloads: false,
         web_client_id: "kairos-web".to_string(),
         api_bearer: kairos_server::config::ApiBearer::AccessToken,
         web_client_secret: None,
