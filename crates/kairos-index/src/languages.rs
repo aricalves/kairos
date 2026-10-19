@@ -379,10 +379,10 @@ pub struct LanguageTools {
     /// step gets (`KAIROS_CODE_INDEX_DEPS_ENV`).
     pub pass_variables: Vec<String>,
     /// Let uv fetch a CPython that the project asks for, when the Python of
-    /// the runner does not fit (`KAIROS_CODE_INDEX_PYTHON_DOWNLOADS`,
+    /// the runner does not fit (`KAIROS_CODE_INDEX_TOOL_DOWNLOADS`,
     /// KAIROS-T-0668). Off: uv uses the Python of the runner only, and
     /// downloads none.
-    pub python_downloads: bool,
+    pub tool_downloads: bool,
     /// The tool folders that this process fetched, for the log.
     pub fetched: Arc<Mutex<Vec<String>>>,
 }

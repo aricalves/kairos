@@ -160,7 +160,7 @@ services:
       KAIROS_CODE_INDEX_DEPS_CAP_MB: ${KAIROS_CODE_INDEX_DEPS_CAP_MB:-}
       KAIROS_CODE_INDEX_MIN_FREE_MB: ${KAIROS_CODE_INDEX_MIN_FREE_MB:-}
       KAIROS_CODE_INDEX_DEPS_ENV: ${KAIROS_CODE_INDEX_DEPS_ENV:-}
-      KAIROS_CODE_INDEX_PYTHON_DOWNLOADS: ${KAIROS_CODE_INDEX_PYTHON_DOWNLOADS:-}
+      KAIROS_CODE_INDEX_TOOL_DOWNLOADS: ${KAIROS_CODE_INDEX_TOOL_DOWNLOADS:-}
       # COLLIERY-T-3105: encrypts the read token of each repository. Keep it
       # with the database password; a lost key means every token is set again.
       # The old keys go in _OLD during a rotation (`kairos-server rotate-secrets`).

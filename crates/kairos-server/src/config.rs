@@ -260,11 +260,11 @@ pub struct AppConfig {
     /// environment that a dependency step gets, separated by commas
     /// (KAIROS-T-0474). The step gets no other variable of the server.
     pub code_index_deps_env: Vec<String>,
-    /// `KAIROS_CODE_INDEX_PYTHON_DOWNLOADS` — `true` or `1`: uv fetches the
+    /// `KAIROS_CODE_INDEX_TOOL_DOWNLOADS` — `true` or `1`: uv fetches the
     /// CPython that a Python project asks for, when the Python of the runner
     /// does not fit it (KAIROS-T-0668). Default off: the server downloads no
     /// Python of its own choice.
-    pub code_index_python_downloads: bool,
+    pub code_index_tool_downloads: bool,
     /// `KAIROS_WEB_CLIENT_ID` — the public OAuth client id the SPA uses
     /// for its PKCE flow (KAIROS-T-0039, A-0010). Default `kairos-web`,
     /// matching the dev Dex fixture (`.angreal/dex/config.yaml`).
@@ -793,8 +793,8 @@ impl AppConfig {
                         .collect()
                 })
                 .unwrap_or_default(),
-            code_index_python_downloads: matches!(
-                get("KAIROS_CODE_INDEX_PYTHON_DOWNLOADS").as_deref(),
+            code_index_tool_downloads: matches!(
+                get("KAIROS_CODE_INDEX_TOOL_DOWNLOADS").as_deref(),
                 Some("true" | "1")
             ),
             web_client_id: get("KAIROS_WEB_CLIENT_ID").unwrap_or_else(|| "kairos-web".to_string()),
@@ -1260,7 +1260,7 @@ mod tests {
         assert_eq!(config.code_index_deps_cap_mb, 10240);
         assert_eq!(config.code_index_min_free_mb, 5120);
         assert!(config.code_index_deps_env.is_empty());
-        assert!(!config.code_index_python_downloads);
+        assert!(!config.code_index_tool_downloads);
         let mut vars = MINIMAL.to_vec();
         vars.push(("KAIROS_CODE_INDEX_DEPS_CAP_MB", "512"));
         vars.push(("KAIROS_CODE_INDEX_MIN_FREE_MB", "100"));
@@ -1269,9 +1269,9 @@ mod tests {
         assert_eq!(config.code_index_deps_cap_mb, 512);
         assert_eq!(config.code_index_min_free_mb, 100);
         assert_eq!(config.code_index_deps_env, ["CORP_TOKEN", "GOFLAGS"]);
-        vars.push(("KAIROS_CODE_INDEX_PYTHON_DOWNLOADS", "true"));
+        vars.push(("KAIROS_CODE_INDEX_TOOL_DOWNLOADS", "true"));
         let config = AppConfig::from_lookup(lookup(&vars)).expect("valid config");
-        assert!(config.code_index_python_downloads);
+        assert!(config.code_index_tool_downloads);
         let mut vars = MINIMAL.to_vec();
         vars.push(("KAIROS_CODE_INDEX_DEPS_CAP_MB", "ten"));
         let err = AppConfig::from_lookup(lookup(&vars)).expect_err("ten");

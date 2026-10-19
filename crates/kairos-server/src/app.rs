@@ -226,7 +226,7 @@ fn code_index_service(
                 cap_bytes: config.code_index_deps_cap_mb.saturating_mul(1024 * 1024),
                 min_free_bytes: config.code_index_min_free_mb.saturating_mul(1024 * 1024),
                 pass_variables: config.code_index_deps_env.clone(),
-                python_downloads: config.code_index_python_downloads,
+                tool_downloads: config.code_index_tool_downloads,
             }),
     ))
 }

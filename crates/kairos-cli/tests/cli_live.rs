@@ -255,7 +255,7 @@ async fn cli_login_whoami_refresh_logout_live() {
         code_index_deps_cap_mb: 10240,
         code_index_min_free_mb: 5120,
         code_index_deps_env: Vec::new(),
-        code_index_python_downloads: false,
+        code_index_tool_downloads: false,
         dev_ui: false,
         // GUI serving fields (KAIROS-T-0039): irrelevant to the CLI suite.
         web_dist: None,
