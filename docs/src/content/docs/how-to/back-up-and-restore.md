@@ -210,7 +210,8 @@ The pass does not remove items. Archiving work does not make the database
 smaller either, because it is a soft delete
 ([Archiving](../../explanation/archiving/)). So `item_history` grows by a row
 for each edit in the hot window (90 days by default), and items grow with the
-work. Size the volume and the backup window for that growth, and alarm on the
+work. Most rows hold only a diff. The server writes a full copy of the text at
+most each 10 versions. Size the volume and the backup window for that growth, and alarm on the
 growth rate, not on a threshold.
 
 ## Related

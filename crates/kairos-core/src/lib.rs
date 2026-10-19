@@ -12,6 +12,7 @@ pub mod external_ref;
 pub mod forge;
 pub mod forge_filter;
 pub mod graph;
+pub mod history_diff;
 pub mod items;
 pub mod key_scope;
 pub mod notifications;

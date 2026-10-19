@@ -124,18 +124,19 @@ fn first_column(conn: &mut PgConnection, board: Uuid) -> Uuid {
 }
 
 /// All history snapshots for an item as `(version, title, content)`, in
-/// version order.
+/// version order. A diff row (KAIROS-T-0651) gets its full text.
 fn history_of(conn: &mut PgConnection, item: Uuid) -> Vec<(i32, String, String)> {
-    schema::item_history::table
+    let rows = schema::item_history::table
         .filter(schema::item_history::item_id.eq(item))
         .order(schema::item_history::version.asc())
-        .select((
-            schema::item_history::version,
-            schema::item_history::title,
-            schema::item_history::content,
-        ))
+        .select(kairos_db::models::ItemHistory::as_select())
         .load(conn)
-        .expect("loading item_history")
+        .expect("loading item_history");
+    kairos_db::history::with_full_content(conn, rows)
+        .expect("reading the text of each version")
+        .into_iter()
+        .map(|row| (row.version, row.title, row.content))
+        .collect()
 }
 
 /// All `activity_log.details` values for (action, entity_id), in order.

@@ -49,6 +49,9 @@
 //! - [`rollback_item`] copies a historical snapshot forward as a NEW
 //!   version through the same concurrency-checked path (history is
 //!   append-only; nothing is rewritten).
+//! - A version is a full row or a diff row (KAIROS-T-0651): see
+//!   [`crate::history`]. Read the text of a version with
+//!   [`crate::history::version_row`], not from `item_history.content`.
 //!
 //! # Soft delete (KAIROS-A-0001)
 //!
@@ -84,7 +87,7 @@ use crate::models::enums::{
     ActivityAction, BucketType, Complexity, DocumentLifecycle, RelationshipType, TaskType,
     WorkClass,
 };
-use crate::models::graph::{NewActivityLogEntry, NewItemHistory};
+use crate::models::graph::NewActivityLogEntry;
 use crate::models::items::{
     Adr, Document, Initiative, NewAdr, NewDocument, NewInitiative, NewStrategy, NewTask, Strategy,
     Task,
@@ -116,6 +119,14 @@ pub enum ItemError {
     /// target does not exist).
     #[error("The item {item_id} has no version {version} in its history.")]
     HistoryNotFound { item_id: Uuid, version: i32 },
+    /// The history has the version, but its text cannot be read: a diff
+    /// row without its base, or a diff that does not fit (KAIROS-T-0651).
+    #[error("The server cannot read the version {version} of the item {item_id}. {reason}")]
+    HistoryCorrupt {
+        item_id: Uuid,
+        version: i32,
+        reason: String,
+    },
     /// No live board with this id exists.
     #[error("The board {0} does not exist.")]
     BoardNotFound(Uuid),
@@ -134,6 +145,23 @@ pub enum ItemError {
     /// Any other database error.
     #[error("The database gave an error: {0}.")]
     Database(#[from] DieselError),
+}
+
+impl From<crate::history::HistoryError> for ItemError {
+    fn from(e: crate::history::HistoryError) -> Self {
+        match e {
+            crate::history::HistoryError::Corrupt {
+                item_id,
+                version,
+                reason,
+            } => ItemError::HistoryCorrupt {
+                item_id,
+                version,
+                reason,
+            },
+            crate::history::HistoryError::Database(e) => ItemError::Database(e),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -463,7 +491,9 @@ fn log_activity(
     Ok(())
 }
 
-/// Append one `item_history` snapshot (append-only, KAIROS-A-0004).
+/// Append the v1 baseline of `item_history` (append-only, KAIROS-A-0004).
+/// Version 1 has no base: it is a full row (KAIROS-T-0651), and the write
+/// reads nothing.
 fn insert_history(
     conn: &mut PgConnection,
     item_id: Uuid,
@@ -472,16 +502,7 @@ fn insert_history(
     content: &str,
     actor: Uuid,
 ) -> Result<(), DieselError> {
-    diesel::insert_into(crate::schema::item_history::table)
-        .values(NewItemHistory {
-            item_id,
-            version,
-            title: title.to_string(),
-            content: content.to_string(),
-            edited_by: actor,
-        })
-        .execute(conn)?;
-    Ok(())
+    crate::history::insert_planned(conn, item_id, version, title, content, actor, None)
 }
 
 /// The short code that a new row has until [`finish_create`] gives it its
@@ -602,53 +623,11 @@ pub struct ContentUpdate<'a> {
     pub expected_version: i32,
 }
 
-/// Generate the three per-table primitives the generic write path
-/// dispatches over: the atomic version-checked content UPDATE, the
-/// live-row load, and the bulk soft-delete.
+/// Generate the per-table primitives the generic write path dispatches
+/// over: the live-row load, and the bulk soft-delete. The atomic content
+/// UPDATE is [`apply_content_update`], one SQL text for the five tables.
 macro_rules! content_table_ops {
-    ($table:ident, $apply_fn:ident, $load_fn:ident, $delete_fn:ident, $preview_fn:ident) => {
-        /// Atomic KAIROS-A-0004 write: `UPDATE … SET version = version + 1
-        /// … WHERE id = ? AND version = expected AND deleted_at IS NULL`.
-        /// `Ok(None)` = no row matched (stale version, missing, or
-        /// soft-deleted); `Ok(Some((new_version, title)))` on success. The
-        /// content is not given back: the caller has it (KAIROS-T-0635).
-        fn $apply_fn(
-            conn: &mut PgConnection,
-            item_id: Uuid,
-            update: &ContentUpdate<'_>,
-            actor: Uuid,
-        ) -> Result<Option<(i32, String)>, DieselError> {
-            use crate::schema::$table::dsl;
-            let target = dsl::$table
-                .filter(dsl::id.eq(item_id))
-                .filter(dsl::version.eq(update.expected_version))
-                .filter(dsl::deleted_at.is_null());
-            let row = match update.new_title {
-                Some(new_title) => diesel::update(target)
-                    .set((
-                        dsl::version.eq(dsl::version + 1),
-                        dsl::title.eq(new_title),
-                        dsl::content.eq(update.new_content),
-                        dsl::updated_by.eq(actor),
-                        dsl::updated_at.eq(diesel::dsl::now),
-                    ))
-                    .returning((dsl::version, dsl::title))
-                    .get_result(conn)
-                    .optional()?,
-                None => diesel::update(target)
-                    .set((
-                        dsl::version.eq(dsl::version + 1),
-                        dsl::content.eq(update.new_content),
-                        dsl::updated_by.eq(actor),
-                        dsl::updated_at.eq(diesel::dsl::now),
-                    ))
-                    .returning((dsl::version, dsl::title))
-                    .get_result(conn)
-                    .optional()?,
-            };
-            Ok(row)
-        }
-
+    ($table:ident, $load_fn:ident, $delete_fn:ident, $preview_fn:ident) => {
         /// `(version, title, content, short_code)` of the live row, or
         /// `None` if missing/soft-deleted.
         fn $load_fn(
@@ -718,55 +697,96 @@ macro_rules! content_table_ops {
 
 content_table_ops!(
     strategies,
-    apply_content_strategy,
     load_live_strategy,
     soft_delete_strategies,
     live_short_codes_strategies
 );
 content_table_ops!(
     initiatives,
-    apply_content_initiative,
     load_live_initiative,
     soft_delete_initiatives,
     live_short_codes_initiatives
 );
 content_table_ops!(
     tasks,
-    apply_content_task,
     load_live_task,
     soft_delete_tasks,
     live_short_codes_tasks
 );
 content_table_ops!(
     documents,
-    apply_content_document,
     load_live_document,
     soft_delete_documents,
     live_short_codes_documents
 );
-content_table_ops!(
-    adrs,
-    apply_content_adr,
-    load_live_adr,
-    soft_delete_adrs,
-    live_short_codes_adrs
-);
+content_table_ops!(adrs, load_live_adr, soft_delete_adrs, live_short_codes_adrs);
 
-/// Dispatch the atomic content UPDATE to the item's table.
+/// The row that [`apply_content_update`] gives back: the new version, the
+/// title, and the newest full row of the history before it
+/// (KAIROS-T-0651).
+#[derive(QueryableByName)]
+struct AppliedContent {
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    version: i32,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    title: String,
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Integer>)]
+    base_version: Option<i32>,
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+    base_content: Option<String>,
+}
+
+/// The newest full row of the history before a new version, as the
+/// UPDATE gives it: `(version, text)`. The text is `None` when the new
+/// version must be a full row ([`kairos_core::history_diff`]).
+type HistoryBase = Option<(i32, Option<String>)>;
+
+/// Atomic KAIROS-A-0004 write: `UPDATE … SET version = version + 1 …
+/// WHERE id = ? AND version = expected AND deleted_at IS NULL`.
+/// `Ok(None)` = no row matched (stale version, missing, or soft-deleted);
+/// `Ok(Some((new_version, title, base)))` on success. The content is not
+/// given back: the caller has it (KAIROS-T-0635).
+///
+/// KAIROS-T-0651: the same statement gives the newest full row of the
+/// history, the base of the diff row of the new version. Its text comes
+/// back only when the new version can be a diff row: fewer than
+/// [`kairos_core::history_diff::SNAPSHOT_EVERY`] versions after it. So the
+/// write reads the base and sends a small diff, where it sent a second
+/// copy of the content before.
 fn apply_content_update(
     conn: &mut PgConnection,
     item_type: ItemType,
     item_id: Uuid,
     update: &ContentUpdate<'_>,
     actor: Uuid,
-) -> Result<Option<(i32, String)>, DieselError> {
-    match item_type {
-        ItemType::Strategy => apply_content_strategy(conn, item_id, update, actor),
-        ItemType::Initiative => apply_content_initiative(conn, item_id, update, actor),
-        ItemType::Task => apply_content_task(conn, item_id, update, actor),
-        ItemType::Document => apply_content_document(conn, item_id, update, actor),
-        ItemType::Adr => apply_content_adr(conn, item_id, update, actor),
-    }
+) -> Result<Option<(i32, String, HistoryBase)>, DieselError> {
+    let row: Option<AppliedContent> = sql_query(format!(
+        "UPDATE {table} AS t \
+            SET version = t.version + 1, title = coalesce($3, t.title), content = $4, \
+                updated_by = $5, updated_at = now() \
+          WHERE t.id = $1 AND t.version = $2 AND t.deleted_at IS NULL \
+         RETURNING t.version, t.title, \
+           (SELECT h.version FROM item_history h \
+             WHERE h.item_id = t.id AND h.base_version IS NULL \
+             ORDER BY h.version DESC LIMIT 1) AS base_version, \
+           (SELECT h.content FROM item_history h \
+             WHERE h.item_id = t.id AND h.base_version IS NULL \
+               AND h.version > t.version - $6 \
+             ORDER BY h.version DESC LIMIT 1) AS base_content",
+        table = table_of(item_type)
+    ))
+    .bind::<diesel::sql_types::Uuid, _>(item_id)
+    .bind::<diesel::sql_types::Integer, _>(update.expected_version)
+    .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(update.new_title)
+    .bind::<diesel::sql_types::Text, _>(update.new_content)
+    .bind::<diesel::sql_types::Uuid, _>(actor)
+    .bind::<diesel::sql_types::Integer, _>(kairos_core::history_diff::SNAPSHOT_EVERY)
+    .get_result(conn)
+    .optional()?;
+    Ok(row.map(|r| {
+        let base = r.base_version.map(|v| (v, r.base_content));
+        (r.version, r.title, base)
+    }))
 }
 
 /// Dispatch the live-row load to the item's table.
@@ -1586,14 +1606,17 @@ fn write_content(
         }
     };
     match apply_content_update(conn, item_type, item_id, update, actor)? {
-        Some((new_version, title)) => {
-            insert_history(
+        Some((new_version, title, base)) => {
+            // KAIROS-T-0651: the base of the diff came with the UPDATE.
+            crate::history::insert_planned(
                 conn,
                 item_id,
                 new_version,
                 &title,
                 update.new_content,
                 actor,
+                base.as_ref()
+                    .and_then(|(v, text)| text.as_deref().map(|text| (*v, text))),
             )?;
             if let Some(before) = before {
                 let names = kairos_core::notifications::new_mentions(&before, update.new_content);
@@ -1649,18 +1672,15 @@ pub fn rollback_item(
     actor: Uuid,
 ) -> Result<i32, ItemError> {
     conn.transaction::<_, ItemError, _>(|conn| {
-        use crate::schema::item_history;
-
-        let snapshot: Option<(String, String)> = item_history::table
-            .filter(item_history::item_id.eq(item_id))
-            .filter(item_history::version.eq(to_version))
-            .select((item_history::title, item_history::content))
-            .first(conn)
-            .optional()?;
-        let (title, content) = snapshot.ok_or(ItemError::HistoryNotFound {
-            item_id,
-            version: to_version,
-        })?;
+        // KAIROS-T-0651: the text of a diff row comes from its base row.
+        let snapshot = crate::history::version_row(conn, item_id, to_version)?;
+        let (title, content) =
+            snapshot
+                .map(|row| (row.title, row.content))
+                .ok_or(ItemError::HistoryNotFound {
+                    item_id,
+                    version: to_version,
+                })?;
 
         let (current_version, _, current_content, _) = load_live_content(conn, item_type, item_id)?
             .ok_or(ItemError::ItemNotFound {

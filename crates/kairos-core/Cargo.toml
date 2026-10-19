@@ -20,3 +20,5 @@ url = { workspace = true }
 regex = { workspace = true }
 # KAIROS-T-0504: the note headings (shared with the web app).
 kairos-markdown = { workspace = true }
+# KAIROS-T-0651: the line diff of item_history (history_diff.rs).
+similar = { workspace = true }

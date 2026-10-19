@@ -336,13 +336,16 @@ impl RetentionConfig {
 }
 
 /// The planner's view of one `item_history` row: `(item_id, version,
-/// edited_at)`. Loading and full-fidelity serialization stay in the I/O
-/// layer.
+/// edited_at, base_version)`. Loading and full-fidelity serialization stay
+/// in the I/O layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HistoryRowMeta {
     pub item_id: Uuid,
     pub version: i32,
     pub edited_at: DateTime<Utc>,
+    /// The full row that this diff row applies to, or `None` for a full
+    /// row (KAIROS-T-0651, [`crate::history_diff`]).
+    pub base_version: Option<i32>,
 }
 
 /// A row the planner selected for offload-then-prune, identified by the
@@ -363,6 +366,8 @@ pub struct PruneKey {
 ///   kept, the middles are prune candidates.
 /// - The latest `history_keep_latest` versions per item (by version
 ///   number) are never candidates, regardless of age.
+/// - The base full row of each kept diff row is kept (KAIROS-T-0651), so
+///   each kept version keeps its text.
 ///
 /// The result is sorted by `(item_id, version)` and is deterministic. The
 /// planner is mode-agnostic: callers gate on [`RetentionConfig::mode`]
@@ -400,6 +405,7 @@ pub fn plan_history_compaction(
             }
         }
 
+        let mut item_prune: BTreeSet<i32> = BTreeSet::new();
         for (_, mut month_rows) in by_month {
             month_rows.sort_by_key(|r| (r.edited_at, r.version));
             if month_rows.len() <= 2 {
@@ -407,12 +413,24 @@ pub fn plan_history_compaction(
             }
             for row in &month_rows[1..month_rows.len() - 1] {
                 if !guarded.contains(&row.version) {
-                    prune.push(PruneKey {
-                        item_id: row.item_id,
-                        version: row.version,
-                    });
+                    item_prune.insert(row.version);
                 }
             }
+        }
+        // KAIROS-T-0651: a kept diff row needs its base full row. A base is
+        // a full row, so one pass is enough.
+        for row in &item_rows {
+            if let Some(base) = row.base_version
+                && !item_prune.contains(&row.version)
+            {
+                item_prune.remove(&base);
+            }
+        }
+        if let Some(first) = item_rows.first() {
+            prune.extend(item_prune.into_iter().map(|version| PruneKey {
+                item_id: first.item_id,
+                version,
+            }));
         }
     }
 
@@ -497,6 +515,7 @@ mod tests {
             item_id: item,
             version,
             edited_at,
+            base_version: None,
         }
     }
 
@@ -712,6 +731,47 @@ mod tests {
         ];
         let plan = plan_history_compaction(&rows, now(), &config(90, 0));
         assert_eq!(pruned_versions(&plan, item), vec![2, 3, 6]);
+    }
+
+    #[test]
+    fn a_kept_diff_row_keeps_its_base_full_row() {
+        let item = Uuid::new_v4();
+        let diff = |version: i32, base: i32, edited_at| HistoryRowMeta {
+            base_version: Some(base),
+            ..row(item, version, edited_at)
+        };
+        let rows = vec![
+            // January: v1 full, v2..v4 diffs from v1. The planner keeps v1
+            // and v4 and prunes v2 and v3.
+            row(item, 1, at(2026, 1, 5, 8, 0, 0)),
+            diff(2, 1, at(2026, 1, 10, 8, 0, 0)),
+            diff(3, 1, at(2026, 1, 20, 8, 0, 0)),
+            diff(4, 1, at(2026, 1, 28, 8, 0, 0)),
+            // February: v5 full, v6 and v7 diffs from v5; v8 full, v9 and
+            // v10 diffs from v8. The planner keeps v5 and v10, and prunes
+            // v6..v9 without the base rule. v10 needs v8, so v8 stays.
+            row(item, 5, at(2026, 2, 2, 8, 0, 0)),
+            diff(6, 5, at(2026, 2, 3, 8, 0, 0)),
+            diff(7, 5, at(2026, 2, 14, 8, 0, 0)),
+            row(item, 8, at(2026, 2, 20, 8, 0, 0)),
+            diff(9, 8, at(2026, 2, 21, 8, 0, 0)),
+            diff(10, 8, at(2026, 2, 25, 8, 0, 0)),
+        ];
+        let plan = plan_history_compaction(&rows, now(), &config(90, 0));
+        assert_eq!(pruned_versions(&plan, item), vec![2, 3, 6, 7, 9]);
+        // Each kept diff row has its base among the kept rows.
+        let pruned = pruned_versions(&plan, item);
+        for row in &rows {
+            if let Some(base) = row.base_version
+                && !pruned.contains(&row.version)
+            {
+                assert!(
+                    !pruned.contains(&base),
+                    "v{} lost its base v{base}",
+                    row.version
+                );
+            }
+        }
     }
 
     #[test]

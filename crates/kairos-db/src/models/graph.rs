@@ -48,7 +48,10 @@ pub struct ItemRelationshipChangeset {
 // item_history
 // ---------------------------------------------------------------------------
 
-/// An append-only content version snapshot (`item_history`, KAIROS-A-0004).
+/// An append-only content version (`item_history`, KAIROS-A-0004). A full
+/// row has the text in `content`. A diff row (KAIROS-T-0651) has an empty
+/// `content`, and `content_diff` from the full row `base_version`: read
+/// the text with [`crate::history::version_row`].
 #[derive(Debug, Clone, PartialEq, Eq, Queryable, Selectable, Identifiable)]
 #[diesel(table_name = item_history)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
@@ -65,10 +68,18 @@ pub struct ItemHistory {
     /// default fills it from the session setting `kairos.agent_key`, so
     /// the insert struct has no such field.
     pub agent_key_id: Option<Uuid>,
+    /// The version of the full row that `content_diff` applies to, or
+    /// `None` for a full row (KAIROS-T-0651).
+    pub base_version: Option<i32>,
+    /// The diff from the full row `base_version`
+    /// ([`kairos_core::history_diff`]), or `None` for a full row.
+    pub content_diff: Option<String>,
 }
 
-/// Insert for [`ItemHistory`]. The table is append-only, so there is no
-/// changeset struct on purpose.
+/// Insert of a full [`ItemHistory`] row. The table is append-only, so
+/// there is no changeset struct on purpose. The writes of the item
+/// services go through [`crate::history::insert_version`], which chooses
+/// a full row or a diff row.
 #[derive(Debug, Clone, Insertable)]
 #[diesel(table_name = item_history)]
 pub struct NewItemHistory {
@@ -77,6 +88,20 @@ pub struct NewItemHistory {
     pub title: String,
     pub content: String,
     pub edited_by: Uuid,
+}
+
+/// Insert of a diff [`ItemHistory`] row (KAIROS-T-0651): `content` is
+/// empty, and `content_diff` applies to the full row `base_version`.
+#[derive(Debug, Clone, Insertable)]
+#[diesel(table_name = item_history)]
+pub struct NewItemHistoryDiff {
+    pub item_id: Uuid,
+    pub version: i32,
+    pub title: String,
+    pub content: String,
+    pub edited_by: Uuid,
+    pub base_version: i32,
+    pub content_diff: String,
 }
 
 // ---------------------------------------------------------------------------

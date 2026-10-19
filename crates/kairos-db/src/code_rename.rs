@@ -32,7 +32,7 @@ use uuid::Uuid;
 use crate::events::{self, EventKind};
 use crate::items::{self, ItemError};
 use crate::models::enums::ActivityAction;
-use crate::models::graph::{NewActivityLogEntry, NewItemHistory};
+use crate::models::graph::NewActivityLogEntry;
 use crate::retired_codes::{self, RetireError};
 
 /// What [`rename_item`] did.
@@ -208,15 +208,8 @@ fn rewrite_references(
             .bind::<Text, _>(&content)
             .bind::<SqlUuid, _>(actor)
             .get_result(conn)?;
-            diesel::insert_into(crate::schema::item_history::table)
-                .values(NewItemHistory {
-                    item_id: row.id,
-                    version: version.version,
-                    title,
-                    content,
-                    edited_by: actor,
-                })
-                .execute(conn)?;
+            // KAIROS-T-0651: a full row or a diff row, as an edit writes.
+            crate::history::insert_version(conn, row.id, version.version, &title, &content, actor)?;
             if !row.archived {
                 events::emit_item_event_by_id(
                     conn,

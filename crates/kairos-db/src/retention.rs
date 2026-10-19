@@ -34,11 +34,18 @@
 //!
 //! The sweep never loads a table whole. It reads `item_history` a page of
 //! items at a time, in `item_id` order, and only the metadata columns
-//! `(id, item_id, version, edited_at)`; it reads the content only of the
-//! rows that it archives. `team_page_history` pages by `page_id` the same
-//! way. It reads `activity_log` a page of rows at a time,
-//! in `(occurred_at, id)` order. Each delete names at most one batch of
-//! ids. [`SweepPaging`] sets the sizes.
+//! `(id, item_id, version, edited_at, base_version)`; it reads the content
+//! only of the rows that it archives. `team_page_history` pages by
+//! `page_id` the same way. It reads `activity_log` a page of rows at a
+//! time, in `(occurred_at, id)` order. Each delete names at most one batch
+//! of ids. [`SweepPaging`] sets the sizes.
+//!
+//! # Diff rows (KAIROS-T-0651)
+//!
+//! A diff row of `item_history` needs its base full row
+//! ([`crate::history`]). The planner keeps the base of each row that it
+//! keeps, so each kept version keeps its text. The archive line of a diff
+//! row has the full text. `team_page_history` has full rows only.
 //!
 //! # The rows that move an item stay (KAIROS-T-0571)
 //!
@@ -80,7 +87,7 @@
 //! ago. Each of these rows is a cache or a copy of a fact that another row
 //! keeps.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -136,6 +143,10 @@ pub enum RetentionError {
     /// Listing tenants for the fleet sweep failed.
     #[error(transparent)]
     Tenant(#[from] TenantError),
+    /// The text of a version to archive cannot be read (KAIROS-T-0651);
+    /// nothing was deleted.
+    #[error(transparent)]
+    History(#[from] crate::history::HistoryError),
     /// Any other database error.
     #[error("The database gave an error: {0}.")]
     Database(#[from] DieselError),
@@ -261,9 +272,18 @@ struct HistoryFullRow {
     edited_at: DateTime<Utc>,
     #[diesel(sql_type = Nullable<SqlUuid>)]
     agent_key_id: Option<Uuid>,
+    /// `item_history` only (KAIROS-T-0651); NULL for `team_page_history`.
+    #[diesel(sql_type = Nullable<Integer>)]
+    base_version: Option<i32>,
+    /// `item_history` only (KAIROS-T-0651); NULL for `team_page_history`.
+    #[diesel(sql_type = Nullable<Text>)]
+    content_diff: Option<String>,
 }
 
-/// Full-fidelity `item_history` archive row (every DDL column).
+/// Full-fidelity `item_history` archive row (every DDL column). `content`
+/// is always the full text of the version, also for a diff row
+/// (KAIROS-T-0651), so each line of the archive stands alone.
+/// `base_version` and `content_diff` are as stored.
 #[derive(Serialize)]
 struct HistoryArchiveRow<'a> {
     id: Uuid,
@@ -274,6 +294,8 @@ struct HistoryArchiveRow<'a> {
     edited_by: Uuid,
     edited_at: DateTime<Utc>,
     agent_key_id: Option<Uuid>,
+    base_version: Option<i32>,
+    content_diff: Option<&'a str>,
 }
 
 /// Full-fidelity `team_page_history` archive row (every DDL column).
@@ -313,6 +335,15 @@ impl HistoryTable {
         }
     }
 
+    /// The SQL of the diff columns `base_version, content_diff`
+    /// (KAIROS-T-0651). `team_page_history` has full rows only.
+    fn diff_columns(self) -> &'static str {
+        match self {
+            HistoryTable::Item => "base_version, content_diff",
+            HistoryTable::TeamPage => "NULL::integer AS base_version, NULL::text AS content_diff",
+        }
+    }
+
     /// The NDJSON line of a whole row, with the column names of the table.
     fn archive_line(self, row: &HistoryFullRow) -> Result<String, serde_json::Error> {
         match self {
@@ -325,6 +356,8 @@ impl HistoryTable {
                 edited_by: row.edited_by,
                 edited_at: row.edited_at,
                 agent_key_id: row.agent_key_id,
+                base_version: row.base_version,
+                content_diff: row.content_diff.as_deref(),
             }),
             HistoryTable::TeamPage => serde_json::to_string(&PageHistoryArchiveRow {
                 id: row.id,
@@ -585,7 +618,7 @@ struct OwnerRow {
 }
 
 /// The history columns that the planner needs: `(id, owner, version,
-/// edited_at)`. Never the title or the content.
+/// edited_at, base_version)`. Never the title or the content.
 #[derive(QueryableByName)]
 struct HistoryMetaRow {
     #[diesel(sql_type = SqlUuid)]
@@ -596,6 +629,8 @@ struct HistoryMetaRow {
     version: i32,
     #[diesel(sql_type = Timestamptz)]
     edited_at: DateTime<Utc>,
+    #[diesel(sql_type = Nullable<Integer>)]
+    base_version: Option<i32>,
 }
 
 /// Plan a history table page by page (KAIROS-T-0631): a page is the
@@ -634,8 +669,9 @@ fn plan_history_pages(
         };
         *pages += 1;
 
+        let diff_columns = table.diff_columns();
         let rows: Vec<HistoryMetaRow> = sql_query(format!(
-            "SELECT id, {owner} AS owner, version, edited_at FROM {name} \
+            "SELECT id, {owner} AS owner, version, edited_at, {diff_columns} FROM {name} \
              WHERE {owner} = ANY($1)"
         ))
         .bind::<Array<SqlUuid>, _>(&owners)
@@ -648,6 +684,9 @@ fn plan_history_pages(
                 item_id: r.owner,
                 version: r.version,
                 edited_at: r.edited_at,
+                // KAIROS-T-0651: the planner keeps the base full row of each
+                // diff row that it keeps.
+                base_version: r.base_version,
             })
             .collect();
         // The plan is sorted by (owner, version), so the ids are too.
@@ -658,13 +697,33 @@ fn plan_history_pages(
 
         if let Some(archive) = archive.as_deref_mut() {
             for chunk in page_ids.chunks(paging.batch) {
-                let full: Vec<HistoryFullRow> = sql_query(format!(
+                let mut full: Vec<HistoryFullRow> = sql_query(format!(
                     "SELECT id, {owner} AS owner, version, title, content, edited_by, \
-                         edited_at, agent_key_id \
+                         edited_at, agent_key_id, {diff_columns} \
                      FROM {name} WHERE id = ANY($1) ORDER BY {owner}, version"
                 ))
                 .bind::<Array<SqlUuid>, _>(chunk)
                 .load(conn)?;
+                // KAIROS-T-0651: the archive has the full text of each row.
+                // The base rows are still in the table: no delete ran yet.
+                let wanted: HashSet<(Uuid, i32)> = full
+                    .iter()
+                    .filter_map(|row| row.base_version.map(|base| (row.owner, base)))
+                    .collect();
+                let bases = crate::history::base_texts(conn, &wanted)?;
+                for row in &mut full {
+                    if let (Some(base_version), Some(diff)) =
+                        (row.base_version, row.content_diff.as_deref())
+                    {
+                        row.content = crate::history::full_text(
+                            &bases,
+                            row.owner,
+                            row.version,
+                            base_version,
+                            diff,
+                        )?;
+                    }
+                }
                 for row in &full {
                     archive.write_line(&table.archive_line(row)?)?;
                 }

@@ -2871,13 +2871,10 @@ impl KairosMcp {
             }
 
             if let Some(version) = params.version {
-                let snapshot: Option<(String, String)> = item_history::table
-                    .filter(item_history::item_id.eq(item.id))
-                    .filter(item_history::version.eq(version))
-                    .select((item_history::title, item_history::content))
-                    .first(conn)
-                    .optional()
-                    .map_err(ApiError::internal)?;
+                // KAIROS-T-0651: a diff row gets its text from its base row.
+                let snapshot = kairos_db::history::version_row(conn, item.id, version)
+                    .map_err(ApiError::internal)?
+                    .map(|row| (row.title, row.content));
                 let (title, content) = snapshot.ok_or_else(|| {
                     ApiError::not_found(format!(
                         "{} has no version {version} in its history.",

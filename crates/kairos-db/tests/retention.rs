@@ -448,9 +448,9 @@ fn retention_sweeper_lifecycle() {
     for (value, row) in archived.iter().zip(&expected_pruned) {
         assert_eq!(
             value.as_object().unwrap().len(),
-            8,
+            10,
             "full column fidelity: id, item_id, version, title, content, edited_by, edited_at, \
-             agent_key_id"
+             agent_key_id, base_version, content_diff"
         );
         assert_eq!(value["id"].as_str().unwrap(), row.id.to_string());
         assert_eq!(value["item_id"].as_str().unwrap(), row.item_id.to_string());
@@ -464,6 +464,9 @@ fn retention_sweeper_lifecycle() {
         assert_eq!(json_ts(value, "edited_at"), row.edited_at);
         // KAIROS-T-0359: no agent made these rows.
         assert!(value["agent_key_id"].is_null());
+        // KAIROS-T-0651: these short texts are full rows.
+        assert!(value["base_version"].is_null());
+        assert!(value["content_diff"].is_null());
     }
 
     // activity_log rows past the window: archived then deleted.
@@ -895,6 +898,7 @@ fn the_sweep_pages_by_item_and_prunes_what_the_planner_gives() {
             item_id: r.item_id,
             version: r.version,
             edited_at: r.edited_at,
+            base_version: r.base_version,
         })
         .collect();
     let expected: Vec<(Uuid, i32)> = plan_history_compaction(&meta, now, &config)
@@ -1107,6 +1111,7 @@ fn team_page_history_follows_the_item_history_rules() {
                 item_id: r.page_id,
                 version: r.version,
                 edited_at: r.edited_at,
+                base_version: None,
             })
             .collect();
     let total = meta.len() as i64;
@@ -1513,4 +1518,148 @@ fn the_pass_removes_old_rows_of_the_other_tables_a_page_at_a_time() {
     sql_query(format!("DROP DATABASE IF EXISTS {OTHER_DB} WITH (FORCE)"))
         .execute(&mut admin_conn)
         .expect("dropping scratch database");
+}
+
+/// The text of version `v` of the diff fixture (KAIROS-T-0651): 60 lines,
+/// one line changes in each version, and each version adds a line, so
+/// each version after a full row is a diff row.
+fn diff_text_of(v: i32) -> String {
+    let mut lines: Vec<String> = (0..60)
+        .map(|i| format!("Line {i}: the plan of the item, with some words to read.\n"))
+        .collect();
+    for u in 2..=v {
+        let at = ((u * 7) % 60) as usize;
+        lines[at] = format!("Line {at}: version {u} changed this line.\n");
+        lines.push(format!("Step {u}: one more line for the record.\n"));
+    }
+    format!("# Plan\n\n{}", lines.concat())
+}
+
+/// KAIROS-T-0651: retention after the change to diff rows. One item has 25
+/// versions: full rows v1, v11, v21, and diff rows between them. v1..v12
+/// are in January 2025, v13..v25 in February 2025. The planner keeps the
+/// first and the last of each month (v1, v12, v13, v25) and the latest 5
+/// (v21..v25). v12 and v13 are diffs from v11, so v11 stays too. Each kept
+/// version gives its text back, and each archived line has the full text.
+#[test]
+fn the_sweep_keeps_the_base_of_each_kept_diff_row() {
+    static DIFF_DB: scratch::ScratchName = scratch::ScratchName::new("kairos_retention_diff_test");
+    let admin_url = admin_database_url();
+    let mut admin_conn = PgConnection::establish(&admin_url).unwrap_or_else(|e| {
+        panic!("cannot connect to compose postgres at {admin_url}: {e} (`angreal services up`)")
+    });
+    sql_query(format!("DROP DATABASE IF EXISTS {DIFF_DB} WITH (FORCE)"))
+        .execute(&mut admin_conn)
+        .expect("dropping scratch database");
+    sql_query(format!("CREATE DATABASE {DIFF_DB}"))
+        .execute(&mut admin_conn)
+        .expect("creating scratch database");
+    let _scratch_guard = scratch::ScratchGuard::new(&DIFF_DB);
+    let url = with_database(&admin_url, &DIFF_DB);
+    let mut conn = PgConnection::establish(&url).expect("connecting to scratch database");
+    run_public_migrations(&mut conn).expect("running public migrations");
+    provision_tenant(&mut conn, "acme", "Acme Inc").expect("provisioning acme");
+    pin(&mut conn, "org_acme");
+    let robin = insert_user(&mut conn, "dex|robin", "robin@acme.test", "Robin");
+    let board = board_id_by_slug(&mut conn, "strategy");
+
+    let item = items::create_strategy(
+        &mut conn,
+        CreateStrategy {
+            board_id: board,
+            column_id: None,
+            title: "Plan",
+            content: &diff_text_of(1),
+            hypothesis: None,
+        },
+        robin,
+    )
+    .expect("creating the strategy")
+    .id;
+    for v in 2..=25 {
+        items::update_item_content(
+            &mut conn,
+            ItemType::Strategy,
+            item,
+            ContentUpdate {
+                new_title: None,
+                new_content: &diff_text_of(v),
+                expected_version: v - 1,
+            },
+            robin,
+        )
+        .unwrap_or_else(|e| panic!("editing to v{v}: {e}"));
+    }
+    for v in 1..=25_i32 {
+        let ts = if v <= 12 {
+            at(2025, 1, v as u32, 8, 0, 0)
+        } else {
+            at(2025, 2, (v - 12) as u32, 8, 0, 0)
+        };
+        backdate_history(&mut conn, item, v, ts);
+    }
+    let full: Vec<i32> = schema::item_history::table
+        .filter(schema::item_history::item_id.eq(item))
+        .filter(schema::item_history::base_version.is_null())
+        .order(schema::item_history::version.asc())
+        .select(schema::item_history::version)
+        .load(&mut conn)
+        .expect("loading the full rows");
+    assert_eq!(full, vec![1, 11, 21], "the fixture has diff rows");
+
+    let archive_base = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("kairos_retention_diff");
+    if archive_base.exists() {
+        std::fs::remove_dir_all(&archive_base).expect("cleaning archive dir");
+    }
+    let config = RetentionConfig {
+        archive_target: Some(ArchiveTarget::Filesystem(archive_base.clone())),
+        ..RetentionConfig::default()
+    };
+    let now = at(2026, 7, 15, 12, 0, 0);
+    let report = sweep_tenant(&mut conn, "acme", &config, now).expect("sweeping");
+    let pruned: Vec<i32> = (2..=10).chain(14..=20).collect();
+    assert_eq!(
+        report.item_history,
+        counts(pruned.len() as u64, pruned.len() as u64, 0)
+    );
+
+    pin(&mut conn, "org_acme");
+    let kept = history_versions(&mut conn, item);
+    assert_eq!(kept, vec![1, 11, 12, 13, 21, 22, 23, 24, 25]);
+    for v in kept {
+        let row = kairos_db::history::version_row(&mut conn, item, v)
+            .unwrap_or_else(|e| panic!("reading kept v{v}: {e}"))
+            .unwrap_or_else(|| panic!("v{v} is kept"));
+        assert_eq!(row.content, diff_text_of(v), "the text of kept v{v}");
+    }
+
+    let history_file = report
+        .archive_files
+        .iter()
+        .find(|p| p.to_string_lossy().contains("item_history"))
+        .expect("item_history archive");
+    let archived: Vec<i32> = read_ndjson(history_file)
+        .iter()
+        .map(|line| {
+            let version = line["version"].as_i64().unwrap() as i32;
+            assert_eq!(
+                line["content"].as_str().unwrap(),
+                diff_text_of(version),
+                "the archive line of v{version} has the full text"
+            );
+            let base = line["base_version"].as_i64().map(|b| b as i32);
+            assert_eq!(
+                base,
+                (version != 1 && version != 11 && version != 21)
+                    .then_some((version - 1) / 10 * 10 + 1),
+                "the archive line of v{version} names its base as stored"
+            );
+            assert_eq!(line["content_diff"].is_string(), base.is_some());
+            version
+        })
+        .collect();
+    assert_eq!(archived, pruned);
+
+    drop(conn);
+    std::fs::remove_dir_all(&archive_base).expect("removing archive dir");
 }
