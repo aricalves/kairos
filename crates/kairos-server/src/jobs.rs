@@ -923,6 +923,9 @@ impl Worker {
                             ..
                         }) => match db::release(conn, id, instance, &reason, retry_after)? {
                             Some(row) if row.state == "queued" => Ended::Requeued,
+                            // A waiting job of its key does the work
+                            // (KAIROS-T-0637).
+                            Some(row) if row.state == "done" => Ended::Done,
                             Some(_) => Ended::Failed,
                             None => Ended::Lost,
                         },
