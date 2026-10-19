@@ -228,9 +228,17 @@ pub fn impacts(
     Ok(map)
 }
 
-/// The live team pages of a team, flat, by position then title.
+/// The live team pages of a team, flat, by position then title, with
+/// their content: the site renders the page bodies. The list of the REST
+/// route has no content (KAIROS-T-0629).
 pub fn team_pages(conn: &mut PgConnection, team_id: Uuid) -> Result<Vec<TeamPage>, DieselError> {
-    crate::team_pages::list_pages(conn, team_id)
+    use crate::schema::team_pages::dsl;
+    dsl::team_pages
+        .filter(dsl::team_id.eq(team_id))
+        .filter(dsl::deleted_at.is_null())
+        .order((dsl::position.asc(), dsl::title.asc()))
+        .select(TeamPage::as_select())
+        .load(conn)
 }
 
 /// A document or an ADR with its page, by its current code, and where its

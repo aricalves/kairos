@@ -233,7 +233,11 @@ async fn load_team_view(
     let delivery_board = delivery_board?;
     let streams = streams?;
     let items = items?;
-    let pages = pages?;
+    let mut pages = pages?;
+    // KAIROS-T-0629: the list has no content; read the charter.
+    if let Some(charter) = pages.iter_mut().find(|p| p.is_charter()) {
+        charter.content = api::team_page(auth, team_id, &charter.id).await?.content;
+    }
     let announcements = announcements?;
     let links = links?;
     let repositories = repositories.unwrap_or_default();
