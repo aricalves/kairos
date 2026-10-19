@@ -830,14 +830,20 @@ pub(crate) async fn update_document(
     let updated = state
         .blocking
         .run(&tenant.slug, move |conn| {
-            let document = load(conn, &short_code, Liveness::LiveOnly)?;
-            require_item_edit(conn, role, user, document.id, ItemType::Document)?;
+            // KAIROS-T-0635: the rights need no content.
+            let (document_id, _) = crate::api::meta::resolve_family_item(
+                conn,
+                "documents",
+                &short_code,
+                Liveness::LiveOnly,
+            )?;
+            require_item_edit(conn, role, user, document_id, ItemType::Document)?;
             let update = items::ContentUpdate {
                 new_title: body.title.as_deref(),
                 new_content: &body.content,
                 expected_version: body.version,
             };
-            match items::update_item_content(conn, ItemType::Document, document.id, update, user) {
+            match items::update_item_content(conn, ItemType::Document, document_id, update, user) {
                 Ok(_) => {
                     let updated = load(conn, &short_code, Liveness::LiveOnly)?;
                     render(conn, updated)

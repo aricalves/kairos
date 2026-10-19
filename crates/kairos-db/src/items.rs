@@ -610,14 +610,14 @@ macro_rules! content_table_ops {
         /// Atomic KAIROS-A-0004 write: `UPDATE … SET version = version + 1
         /// … WHERE id = ? AND version = expected AND deleted_at IS NULL`.
         /// `Ok(None)` = no row matched (stale version, missing, or
-        /// soft-deleted); `Ok(Some((new_version, title, content)))` on
-        /// success.
+        /// soft-deleted); `Ok(Some((new_version, title)))` on success. The
+        /// content is not given back: the caller has it (KAIROS-T-0635).
         fn $apply_fn(
             conn: &mut PgConnection,
             item_id: Uuid,
             update: &ContentUpdate<'_>,
             actor: Uuid,
-        ) -> Result<Option<(i32, String, String)>, DieselError> {
+        ) -> Result<Option<(i32, String)>, DieselError> {
             use crate::schema::$table::dsl;
             let target = dsl::$table
                 .filter(dsl::id.eq(item_id))
@@ -632,7 +632,7 @@ macro_rules! content_table_ops {
                         dsl::updated_by.eq(actor),
                         dsl::updated_at.eq(diesel::dsl::now),
                     ))
-                    .returning((dsl::version, dsl::title, dsl::content))
+                    .returning((dsl::version, dsl::title))
                     .get_result(conn)
                     .optional()?,
                 None => diesel::update(target)
@@ -642,7 +642,7 @@ macro_rules! content_table_ops {
                         dsl::updated_by.eq(actor),
                         dsl::updated_at.eq(diesel::dsl::now),
                     ))
-                    .returning((dsl::version, dsl::title, dsl::content))
+                    .returning((dsl::version, dsl::title))
                     .get_result(conn)
                     .optional()?,
             };
@@ -759,7 +759,7 @@ fn apply_content_update(
     item_id: Uuid,
     update: &ContentUpdate<'_>,
     actor: Uuid,
-) -> Result<Option<(i32, String, String)>, DieselError> {
+) -> Result<Option<(i32, String)>, DieselError> {
     match item_type {
         ItemType::Strategy => apply_content_strategy(conn, item_id, update, actor),
         ItemType::Initiative => apply_content_initiative(conn, item_id, update, actor),
@@ -1480,6 +1480,12 @@ pub fn create_adr(
 /// A stale `expected_version` returns the typed
 /// [`ItemError::VersionConflict`] carrying the item's current version,
 /// title, and content — conflict resolution is client-side (A-0004 step 4).
+///
+/// KAIROS-T-0635: the UPDATE does not give the content back, and the
+/// history row and the mention scan use `update.new_content`. When the new
+/// text has a mention, one read under the lock of the row
+/// (`FOR UPDATE`) gives the content before and, for a stale version, the
+/// conflict answer. With no mention there is no read.
 pub fn update_item_content(
     conn: &mut PgConnection,
     item_type: ItemType,
@@ -1488,61 +1494,149 @@ pub fn update_item_content(
     actor: Uuid,
 ) -> Result<i32, ItemError> {
     conn.transaction::<_, ItemError, _>(|conn| {
-        // KAIROS-T-0381: the content before the update, to find the new
-        // mentions. Read only when the new content has a mention.
-        let before = if kairos_core::notifications::mentions(update.new_content).is_empty() {
-            None
-        } else {
-            load_live_content(conn, item_type, item_id)?.map(|(_, _, content, _)| content)
-        };
-        match apply_content_update(conn, item_type, item_id, &update, actor)? {
-            Some((new_version, title, content)) => {
-                insert_history(conn, item_id, new_version, &title, &content, actor)?;
-                // KAIROS-T-0636: the title of a parent is in the text of
-                // each child. The event below marks the item itself.
-                if update.new_title.is_some() {
-                    crate::embeddings::mark_children_dirty(conn, item_id)?;
-                }
-                if let Some(before) = before {
-                    let names = kairos_core::notifications::new_mentions(&before, &content);
-                    crate::notifications::on_mentions(conn, item_id, &names, actor)?;
-                }
-                // KAIROS-T-0022: thin event, delivered on commit.
-                events::emit_item_event_by_id(
-                    conn,
-                    EventKind::ItemUpdated,
-                    item_type.entity_type(),
+        write_content(conn, item_type, item_id, &update, Before::Read, actor)
+    })
+}
+
+/// [`update_item_content`] for a caller that read the content at
+/// `update.expected_version`, as `edit_item` does (KAIROS-T-0635): `before`
+/// is that content. The write reads no content. A content does not change
+/// without a new version, so when the UPDATE matches, `before` is the
+/// content that it replaces. A stale version is the same
+/// [`ItemError::VersionConflict`].
+pub fn edit_item_content(
+    conn: &mut PgConnection,
+    item_type: ItemType,
+    item_id: Uuid,
+    update: ContentUpdate<'_>,
+    before: &str,
+    actor: Uuid,
+) -> Result<i32, ItemError> {
+    conn.transaction::<_, ItemError, _>(|conn| {
+        write_content(
+            conn,
+            item_type,
+            item_id,
+            &update,
+            Before::Known(before),
+            actor,
+        )
+    })
+}
+
+/// The content before a write, for the new mentions (KAIROS-T-0381).
+enum Before<'a> {
+    /// Read it when the new text has a mention.
+    Read,
+    /// The caller has it: the content at `expected_version`.
+    Known(&'a str),
+}
+
+/// `(version, title, content)` of the live row, locked until the end of
+/// the transaction (`FOR UPDATE`).
+#[derive(QueryableByName)]
+struct LockedContent {
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    version: i32,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    title: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    content: String,
+}
+
+/// The body of [`update_item_content`], [`edit_item_content`] and
+/// [`rollback_item`], in the transaction of the caller: no savepoint.
+fn write_content(
+    conn: &mut PgConnection,
+    item_type: ItemType,
+    item_id: Uuid,
+    update: &ContentUpdate<'_>,
+    before: Before<'_>,
+    actor: Uuid,
+) -> Result<i32, ItemError> {
+    // KAIROS-T-0381: the content before the update, to find the new
+    // mentions. Needed only when the new content has a mention.
+    let has_mention = !kairos_core::notifications::mentions(update.new_content).is_empty();
+    let before: Option<std::borrow::Cow<'_, str>> = match before {
+        _ if !has_mention => None,
+        Before::Known(text) => Some(std::borrow::Cow::Borrowed(text)),
+        Before::Read => {
+            let locked: LockedContent = sql_query(format!(
+                "SELECT version, title, content FROM {} \
+                 WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+                table_of(item_type)
+            ))
+            .bind::<diesel::sql_types::Uuid, _>(item_id)
+            .get_result(conn)
+            .optional()?
+            .ok_or(ItemError::ItemNotFound {
+                entity_type: item_type.entity_type(),
+                id: item_id,
+            })?;
+            if locked.version != update.expected_version {
+                return Err(ItemError::VersionConflict {
                     item_id,
-                    actor,
-                )?;
-                Ok(new_version)
+                    expected_version: update.expected_version,
+                    current_version: locked.version,
+                    current_title: locked.title,
+                    current_content: locked.content,
+                });
             }
-            None => {
-                let (current_version, current_title, current_content, _) = load_live_content(
-                    conn, item_type, item_id,
-                )?
-                .ok_or(ItemError::ItemNotFound {
+            Some(std::borrow::Cow::Owned(locked.content))
+        }
+    };
+    match apply_content_update(conn, item_type, item_id, update, actor)? {
+        Some((new_version, title)) => {
+            insert_history(
+                conn,
+                item_id,
+                new_version,
+                &title,
+                update.new_content,
+                actor,
+            )?;
+            // KAIROS-T-0636: the title of a parent is in the text of each
+            // child. The event below marks the item itself.
+            if update.new_title.is_some() {
+                crate::embeddings::mark_children_dirty(conn, item_id)?;
+            }
+            if let Some(before) = before {
+                let names = kairos_core::notifications::new_mentions(&before, update.new_content);
+                crate::notifications::on_mentions(conn, item_id, &names, actor)?;
+            }
+            // KAIROS-T-0022: thin event, delivered on commit.
+            events::emit_item_event_by_id(
+                conn,
+                EventKind::ItemUpdated,
+                item_type.entity_type(),
+                item_id,
+                actor,
+            )?;
+            Ok(new_version)
+        }
+        None => {
+            let (current_version, current_title, current_content, _) =
+                load_live_content(conn, item_type, item_id)?.ok_or(ItemError::ItemNotFound {
                     entity_type: item_type.entity_type(),
                     id: item_id,
                 })?;
-                // The row exists but the atomic UPDATE matched nothing: its
-                // version moved past `expected_version`. The pure mirror of
-                // this decision lives in kairos-core (one contract, two
-                // layers).
-                debug_assert!(matches!(
-                    rules::check_version(current_version, update.expected_version),
-                    rules::VersionCheck::Conflict { .. }
-                ));
-                Err(ItemError::VersionConflict {
-                    item_id,
-                    expected_version: update.expected_version,
-                    current_version,
-                    current_title,
-                    current_content,
-                })
-            }
+            // The row exists but the atomic UPDATE matched nothing: its
+            // version moved past `expected_version`. The pure mirror of
+            // this decision lives in kairos-core (one contract, two
+            // layers).
+            debug_assert!(matches!(
+                rules::check_version(current_version, update.expected_version),
+                rules::VersionCheck::Conflict { .. }
+            ));
+            Err(ItemError::VersionConflict {
+                item_id,
+                expected_version: update.expected_version,
+                current_version,
+                current_title,
+                current_content,
+            })
         }
-    })
+    }
 }
 
 /// Roll an item back to a historical snapshot (KAIROS-A-0004 "rollback by
@@ -1573,21 +1667,24 @@ pub fn rollback_item(
             version: to_version,
         })?;
 
-        let (current_version, ..) =
-            load_live_content(conn, item_type, item_id)?.ok_or(ItemError::ItemNotFound {
+        let (current_version, _, current_content, _) = load_live_content(conn, item_type, item_id)?
+            .ok_or(ItemError::ItemNotFound {
                 entity_type: item_type.entity_type(),
                 id: item_id,
             })?;
 
-        update_item_content(
+        // KAIROS-T-0635: in this transaction (no savepoint), with the
+        // content before in hand.
+        write_content(
             conn,
             item_type,
             item_id,
-            ContentUpdate {
+            &ContentUpdate {
                 new_title: Some(&title),
                 new_content: &content,
                 expected_version: current_version,
             },
+            Before::Known(&current_content),
             actor,
         )
     })

@@ -334,6 +334,12 @@ pub struct BoardItemsQuery {
     /// board reads one card with it after an event of that item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
+    /// Only the last N cards of each done column, by the time that each
+    /// card entered the column (KAIROS-T-0649). The other columns keep
+    /// each card. `item_count` stays the count of the full column. At
+    /// least 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_limit: Option<i64>,
 }
 
 /// One team of an initiative or a strategy (KAIROS-T-0321). The item gets

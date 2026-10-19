@@ -189,6 +189,8 @@ impl IntoCard<cards::StrategyCard> for Strategy {
             updated_at: timestamp(self.updated_at),
             archived_at: self.deleted_at.map(timestamp),
             owner: None,
+            entered_column_at: None,
+            notes_count: None,
             snippet: None,
         }
     }
@@ -211,6 +213,8 @@ impl IntoCard<cards::StrategyCard> for StrategyCardRow {
             updated_at: timestamp(self.updated_at),
             archived_at: self.deleted_at.map(timestamp),
             owner: None,
+            entered_column_at: None,
+            notes_count: None,
             snippet: None,
         }
     }
@@ -235,6 +239,8 @@ impl IntoCard<cards::InitiativeCard> for Initiative {
             updated_at: timestamp(self.updated_at),
             archived_at: self.deleted_at.map(timestamp),
             owner: None,
+            entered_column_at: None,
+            notes_count: None,
             snippet: None,
         }
     }
@@ -259,6 +265,8 @@ impl IntoCard<cards::InitiativeCard> for InitiativeCardRow {
             updated_at: timestamp(self.updated_at),
             archived_at: self.deleted_at.map(timestamp),
             owner: None,
+            entered_column_at: None,
+            notes_count: None,
             snippet: None,
         }
     }
@@ -287,6 +295,8 @@ impl IntoCard<cards::TaskCard> for Task {
             claim: None,
             cancellation: None,
             state: None,
+            entered_column_at: None,
+            notes_count: None,
             snippet: None,
         }
     }
@@ -315,6 +325,8 @@ impl IntoCard<cards::TaskCard> for TaskCardRow {
             claim: None,
             cancellation: None,
             state: None,
+            entered_column_at: None,
+            notes_count: None,
             snippet: None,
         }
     }
@@ -338,6 +350,8 @@ impl IntoCard<cards::AdrCard> for Adr {
             created_at: timestamp(self.created_at),
             updated_at: timestamp(self.updated_at),
             archived_at: self.deleted_at.map(timestamp),
+            entered_column_at: None,
+            notes_count: None,
             snippet: None,
         }
     }
@@ -361,6 +375,8 @@ impl IntoCard<cards::AdrCard> for AdrCardRow {
             created_at: timestamp(self.created_at),
             updated_at: timestamp(self.updated_at),
             archived_at: self.deleted_at.map(timestamp),
+            entered_column_at: None,
+            notes_count: None,
             snippet: None,
         }
     }

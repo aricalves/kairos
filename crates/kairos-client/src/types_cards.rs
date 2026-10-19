@@ -69,6 +69,15 @@ pub struct StrategyCard {
     /// owner. Present on the board route; absent on a search hit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<ItemOwner>,
+    /// When the card entered its column, RFC 3339: its last move, or its
+    /// creation (KAIROS-T-0649). Present on the board route; absent on a
+    /// search hit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entered_column_at: Option<String>,
+    /// The number of the notes of the item (KAIROS-T-0649). Present on
+    /// the board route; absent on a search hit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes_count: Option<i64>,
     /// About 200 characters of the content, near the first match of `q`.
     /// Only on a search hit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -118,6 +127,15 @@ pub struct InitiativeCard {
     /// owner. Present on the board route; absent on a search hit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<ItemOwner>,
+    /// When the card entered its column, RFC 3339: its last move, or its
+    /// creation (KAIROS-T-0649). Present on the board route; absent on a
+    /// search hit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entered_column_at: Option<String>,
+    /// The number of the notes of the item (KAIROS-T-0649). Present on
+    /// the board route; absent on a search hit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes_count: Option<i64>,
     /// About 200 characters of the content, near the first match of `q`.
     /// Only on a search hit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -182,6 +200,15 @@ pub struct TaskCard {
     /// has no state. Present on the board route; absent on a search hit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<TaskState>,
+    /// When the card entered its column, RFC 3339: its last move, or its
+    /// creation (KAIROS-T-0649). Present on the board route; absent on a
+    /// search hit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entered_column_at: Option<String>,
+    /// The number of the notes of the item (KAIROS-T-0649). Present on
+    /// the board route; absent on a search hit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes_count: Option<i64>,
     /// About 200 characters of the content, near the first match of `q`.
     /// Only on a search hit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -260,6 +287,15 @@ pub struct AdrCard {
     /// (KAIROS-A-0020).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<String>,
+    /// When the card entered its column, RFC 3339: its last move, or its
+    /// creation (KAIROS-T-0649). Present on the board route; absent on a
+    /// search hit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entered_column_at: Option<String>,
+    /// The number of the notes of the item (KAIROS-T-0649). Present on
+    /// the board route; absent on a search hit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes_count: Option<i64>,
     /// About 200 characters of the content, near the first match of `q`.
     /// Only on a search hit.
     #[serde(default, skip_serializing_if = "Option::is_none")]

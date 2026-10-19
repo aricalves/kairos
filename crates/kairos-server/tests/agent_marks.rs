@@ -397,8 +397,11 @@ async fn history_and_activity_mark_a_change_made_by_an_agent() {
     let text = mcp
         .call_ok("get_history", json!({"short_code": task.short_code}))
         .await;
+    // The versions only: the activity section (KAIROS-T-0557) marks the
+    // moves of the agent too.
     let marked: Vec<&str> = text
         .lines()
+        .take_while(|line| *line != "## Activity")
         .filter(|line| line.contains("(agent)"))
         .collect();
     assert_eq!(marked.len(), 2, "{text}");
