@@ -133,7 +133,9 @@ test('a hand-off to alice shows in her bell, and Mark read clears it', async ({ 
       .locator('.cl-panel', { hasText: 'Your notifications' })
       .getByRole('button', { name: 'Mark all read', exact: true })
       .click();
-    await expect(page.getByText('Kairos marked each notification read.')).toBeVisible();
+    await expect(
+      page.getByText('Kairos marked each notification of the list read.'),
+    ).toBeVisible();
     await expect(count).toHaveCount(0);
     expect((await notifications(alice)).unread).toBe(0);
   });

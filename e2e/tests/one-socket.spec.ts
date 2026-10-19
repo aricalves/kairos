@@ -50,8 +50,14 @@ function watchSockets(page: Page) {
 }
 
 test('one socket for each tab, with one filter', async ({ page }) => {
-  await login(page);
   const sockets = watchSockets(page);
+  await login(page);
+  // The landing page is For me (KAIROS-T-0490), and it opens its socket
+  // after the login. The count of the board page starts after that.
+  await expect(page.locator('[data-testid="notification-bell"]')).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect.poll(() => sockets.open()).toBe(1);
 
   await test.step('the board page: one socket, the filter of the board', async () => {
     sockets.start();

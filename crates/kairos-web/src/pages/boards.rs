@@ -1395,17 +1395,22 @@ impl LiveReads {
             }
             data::Batch::Cards(codes) => {
                 let end = BatchEnd(self);
-                let Some(board) = self
-                    .model
-                    .with_untracked(|m| m.as_ref().map(|view| view.items.board.id.clone()))
-                else {
+                // KAIROS-T-0662: the path names the board by its slug; the
+                // id tells whether the page still shows this board.
+                let Some((board, paths)) = self.model.with_untracked(|m| {
+                    m.as_ref().map(|view| {
+                        let paths: Vec<String> =
+                            codes.iter().map(|code| view.items.card_path(code)).collect();
+                        (view.items.board.id.clone(), paths)
+                    })
+                }) else {
                     return;
                 };
                 let auth = self.auth;
                 leptos::task::spawn_local(async move {
-                    let reads = codes
+                    let reads = paths
                         .iter()
-                        .map(|code| data::load_board_card(auth, &board, code));
+                        .map(|path| data::load_board_card(auth, path));
                     let pages = futures_util::future::join_all(reads).await;
                     // KAIROS-T-0619: the read of a card with a drop that
                     // runs waits for the end of the drop.
