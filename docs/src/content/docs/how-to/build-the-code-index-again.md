@@ -48,8 +48,8 @@ warning: no SCIP index for go: go mod download failed (exit status: 1): …. Its
 The panel "Show code index" shows the same line under the run.
 
 The warnings of the newest run that ended `ok` are also on the repository.
-`kairos repos show <slug>` has a line `index edges` for each language, the
-MCP tool `get_repository` has a line `code index edges`, and
+`kairos repos show <slug>` has a line `index edges` for each language.
+The MCP tool `get_repository` has a line `code index edges`.
 `GET /api/repositories/{slug}` has the field `code_index_scip_warnings`.
 
 These are the usual reasons:
