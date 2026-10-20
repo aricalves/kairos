@@ -1806,6 +1806,10 @@ impl KairosMcp {
                 // KAIROS-T-0479: what the forge webhook picks up.
                 rendered.forge_filters.summary(),
             );
+            // KAIROS-T-0668: a language whose edges are by name, and why.
+            for warning in &rendered.code_index_scip_warnings {
+                out.push_str(&format!("- code index edges: {}\n", warning.note()));
+            }
             // No line about "stale" tasks (COLLIERY-T-0219). It counted the
             // linked tasks on a board of a team that does not own the
             // repository, and told the reader to rebind or move them.

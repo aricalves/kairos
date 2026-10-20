@@ -177,6 +177,32 @@ pub fn set_scip_warnings(
         .map(|_| ())
 }
 
+/// The SCIP warnings of the newest run that ended `ok` for each of
+/// `repositories` (KAIROS-T-0668): the JSON array that the run recorded. A
+/// repository with no such run, or whose run had no warning, has no entry.
+pub fn newest_scip_warnings(
+    conn: &mut PgConnection,
+    repositories: &[Uuid],
+) -> QueryResult<std::collections::HashMap<Uuid, String>> {
+    let rows: Vec<(Uuid, Option<String>)> = code_index_builds::table
+        .filter(code_index_builds::repository_id.eq_any(repositories))
+        .filter(code_index_builds::outcome.eq("ok"))
+        .distinct_on(code_index_builds::repository_id)
+        .order((
+            code_index_builds::repository_id,
+            code_index_builds::started_at.desc(),
+        ))
+        .select((
+            code_index_builds::repository_id,
+            code_index_builds::scip_warnings,
+        ))
+        .load(conn)?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(id, warnings)| Some((id, warnings?)))
+        .collect())
+}
+
 /// End a run as `failed`, with the text of the failure.
 pub fn end_failed(conn: &mut PgConnection, id: Uuid, error: &str) -> QueryResult<Build> {
     diesel::update(code_index_builds::table.find(id))
