@@ -669,6 +669,10 @@ pub(crate) fn render(
             .into_iter()
             .map(|b| (b.repository_id, b))
             .collect();
+    // KAIROS-T-0668: the languages that the newest ok build indexed by name.
+    let scip_warnings: HashMap<Uuid, String> =
+        kairos_db::code_index_builds::newest_scip_warnings(conn, &ids)
+            .map_err(ApiError::internal)?;
     // KAIROS-T-0406: the live publish of each site, and the tenant of the
     // base path.
     let live_sites = kairos_db::sites::live(conn, &ids).map_err(ApiError::internal)?;
@@ -734,6 +738,11 @@ pub(crate) fn render(
                     },
                     None => dto::CodeIndexBreaker::default(),
                 },
+                // A row that is not a valid list gives no warning.
+                code_index_scip_warnings: scip_warnings
+                    .get(&repo.id)
+                    .and_then(|text| serde_json::from_str(text).ok())
+                    .unwrap_or_default(),
                 site,
                 forge_filters: filters_dto(filters.get(&repo.id).map(Vec::as_slice).unwrap_or(&[])),
                 created_at: repo.created_at.to_rfc3339(),

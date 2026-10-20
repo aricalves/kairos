@@ -232,6 +232,9 @@ pub struct DependencySettings {
     /// `KAIROS_CODE_INDEX_DEPS_ENV`: more variables of the environment that
     /// a dependency step gets.
     pub pass_variables: Vec<String>,
+    /// `KAIROS_CODE_INDEX_TOOL_DOWNLOADS`: uv may fetch the CPython that a
+    /// project asks for (KAIROS-T-0668).
+    pub tool_downloads: bool,
 }
 
 impl Default for DependencySettings {
@@ -240,6 +243,7 @@ impl Default for DependencySettings {
             cap_bytes: 10 * 1024 * 1024 * 1024,
             min_free_bytes: 5 * 1024 * 1024 * 1024,
             pass_variables: Vec::new(),
+            tool_downloads: false,
         }
     }
 }
@@ -494,6 +498,7 @@ impl CodeIndexService {
                     min_free_bytes: self.deps.min_free_bytes,
                 }),
                 pass_variables: self.deps.pass_variables.clone(),
+                tool_downloads: self.deps.tool_downloads,
                 ..Default::default()
             };
         }
@@ -1450,10 +1455,12 @@ impl CodeIndexService {
 /// The SCIP warnings of a run as the run row keeps them (KAIROS-T-0478): a
 /// JSON array of `{"language", "reason"}`, or `None` with no warning. Each
 /// warning is in the log too.
-fn warnings_of(report: &UpdateReport) -> Option<String> {
+fn warnings_of(tenant: &str, slug: &str, report: &UpdateReport) -> Option<String> {
     let warnings = &report.build.scip_warnings;
     for w in warnings {
         tracing::warn!(
+            tenant,
+            repository = slug,
             language = %w.language,
             reason = %w.reason,
             "code index build: no SCIP index for the language, its edges are by name"
@@ -1992,7 +1999,11 @@ pub(crate) async fn build_repository(
         blocking,
         tenant,
         run,
-        Ok((counts_of(&report), model_name, warnings_of(&report))),
+        Ok((
+            counts_of(&report),
+            model_name,
+            warnings_of(tenant, &repo.slug, &report),
+        )),
     )
     .await;
     remove_database(&db);
@@ -2275,7 +2286,11 @@ pub(crate) async fn full_build_repository(
         blocking,
         tenant,
         run,
-        Ok((counts_of(&report), model_name, warnings_of(&report))),
+        Ok((
+            counts_of(&report),
+            model_name,
+            warnings_of(tenant, &repo.slug, &report),
+        )),
     )
     .await;
     remove_database(&db);
