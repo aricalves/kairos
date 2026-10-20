@@ -202,6 +202,12 @@ pub struct Repository {
     /// requested build resets it.
     #[serde(default)]
     pub code_index_breaker: CodeIndexBreaker,
+    /// Each language with no SCIP index in the newest build of the code
+    /// index that ended `ok` (KAIROS-T-0668): its edges are by name, and the
+    /// reason says why. Empty when each SCIP indexer gave its index, and for
+    /// a repository with no build.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub code_index_scip_warnings: Vec<crate::types_code_index::CodeIndexScipWarning>,
     /// The published site of the repository (KAIROS-T-0406).
     #[serde(default)]
     pub site: crate::types_sites::RepositorySite,
