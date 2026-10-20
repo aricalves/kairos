@@ -16,6 +16,7 @@
 pub mod agent_triage;
 pub mod api;
 pub mod app;
+pub mod archive_store;
 pub mod auth_cache;
 pub mod blocking;
 pub mod body;

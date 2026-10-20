@@ -44,6 +44,7 @@
 mod scratch;
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use diesel::pg::PgConnection;
@@ -52,7 +53,8 @@ use diesel::sql_query;
 use uuid::Uuid;
 
 use kairos_core::retention::{
-    ArchiveTarget, HistoryRowMeta, RetentionConfig, RetentionMode, plan_history_compaction,
+    ArchiveStore, ArchiveStoreHandle, ArchiveTarget, HistoryRowMeta, RetentionConfig,
+    RetentionMode, plan_history_compaction,
 };
 use kairos_core::short_code::ItemType;
 use kairos_db::items::{self, ContentUpdate, CreateStrategy};
@@ -1039,6 +1041,134 @@ fn count_where(conn: &mut PgConnection, sql: &str) -> i64 {
         .get_result::<CountRow>(conn)
         .unwrap_or_else(|e| panic!("{sql}: {e}"))
         .n
+}
+
+/// A store that keeps what it is given in memory, or refuses it
+/// (KAIROS-T-0671).
+struct RecordingStore {
+    objects: Mutex<Vec<(String, String)>>,
+    refuse: bool,
+}
+
+impl ArchiveStore for RecordingStore {
+    fn put_file(&self, key: &str, file: &std::path::Path) -> Result<(), String> {
+        if self.refuse {
+            return Err("the bucket refused the object".to_string());
+        }
+        let text = std::fs::read_to_string(file).map_err(|e| e.to_string())?;
+        self.objects.lock().unwrap().push((key.to_string(), text));
+        Ok(())
+    }
+}
+
+/// KAIROS-T-0671: an `s3://` target. The sweep writes the archive file, the
+/// store gets it under `{prefix}/{tenant}/{table}/{timestamp}.ndjson`, and
+/// the rows go after that. A store that refuses the object leaves every row
+/// and writes no audit row.
+#[test]
+fn an_s3_target_gets_the_archive_before_the_rows_go() {
+    static S3_DB: scratch::ScratchName = scratch::ScratchName::new("kairos_retention_s3_test");
+    let (_admin, mut conn) = fresh_acme(&S3_DB);
+    let _guard = scratch::ScratchGuard::new(&S3_DB);
+    let robin = insert_user(&mut conn, "dex|robin", "robin@acme.test", "Robin");
+    let now = at(2026, 7, 15, 12, 0, 0);
+    let item = Uuid::new_v4();
+    for v in 1..=12_i32 {
+        diesel::insert_into(schema::item_history::table)
+            .values((
+                schema::item_history::item_id.eq(item),
+                schema::item_history::version.eq(v),
+                schema::item_history::title.eq("Item"),
+                schema::item_history::content.eq(format!("content v{v}")),
+                schema::item_history::edited_by.eq(robin),
+                schema::item_history::edited_at
+                    .eq(at(2025, 11, 1, 0, 0, 0) + Duration::hours(12 * i64::from(v))),
+            ))
+            .execute(&mut conn)
+            .expect("seeding history");
+    }
+    for i in 0..3_u32 {
+        diesel::insert_into(schema::activity_log::table)
+            .values((
+                schema::activity_log::actor_id.eq(robin),
+                schema::activity_log::action.eq("update"),
+                schema::activity_log::details.eq(format!("old-{i}")),
+                schema::activity_log::occurred_at.eq(at(2025, 1, 1, 0, 0, i)),
+            ))
+            .execute(&mut conn)
+            .expect("seeding activity");
+    }
+    let history_before = total_history_rows(&mut conn);
+    let config = |store: &Arc<RecordingStore>| RetentionConfig {
+        mode: RetentionMode::Archive,
+        archive_target: ArchiveTarget::parse("s3://kairos-archive/pre/fix/"),
+        archive_store: ArchiveStoreHandle::new(store.clone()),
+        ..RetentionConfig::default()
+    };
+
+    // A store that refuses: nothing is deleted, and there is no audit row.
+    let refusing = Arc::new(RecordingStore {
+        objects: Mutex::new(Vec::new()),
+        refuse: true,
+    });
+    let err = sweep_tenant(&mut conn, "acme", &config(&refusing), now)
+        .expect_err("the store refuses the object");
+    assert!(
+        matches!(&err, RetentionError::ArchiveUpload { url, message }
+            if url.starts_with("s3://kairos-archive/pre/fix/acme/item_history/")
+                && message.contains("refused")),
+        "{err}"
+    );
+    pin(&mut conn, "org_acme");
+    assert_eq!(total_history_rows(&mut conn), history_before);
+    assert_eq!(old_activity_count(&mut conn, now - Duration::days(365)), 3);
+    assert!(sweep_details(&mut conn).is_empty(), "no audit row on error");
+
+    // A store that takes the objects: the rows go, and the objects hold them.
+    let store = Arc::new(RecordingStore {
+        objects: Mutex::new(Vec::new()),
+        refuse: false,
+    });
+    let report = sweep_tenant(&mut conn, "acme", &config(&store), now).expect("sweep to s3");
+    pin(&mut conn, "org_acme");
+    assert!(report.item_history.rows_pruned > 0, "{report:?}");
+    assert_eq!(
+        report.item_history.rows_archived,
+        report.item_history.rows_pruned
+    );
+    assert_eq!(report.activity_log, counts(3, 3, 0));
+    assert_eq!(
+        total_history_rows(&mut conn),
+        history_before - report.item_history.rows_pruned as i64
+    );
+    let objects = store.objects.lock().unwrap();
+    assert_eq!(objects.len(), 2, "one object per table with rows");
+    let (history_key, history_text) = &objects[0];
+    assert!(
+        history_key.starts_with("pre/fix/acme/item_history/") && history_key.ends_with(".ndjson"),
+        "{history_key}"
+    );
+    assert_eq!(
+        history_text.lines().count() as u64,
+        report.item_history.rows_archived
+    );
+    assert!(
+        objects[1].0.starts_with("pre/fix/acme/activity_log/"),
+        "{}",
+        objects[1].0
+    );
+    assert_eq!(
+        report
+            .archive_files
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>(),
+        objects
+            .iter()
+            .map(|(key, _)| format!("s3://kairos-archive/{key}"))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(sweep_details(&mut conn).len(), 1);
 }
 
 /// KAIROS-T-0638: `team_page_history` follows the rules of `item_history`.
