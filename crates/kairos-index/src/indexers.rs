@@ -174,6 +174,61 @@ fn each_project(
     Ok(output)
 }
 
+/// The Go files that the indexer hashes and that a Go command can rewrite
+/// (`GOFLAGS=-mod=mod` adds requirements to `go.mod` and `go.sum`).
+const GO_FILES: [&str; 4] = ["go.mod", "go.sum", "go.work", "go.work.sum"];
+
+/// The Go files of a folder as they were before a Go command ran. The
+/// structure build hashed them, and the summary run fails when they change
+/// after it (KAIROS-T-0667), so a step that rewrote one is undone.
+struct GoFilesGuard {
+    saved: Vec<(PathBuf, Option<Vec<u8>>)>,
+}
+
+impl GoFilesGuard {
+    fn new(dir: &Path) -> Self {
+        let saved = GO_FILES
+            .iter()
+            .map(|name| dir.join(name))
+            .map(|path| {
+                let bytes = std::fs::read(&path).ok();
+                (path, bytes)
+            })
+            .collect();
+        GoFilesGuard { saved }
+    }
+
+    /// Write back each file that `step` changed, created or removed. The
+    /// result names the files, for a warning.
+    fn restore(&self, step: &str) -> Option<String> {
+        let mut changed = Vec::new();
+        for (path, before) in &self.saved {
+            let now = std::fs::read(path).ok();
+            if now == *before {
+                continue;
+            }
+            let done = match before {
+                Some(bytes) => std::fs::write(path, bytes),
+                None => std::fs::remove_file(path),
+            };
+            let name = path
+                .file_name()
+                .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+            changed.push(if done.is_ok() {
+                name
+            } else {
+                format!("{name} (not restored)")
+            });
+        }
+        (!changed.is_empty()).then(|| {
+            format!(
+                "{step} changed {}; the files are as before",
+                changed.join(", ")
+            )
+        })
+    }
+}
+
 /// scip-go on each Go module of the tree (KAIROS-T-0475).
 pub struct GoRunner {
     tools: LanguageTools,
@@ -217,13 +272,23 @@ impl ScipRunner for GoRunner {
                     .env("CGO_ENABLED", "0");
             }
         };
+        let notes = std::cell::RefCell::new(Vec::new());
         let output = each_project(&modules, |module| {
             let dir = input.root.join(module);
+            let files = GoFilesGuard::new(&dir);
+            let step = |command: &mut Command, name: &str| {
+                let result = run_step(command, name);
+                if let Some(note) = files.restore(name) {
+                    let at = if module.is_empty() { "." } else { module };
+                    notes.borrow_mut().push(format!("{at}: {note}"));
+                }
+                result
+            };
             if deps.is_some() {
                 let mut download = Command::new(&go);
                 download.args(["mod", "download"]).current_dir(&dir);
                 go_env(&mut download);
-                run_step(&mut download, "go mod download")?;
+                step(&mut download, "go mod download")?;
             }
             let out = work
                 .path()
@@ -235,8 +300,12 @@ impl ScipRunner for GoRunner {
                 .arg(&out)
                 .current_dir(&dir);
             go_env(&mut index);
-            run_step(&mut index, "scip-go")?;
+            step(&mut index, "scip-go")?;
             Ok(rebase(read_index(&out)?, module, proto::ENCODING_UTF8))
+        });
+        let output = output.map(|mut output| {
+            output.warnings.extend(notes.take());
+            output
         });
         if let Some(cache) = &self.tools.cache {
             cache.enforce_cap("go");
@@ -577,6 +646,27 @@ mod tests {
     use super::*;
     use crate::languages::{Component, DependencyCache, Source};
     use crate::tools::Download;
+
+    #[test]
+    fn a_go_step_that_rewrites_a_go_file_is_undone_and_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("go.mod"), "module x\n").unwrap();
+        let guard = GoFilesGuard::new(root);
+        assert_eq!(guard.restore("go mod download"), None);
+        std::fs::write(root.join("go.mod"), "module x\n\ngo 1.22\n").unwrap();
+        std::fs::write(root.join("go.sum"), "x v1 h1:a\n").unwrap();
+        let note = guard.restore("go mod download").unwrap();
+        assert_eq!(
+            note,
+            "go mod download changed go.mod, go.sum; the files are as before"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("go.mod")).unwrap(),
+            "module x\n"
+        );
+        assert!(!root.join("go.sum").exists());
+    }
 
     #[test]
     fn the_projects_of_a_tree_are_the_outer_folders_with_a_marker() {
