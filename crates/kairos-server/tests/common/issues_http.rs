@@ -40,6 +40,9 @@ struct Inner {
     rate_limit_times: AtomicUsize,
     /// When set, each answer waits for this many milliseconds.
     delay_ms: AtomicUsize,
+    /// 0: none. Else the page that gets a 401 (KAIROS-T-0670): a run that
+    /// stops half way.
+    refuse_page: AtomicUsize,
 }
 
 /// A running fake API.
@@ -67,6 +70,10 @@ impl IssuesHttp {
     pub fn rate_limit_at(&self, page: usize, times: usize) {
         self.inner.rate_limit_at.store(page, Ordering::SeqCst);
         self.inner.rate_limit_times.store(times, Ordering::SeqCst);
+    }
+    /// Answer 401 for `page` only; 0: for no page (KAIROS-T-0670).
+    pub fn refuse_at(&self, page: usize) {
+        self.inner.refuse_page.store(page, Ordering::SeqCst);
     }
     /// Wait `ms` milliseconds before each answer.
     pub fn delay(&self, ms: usize) {
@@ -118,6 +125,14 @@ fn answer(
     }
     let limit = inner.rate_limit_at.load(Ordering::SeqCst);
     let page_no: usize = query.get("page").and_then(|v| v.parse().ok()).unwrap_or(1);
+    let refused_page = inner.refuse_page.load(Ordering::SeqCst);
+    if refused_page > 0 && page_no == refused_page {
+        return (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(json!({"message": "Bad credentials"})),
+        )
+            .into_response();
+    }
     if limit > 0
         && page_no == limit
         && inner

@@ -1122,6 +1122,23 @@ async fn start_background(state: &AppState, retention: kairos_core::retention::R
     {
         tracing::error!(error = ?e, "key expiring: the first run of the pass was not added");
     }
+    // KAIROS-T-0670: the cadence of the issue import. One run at a time looks
+    // at the repositories whose import is due and queues their jobs.
+    if role.runs_pass(crate::periodic::ISSUE_SYNC)
+        && let Err(e) = state
+            .jobs
+            .add_periodic(
+                crate::periodic::ISSUE_SYNC,
+                crate::forge::sync::TICK,
+                crate::forge::sync::pass(
+                    state.config.database_url.clone(),
+                    state.config.jobs.max_tries,
+                ),
+            )
+            .await
+    {
+        tracing::error!(error = ?e, "issue sync: the first run of the pass was not added");
+    }
     // KAIROS-T-0366, KAIROS-T-0376: retention is a periodic job. The queue
     // gives each run to one server, and each run adds the next.
     if !role.runs_pass(crate::periodic::RETENTION) {

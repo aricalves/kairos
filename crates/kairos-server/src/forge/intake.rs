@@ -16,7 +16,10 @@
 //!   end of the task writes back to it ([`super::issue_writeback`],
 //!   KAIROS-T-0575).
 //!
-//! The webhook and the import call [`take_issue`]: one path.
+//! The webhook, the manual import and the cadence of the import
+//! (KAIROS-T-0670) call [`take_issue`]: one path. The cadence needs no
+//! webhook connection, so the link of its task has the repository and no
+//! connection.
 
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
@@ -102,7 +105,7 @@ pub(crate) fn take_issue(
     tenant_slug: &str,
     actor: Uuid,
     repository_id: Uuid,
-    connection_id: Uuid,
+    connection_id: Option<Uuid>,
     issue: &ForgeIssue,
     source: Source,
 ) -> Result<Outcome, ApiError> {
@@ -182,20 +185,21 @@ pub(crate) fn take_issue(
         .bind::<diesel::sql_types::Uuid, _>(task.id)
         .execute(conn)
         .map_err(ApiError::internal)?;
-        kairos_db::forge::upsert_link(
-            conn,
-            NewItemLink {
-                item_id: task.id,
-                connection_id,
-                kind: LinkKind::Issue,
-                external_id: issue.number.to_string(),
-                title: issue.title.clone(),
-                url: issue.url.clone(),
-                state: LinkState::Open,
-                author: issue.author.clone(),
-                forge_updated_at: issue.created_at,
-            },
-        )
+        let link = NewItemLink {
+            item_id: task.id,
+            connection_id: connection_id.unwrap_or_else(Uuid::nil),
+            kind: LinkKind::Issue,
+            external_id: issue.number.to_string(),
+            title: issue.title.clone(),
+            url: issue.url.clone(),
+            state: LinkState::Open,
+            author: issue.author.clone(),
+            forge_updated_at: issue.created_at,
+        };
+        match connection_id {
+            Some(_) => kairos_db::forge::upsert_link(conn, link).map(|_| ()),
+            None => kairos_db::forge::add_repository_link(conn, repository.id, link),
+        }
         .map_err(ApiError::internal)?;
         emit_event(
             conn,

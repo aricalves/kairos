@@ -209,13 +209,124 @@ pub struct Repository {
     /// and the exclude pattern of each field. Each field is present.
     #[serde(default)]
     pub forge_filters: ForgeFilters,
+    /// How often the repository takes its open issues with no webhook
+    /// (KAIROS-T-0670): `off` (the default), or a number with a unit,
+    /// such as `15m`, `1h` or `1d`.
+    #[serde(default = "interval_off")]
+    pub issue_import_interval: String,
+    /// The same interval in seconds; `None`: off.
+    #[serde(default)]
+    pub issue_import_interval_secs: Option<u32>,
+    /// What the last runs of the import did (KAIROS-T-0670).
+    #[serde(default)]
+    pub issue_sync: IssueSync,
     /// RFC 3339.
     pub created_at: String,
     /// RFC 3339.
     pub updated_at: String,
 }
 
+/// The value of an interval that is off (KAIROS-T-0670).
+pub fn interval_off() -> String {
+    "off".to_string()
+}
+
+/// The intervals that the page Admin, Repositories offers (KAIROS-T-0670).
+/// The API takes any interval from 1 minute to 30 days.
+pub const ISSUE_IMPORT_CHOICES: [&str; 6] = ["off", "15m", "30m", "1h", "6h", "1d"];
+
+/// The sync state of the issue import of a repository (KAIROS-T-0670).
+/// Each run lists the open issues and compares them with the record of the
+/// issues that Kairos took. An issue with no record becomes a task.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct IssueSync {
+    /// When the next run is due (RFC 3339). `None`: the cadence is off, or
+    /// the first run is due now.
+    #[serde(default)]
+    pub next_run_at: Option<String>,
+    /// When the last run ended, complete or not (RFC 3339).
+    #[serde(default)]
+    pub last_run_at: Option<String>,
+    /// True: the last run listed every page. False: it stopped half way,
+    /// or it has not ended. The next run goes on.
+    #[serde(default)]
+    pub last_run_complete: bool,
+    /// When the last complete run ended (RFC 3339).
+    #[serde(default)]
+    pub last_complete_at: Option<String>,
+    /// The issues in the record: those that Kairos took for the repository.
+    #[serde(default)]
+    pub record_count: i64,
+    /// The open issues that the last run listed.
+    #[serde(default)]
+    pub last_run_listed: i64,
+    /// The tasks that the last run made.
+    #[serde(default)]
+    pub last_run_imported: i64,
+    /// Why the last run stopped, or `None`. The next run tries again.
+    #[serde(default)]
+    pub last_error: Option<String>,
+    /// When that error happened (RFC 3339).
+    #[serde(default)]
+    pub last_error_at: Option<String>,
+}
+
+impl IssueSync {
+    /// The sync state in lines for a person (KAIROS-T-0670): the last
+    /// complete run, the next run, the counts and the last error. The
+    /// lines are indented with `indent`.
+    pub fn lines(&self, indent: &str) -> Vec<String> {
+        let or_none = |t: &Option<String>| t.clone().unwrap_or_else(|| "none".to_string());
+        let mut lines = vec![
+            format!(
+                "{indent}last complete run: {}",
+                or_none(&self.last_complete_at)
+            ),
+            format!("{indent}next run:          {}", or_none(&self.next_run_at)),
+            format!("{indent}issues in the record: {}", self.record_count),
+            format!(
+                "{indent}last run:          {} listed, {} new task(s), {}",
+                self.last_run_listed,
+                self.last_run_imported,
+                if self.last_run_at.is_none() {
+                    "no run yet"
+                } else if self.last_run_complete {
+                    "complete"
+                } else {
+                    "not complete"
+                }
+            ),
+        ];
+        if let Some(error) = &self.last_error {
+            lines.push(format!("{indent}last error:        {error}"));
+        }
+        lines
+    }
+}
+
 impl Repository {
+    /// The issue import in one line for a person (KAIROS-T-0670): `off`,
+    /// or `every 1h`, then the last complete run and the next run.
+    pub fn issue_import_summary(&self) -> String {
+        if self.issue_import_interval_secs.is_none() {
+            return "off".to_string();
+        }
+        let mut text = format!("every {}", self.issue_import_interval);
+        text.push_str(&format!(
+            "; last complete run {}; next run {}; {} in the record",
+            self.issue_sync
+                .last_complete_at
+                .as_deref()
+                .unwrap_or("none"),
+            self.issue_sync.next_run_at.as_deref().unwrap_or("now"),
+            self.issue_sync.record_count
+        ));
+        if let Some(error) = &self.issue_sync.last_error {
+            text.push_str(&format!("; last error: {error}"));
+        }
+        text
+    }
+
     /// Where `default_branch` comes from, for a person (KAIROS-T-0430):
     /// `set by hand`, `set by hand; the forge gives <branch>`, `from the
     /// forge`, or `from the forge; no fetch yet`.
@@ -365,6 +476,13 @@ pub struct UpdateRepositoryRequest {
     /// (`forge_filters.<field>.<include|exclude>`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forge_filters: Option<ForgeFilters>,
+    /// How often the repository takes its open issues with no webhook
+    /// (KAIROS-T-0670). Org admin only. `off`, or a number with a unit:
+    /// `90s`, `15m`, `1h`, `1d`. The shortest interval is 1 minute and the
+    /// longest is 30 days. The repository needs a read token. The import
+    /// needs no webhook.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_import_interval: Option<String>,
 }
 
 /// The counts of an import of the open issues (KAIROS-T-0483). The job
@@ -410,6 +528,13 @@ pub struct IssueImport {
     pub result: IssueImportResult,
     /// Why the job failed, or why its last try stopped.
     pub error: Option<String>,
+    /// The interval of the cadence of the repository (KAIROS-T-0670):
+    /// `off`, or `15m`, `1h`, `1d`.
+    #[serde(default = "interval_off")]
+    pub interval: String,
+    /// The sync state of the repository (KAIROS-T-0670).
+    #[serde(default)]
+    pub sync: IssueSync,
 }
 
 /// The two patterns of one field of the forge filter (KAIROS-T-0479). A

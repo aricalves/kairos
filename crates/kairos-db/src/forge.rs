@@ -262,7 +262,9 @@ pub struct LinkWithRepo {
 }
 
 /// Every link on one item, PRs before branches then newest first (the
-/// ordering lives here so every client agrees).
+/// ordering lives here so every client agrees). A link with a connection
+/// shows while the connection lives; a link of the cadence
+/// (KAIROS-T-0670) has a repository and no connection.
 pub fn links_for_item(
     conn: &mut PgConnection,
     item_id: Uuid,
@@ -272,21 +274,66 @@ pub fn links_for_item(
         .inner_join(forge_connections::table.inner_join(repositories::table))
         .filter(item_links::item_id.eq(item_id))
         .filter(forge_connections::deleted_at.is_null())
-        .order((item_links::kind.desc(), item_links::forge_updated_at.desc()))
         .select((
             ItemLink::as_select(),
             repositories::forge,
             repositories::repo_full_name,
         ))
         .load(conn)?;
-    Ok(rows
+    let own: Vec<(ItemLink, Forge, String)> = item_links::table
+        .inner_join(
+            repositories::table.on(item_links::repository_id.eq(repositories::id.nullable())),
+        )
+        .filter(item_links::item_id.eq(item_id))
+        .filter(item_links::connection_id.is_null())
+        .select((
+            ItemLink::as_select(),
+            repositories::forge,
+            repositories::repo_full_name,
+        ))
+        .load(conn)?;
+    let mut rows: Vec<LinkWithRepo> = rows
         .into_iter()
+        .chain(own)
         .map(|(link, forge, repo_full_name)| LinkWithRepo {
             link,
             forge,
             repo_full_name,
         })
-        .collect())
+        .collect();
+    // `kind` descending, then newest first.
+    rows.sort_by(|a, b| {
+        (b.link.kind.to_string(), b.link.forge_updated_at)
+            .cmp(&(a.link.kind.to_string(), a.link.forge_updated_at))
+    });
+    Ok(rows)
+}
+
+/// The link of an issue that the cadence took (KAIROS-T-0670): it has the
+/// repository and no webhook connection. The caller makes it once, for the
+/// task that it just made.
+pub fn add_repository_link(
+    conn: &mut PgConnection,
+    repository_id: Uuid,
+    link: NewItemLink,
+) -> Result<(), ForgeError> {
+    diesel::sql_query(
+        "INSERT INTO item_links
+             (item_id, repository_id, kind, external_id, title, url, state,
+              author, forge_updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+    )
+    .bind::<diesel::sql_types::Uuid, _>(link.item_id)
+    .bind::<diesel::sql_types::Uuid, _>(repository_id)
+    .bind::<diesel::sql_types::Text, _>(link.kind)
+    .bind::<diesel::sql_types::Text, _>(link.external_id)
+    .bind::<diesel::sql_types::Text, _>(link.title)
+    .bind::<diesel::sql_types::Text, _>(link.url)
+    .bind::<diesel::sql_types::Text, _>(link.state)
+    .bind::<diesel::sql_types::Text, _>(link.author)
+    .bind::<diesel::sql_types::Timestamptz, _>(link.forge_updated_at)
+    .execute(conn)?;
+    Ok(())
 }
 
 /// Links in the given states across a set of items — the team rollup's
