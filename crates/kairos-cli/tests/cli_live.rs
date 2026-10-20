@@ -505,6 +505,88 @@ async fn cli_login_whoami_refresh_logout_live() {
         "{got}"
     );
 
+    // --- phase B1b: KAIROS-T-0670, the interval of the issue import -------------
+    alice
+        .create_repository(
+            &kairos_client::types_repositories::CreateRepositoryRequest {
+                slug: Some("cadence-app".into()),
+                forge: "github".into(),
+                repo_full_name: "acme/cadence-app".into(),
+                repo_url: "https://github.com/acme/cadence-app".into(),
+                default_branch: None,
+                team: team.id.clone(),
+                description: None,
+            },
+        )
+        .await
+        .expect("a repository");
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &[
+            "repos",
+            "update",
+            "cadence-app",
+            "--import-interval",
+            "often",
+        ],
+    )
+    .await;
+    assert_ne!(code, 0, "a bad interval is refused: {stdout}");
+    assert!(
+        stderr.contains("issue_import_interval") || stderr.contains("\"often\""),
+        "the refusal names the value: {stderr}"
+    );
+    let (code, _, stderr) = run_cli(
+        config_dir.path(),
+        &["repos", "update", "cadence-app", "--import-interval", "30s"],
+    )
+    .await;
+    assert_ne!(code, 0);
+    assert!(stderr.contains("shortest"), "{stderr}");
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["repos", "update", "cadence-app", "--import-interval", "15m"],
+    )
+    .await;
+    assert_eq!(code, 0, "repos update failed: {stderr}");
+    assert!(
+        stdout.contains("changed the repository cadence-app"),
+        "{stdout}"
+    );
+    let (code, stdout, stderr) = run_cli(config_dir.path(), &["repos", "get", "cadence-app"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("issue import:   every 15m;"), "{stdout}");
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["repos", "import-status", "cadence-app"],
+    )
+    .await;
+    assert_eq!(code, 0, "import-status failed: {stderr}");
+    for needle in [
+        "no import job has run yet",
+        "Interval: 15m",
+        "last complete run: none",
+        "next run:",
+        "issues in the record: 0",
+    ] {
+        assert!(stdout.contains(needle), "{needle}: {stdout}");
+    }
+    let (code, stdout, stderr) = run_cli(
+        config_dir.path(),
+        &["repos", "update", "cadence-app", "--import-interval", "off"],
+    )
+    .await;
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("changed the repository"), "{stdout}");
+    let (code, stdout, _) = run_cli(
+        config_dir.path(),
+        &["repos", "get", "cadence-app", "--json"],
+    )
+    .await;
+    assert_eq!(code, 0);
+    let got: serde_json::Value = serde_json::from_str(&stdout).expect("repository JSON");
+    assert_eq!(got["issue_import_interval"], "off", "{got}");
+
     // --- phase B2: an agent key in KAIROS_KEY stands in for the login ------
     // A config dir with no cache: the key and KAIROS_URL are all there is.
     let (code, stdout, stderr) = run_cli(

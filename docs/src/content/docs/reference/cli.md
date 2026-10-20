@@ -2009,6 +2009,7 @@ kairos repos update <REPOSITORY> [OPTIONS]
 | `--code-index-summaries <EMBEDDED\|HOSTED\|ORGANIZATION>` | `embedded`, `hosted` or `organization` | unchanged | With `organization`, the default summarizer of the organization decides. With `hosted`, the summaries of the repository come from the provider of the organization, and the code of each changed symbol leaves the host. Kairos refuses `hosted` when the organization has no hosted provider (`CODE_INDEX_NO_HOSTED_PROVIDER`). See [the providers](../configuration/#the-providers-of-the-summaries-and-the-vectors). |
 | `--include <FIELD=PATTERN>` | repeatable | unchanged | The include pattern of a forge filter field. Organization admin only. The fields are `branch_name`, `pr_head_branch`, `pr_title`, `pr_author`, `issue_title` and `issue_author`. See [Connect a git forge](../../how-to/connect-a-git-forge/#3-set-the-forge-filters). |
 | `--exclude <FIELD=PATTERN>` | repeatable | unchanged | The exclude pattern of a forge filter field. Organization admin only. An empty pattern excludes nothing. |
+| `--import-interval <OFF\|INTERVAL>` | `off`, or a number with a unit | unchanged | How often the repository takes its open issues, with no webhook. Organization admin only. The units are `s`, `m`, `h` and `d`, for example `90s`, `15m`, `1h` or `1d`. The shortest interval is `1m`. The longest is `30d`. The default is `off`. The repository needs a read token. See [Take issues on an interval](../../how-to/connect-a-git-forge/#6-take-issues-on-an-interval-with-no-webhook). |
 
 Same permission gate as `create`. The rules of `--repo-url` and
 `--default-branch` are those of `create`. They apply to a value that is
@@ -2067,6 +2068,20 @@ repository. The state is `queued`, `running`, `waiting`, `done` or
 `failed`. The command also prints the pages that the import read, its
 counts, and the error of a failed import. The state `waiting` gives the
 time when the rate limit of the forge ends.
+
+The command also prints the sync state of the repository:
+
+| Line | Meaning |
+|---|---|
+| `Interval` | The import interval: `off`, or for example `15m`. |
+| `last complete run` | When the last run that read every page ended. |
+| `next run` | When the next run is due. It is `none` when the interval is `off`. |
+| `issues in the record` | The count of issues that Kairos took for the repository. |
+| `last run` | The open issues that the last run listed, the tasks that it made, and whether it was complete. |
+| `last error` | Why the last run stopped. The next run tries again. |
+
+A repository with an interval and no run yet prints `no import job has run
+yet`, and the sync state.
 
 ### `kairos repos delete`
 

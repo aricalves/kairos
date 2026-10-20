@@ -597,6 +597,8 @@ mod tests {
             code_index_summaries_resolved: "embedded".to_string(),
             code_index_breaker: Default::default(),
             site: Default::default(),
+            issue_import_interval: "off".to_string(),
+            issue_sync: Default::default(),
         }
     }
 

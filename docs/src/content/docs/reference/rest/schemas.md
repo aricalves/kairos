@@ -1368,11 +1368,13 @@ An import of the open issues of a repository (KAIROS-T-0487). It is a job of the
 | `created_at` | `string` | yes | When the import was asked for (RFC 3339). |
 | `error` | `string`, nullable | no | Why the job failed, or why its last try stopped. |
 | `finished_at` | `string`, nullable | no | When the job ended (RFC 3339); `None` while it waits or runs. |
+| `interval` | `string` | no | The interval of the cadence of the repository (KAIROS-T-0670): `off`, or `15m`, `1h`, `1d`. |
 | `job` | `string` | yes | The id of the job (UUID). |
 | `pages` | `integer` | yes | The pages of issues that the job took. |
 | `repository` | `string` | yes | The slug of the repository. |
 | `result` | [`IssueImportResult`](#issueimportresult) | yes | The counts so far; final when the job is `done`. |
 | `state` | `string` | yes | `queued`, `running`, `waiting` (for the rate limit of the forge), `done` or `failed`. |
+| `sync` | [`IssueSync`](#issuesync) | no | The sync state of the repository (KAIROS-T-0670). |
 | `waiting_until` | `string`, nullable | no | While the job waits for the rate limit of the forge: the time it goes on (RFC 3339). |
 
 ## IssueImportResult
@@ -1387,6 +1389,22 @@ The counts of an import of the open issues (KAIROS-T-0483). The job writes them 
 | `message` | `string` | yes | A sentence for a person. |
 | `not_taken` | `integer` | yes | Issues that no task could be made for; `message` says why. |
 | `skipped` | `integer` | yes | Issues that were taken before (by a webhook or an earlier import). |
+
+## IssueSync
+
+The sync state of the issue import of a repository (KAIROS-T-0670). Each run lists the open issues and compares them with the record of the issues that Kairos took. An issue with no record becomes a task.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `last_complete_at` | `string`, nullable | no | When the last complete run ended (RFC 3339). |
+| `last_error` | `string`, nullable | no | Why the last run stopped, or `None`. The next run tries again. |
+| `last_error_at` | `string`, nullable | no | When that error happened (RFC 3339). |
+| `last_run_at` | `string`, nullable | no | When the last run ended, complete or not (RFC 3339). |
+| `last_run_complete` | `boolean` | no | True: the last run listed every page. False: it stopped half way, or it has not ended. The next run goes on. |
+| `last_run_imported` | `integer` | no | The tasks that the last run made. |
+| `last_run_listed` | `integer` | no | The open issues that the last run listed. |
+| `next_run_at` | `string`, nullable | no | When the next run is due (RFC 3339). `None`: the cadence is off, or the first run is due now. |
+| `record_count` | `integer` | no | The issues in the record: those that Kairos took for the repository. |
 
 ## ItemActivityEntry
 
@@ -2274,6 +2292,9 @@ One repository, as returned by `/api/repositories` (KAIROS-T-0106).
 | `forge_filters` | [`ForgeFilters`](#forgefilters) | no | The forge filters of the repository (KAIROS-T-0479): the include and the exclude pattern of each field. Each field is present. |
 | `has_webhook` | `boolean` | yes | Whether a live webhook connection exists for it. |
 | `id` | `string` | yes | Repository id (UUID). |
+| `issue_import_interval` | `string` | no | How often the repository takes its open issues with no webhook (KAIROS-T-0670): `off` (the default), or a number with a unit, such as `15m`, `1h` or `1d`. |
+| `issue_import_interval_secs` | `integer`, nullable | no | The same interval in seconds; `None`: off. |
+| `issue_sync` | [`IssueSync`](#issuesync) | no | What the last runs of the import did (KAIROS-T-0670). |
 | `open_tasks` | `integer` | yes | Live tasks that link to this repository and are not in a done column, on all boards of all teams (COLLIERY-T-0219). |
 | `repo_full_name` | `string` | yes | `owner/repo` on GitHub, `group/subgroup/project` on GitLab. |
 | `repo_url` | `string` | yes | Browser URL of the repository. |
@@ -3253,6 +3274,7 @@ Body of `PATCH /api/repositories/{slug}` — every field optional; `team` re-hom
 | `default_branch_source` | [`DefaultBranchSource`](#defaultbranchsource), nullable | no |  |
 | `description` | `string`, nullable | no |  |
 | `forge_filters` | [`ForgeFilters`](#forgefilters), nullable | no |  |
+| `issue_import_interval` | `string`, nullable | no | How often the repository takes its open issues with no webhook (KAIROS-T-0670). Org admin only. `off`, or a number with a unit: `90s`, `15m`, `1h`, `1d`. The shortest interval is 1 minute and the longest is 30 days. The repository needs a read token. The import needs no webhook. |
 | `repo_url` | `string`, nullable | no | The form is that of `repo_url` in `CreateRepositoryRequest`. |
 | `site_enabled` | `boolean`, nullable | no | The site switch (KAIROS-T-0406). Off: a publish is refused, and the site is not served. |
 | `slug` | `string`, nullable | no |  |

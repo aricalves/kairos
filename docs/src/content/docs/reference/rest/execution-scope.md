@@ -335,7 +335,10 @@ token removed.
 The last import of the open issues of a repository (KAIROS-T-0487).
 
 Organization admin only. The answer gives the state of the import and
-its counts.
+its counts. It also gives the interval of the repository and its sync
+state (KAIROS-T-0670): the last complete run, the next run, the count of
+the record, the counts of the last run and the last error. A repository
+with an interval answers before its first job, with the state `idle`.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
@@ -366,6 +369,10 @@ hangs off it. It also needs a read token with Issues: read (GitHub) or
 The answer is the job, at once. While an import of the repository waits
 or runs, the answer is that import: one runs at a time. Read the counts
 with `GET /api/repositories/{slug}/import-issues`.
+
+The interval of the repository (`issue_import_interval`, KAIROS-T-0670)
+runs the same import on a cadence. The cadence needs no webhook
+connection.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|

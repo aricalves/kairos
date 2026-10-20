@@ -179,10 +179,11 @@ provider that takes seconds holds no connection of the pool.
 | A batch of the embedding refresh | `embedding_batch` | Each server, for an organization with no row; then the row queues itself again after each run | organization (one row) |
 | A webhook delivery | `webhook_delivery` | The change that fires it, in its transaction | delivery |
 | A GitHub write-back | `github_writeback` | The change of a linked item, in its transaction | pull request (one queued job) |
-| An import of the open issues | `issue_import` | The API, when an organization admin asks | repository |
+| An import of the open issues | `issue_import` | The API, when an organization admin asks; the issue-sync pass, when the interval of the repository is due (KAIROS-T-0670) | repository |
 | An issue write-back | `issue_writeback` | The change of the task of an issue, in its transaction; a new write token | issue (one queued job) |
 | The retention pass | `periodic` | Each server at its start; then each run adds the next run | pass |
 | The sweep of the code index | `periodic` | Each server at its start; then each run adds the next run | pass |
+| The issue-sync pass | `periodic` | Each server at its start; the worker puts the same row back in the queue after each look, every 30 seconds | pass (one row) |
 
 A write-back job (`github_writeback`, `issue_writeback`) has no
 `dedupe_key`. A unique index on the key of a queued job holds one queued job
@@ -192,6 +193,12 @@ job that runs does not count: a change during the run adds a job, because
 the job that runs can have read the items before the change. When the job
 that runs goes back to the queue (a retry) and a job of its key waits, it
 ends `done`. The job that waits does the write.
+
+The issue-sync pass looks at the repositories whose import interval is due,
+and adds an `issue_import` job for each one (KAIROS-T-0670). It keeps one
+row, as the embedding refresh does, so the table of jobs does not grow with
+each look. Two servers never add the job twice for one due run, and the key
+of the import allows one open import for each repository.
 
 A periodic pass adds its next run in the transaction that writes its end.
 An embedding batch keeps one row for each organization (KAIROS-T-0636). When

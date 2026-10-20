@@ -43,6 +43,20 @@ already. So the key of the intake is the forge's own id of the issue. The
 first event or import takes the issue and makes the task. Each later one
 finds the key and makes nothing.
 
+## Issues without a webhook
+
+A webhook needs the forge to reach Kairos. A private network cannot receive
+one (KAIROS-T-0670). So a repository can take its open issues on an
+interval instead. The server lists the open issues, and compares them with
+the record of the issues that it took. The record is the same key as above:
+the id of the issue on the forge.
+
+An issue with no record becomes a task. No time decides what is new. So a
+missed run leaves no gap, and an old issue that is new to Kairos still
+becomes a task. The cost is that each run lists every open issue. The
+interval is meant for a repository with few open issues. See
+[Connect a git forge](../../how-to/connect-a-git-forge/#6-take-issues-on-an-interval-with-no-webhook).
+
 ## What is not synced
 
 After intake, Kairos does not read the issue again:
