@@ -90,3 +90,9 @@ required-features = ["llama"]
 [[test]]
 name = "bdd"
 harness = false
+
+# The SCIP runners of Go, Python and TypeScript, with fake tools
+# (KAIROS-T-0667, KAIROS-T-0668, KAIROS-T-0669).
+[[test]]
+name = "scip_bdd"
+harness = false
