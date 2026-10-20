@@ -195,6 +195,11 @@ To make the database smaller, set one of these:
   one file for each table: `item_history`, `team_page_history` and
   `activity_log`. Back up that directory too: the rows are not in the dumps
   after the pass.
+- `KAIROS_ARCHIVE_TARGET` to an `s3://bucket/prefix` URL. The pass uploads the
+  same files to the bucket, and then removes the rows. The credentials come
+  from the AWS chain. A Kubernetes deployment can use a role for the service
+  account, and needs no volume. See
+  [The S3 archive target](../../reference/configuration/#the-s3-archive-target).
 - `KAIROS_RETENTION_MODE=discard`. The pass removes the old rows and keeps no
   copy.
 

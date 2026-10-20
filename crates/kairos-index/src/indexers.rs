@@ -1100,6 +1100,62 @@ mod tests {
         );
     }
 
+    /// KAIROS-T-0669: "no files got indexed" says which project and which
+    /// config files the indexer saw.
+    #[test]
+    fn no_files_indexed_names_the_project_and_its_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("app.js"), "function run() {}\n").unwrap();
+        let tools = dir.path().join("tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        let tools = LanguageTools {
+            dir: Some(tools.clone()),
+            fetch: true,
+            overrides: vec![
+                fake_component(
+                    &tools,
+                    "node",
+                    &[(
+                        "bin/node",
+                        "#!/bin/sh\necho 'no files got indexed' >&2\nexit 1\n",
+                    )],
+                ),
+                fake_component(
+                    &tools,
+                    "scip-typescript",
+                    &[(
+                        "node_modules/@sourcegraph/scip-typescript/dist/src/main.js",
+                        "",
+                    )],
+                ),
+            ],
+            cache: Some(DependencyCache {
+                root: dir.path().join("deps"),
+                key: "t/r".into(),
+                cap_bytes: u64::MAX,
+                min_free_bytes: 0,
+            }),
+            ..Default::default()
+        };
+        let report = run_python(dir.path(), &root, tools);
+        let reason = &report
+            .scip_warnings
+            .iter()
+            .find(|w| w.language == "typescript")
+            .unwrap()
+            .reason;
+        assert!(
+            reason.ends_with(
+                "no files got indexed (the project at . has no tsconfig.json or jsconfig.json; a run with the tsconfig of Kairos, for each .ts, .tsx, .mts, .cts, .js, .jsx, .mjs and .cjs file of the folder, found none.)"
+            ),
+            "{reason}"
+        );
+        assert!(!root.join("tsconfig.json").exists());
+        assert!(!root.join(OWN_TSCONFIG_NAME).exists());
+    }
+
     /// KAIROS-T-0668: a failed `uv sync` names what the project asks for.
     #[test]
     fn a_failed_uv_sync_names_the_versions_the_project_asks_for() {
@@ -1187,62 +1243,6 @@ mod tests {
         let reason = &report.scip_warnings[0].reason;
         assert!(reason.contains("Required uv version"), "{reason}");
         assert!(!dir.path().join("deps/t/r/python/uv-required").exists());
-    }
-
-    /// KAIROS-T-0669: "no files got indexed" says which project and which
-    /// config files the indexer saw.
-    #[test]
-    fn no_files_indexed_names_the_project_and_its_config() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("repo");
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("app.js"), "function run() {}\n").unwrap();
-        let tools = dir.path().join("tools");
-        std::fs::create_dir_all(&tools).unwrap();
-        let tools = LanguageTools {
-            dir: Some(tools.clone()),
-            fetch: true,
-            overrides: vec![
-                fake_component(
-                    &tools,
-                    "node",
-                    &[(
-                        "bin/node",
-                        "#!/bin/sh\necho 'no files got indexed' >&2\nexit 1\n",
-                    )],
-                ),
-                fake_component(
-                    &tools,
-                    "scip-typescript",
-                    &[(
-                        "node_modules/@sourcegraph/scip-typescript/dist/src/main.js",
-                        "",
-                    )],
-                ),
-            ],
-            cache: Some(DependencyCache {
-                root: dir.path().join("deps"),
-                key: "t/r".into(),
-                cap_bytes: u64::MAX,
-                min_free_bytes: 0,
-            }),
-            ..Default::default()
-        };
-        let report = run_python(dir.path(), &root, tools);
-        let reason = &report
-            .scip_warnings
-            .iter()
-            .find(|w| w.language == "typescript")
-            .unwrap()
-            .reason;
-        assert!(
-            reason.ends_with(
-                "no files got indexed (the project at . has no tsconfig.json or jsconfig.json; a run with the tsconfig of Kairos, for each .ts, .tsx, .mts, .cts, .js, .jsx, .mjs and .cjs file of the folder, found none.)"
-            ),
-            "{reason}"
-        );
-        assert!(!root.join("tsconfig.json").exists());
-        assert!(!root.join(OWN_TSCONFIG_NAME).exists());
     }
 
     /// KAIROS-T-0486: a failed `uv sync` is the fallback with a warning.
