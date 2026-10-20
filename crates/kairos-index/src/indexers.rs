@@ -383,32 +383,57 @@ impl ScipRunner for TypeScriptRunner {
                 .join(format!("{}.scip", project.replace('/', "_")));
             // From the tools folder, the script runs with that node; from
             // PATH, `scip-typescript` is the command.
-            let mut index = if prepared.is_some() {
-                let mut c = Command::new(&node);
-                c.arg(&scip);
-                c
-            } else {
-                Command::new(&scip)
+            let index_with = |config: Option<&str>| {
+                let mut index = if prepared.is_some() {
+                    let mut c = Command::new(&node);
+                    c.arg(&scip);
+                    c
+                } else {
+                    Command::new(&scip)
+                };
+                index
+                    .arg("index")
+                    .arg("--output")
+                    .arg(&out)
+                    .current_dir(&dir);
+                if let Some(config) = config {
+                    index.arg(config);
+                }
+                environment(&mut index, &self.tools, deps.as_deref(), &bins);
+                run_step(&mut index, "scip-typescript")
             };
-            index
-                .arg("index")
-                .arg("--output")
-                .arg(&out)
-                .current_dir(&dir);
-            // `--infer-tsconfig` writes a tsconfig.json into the project:
-            // it is removed after the run, so a local run changes no file
-            // of the checkout.
-            let tsconfig = dir.join("tsconfig.json");
-            let inferred = !tsconfig.exists();
-            if inferred {
-                index.arg("--infer-tsconfig");
-            }
-            environment(&mut index, &self.tools, deps.as_deref(), &bins);
-            let ran = run_step(&mut index, "scip-typescript");
-            if inferred {
-                let _ = std::fs::remove_file(&tsconfig);
-            }
-            ran?;
+            // The tsconfig of Kairos: written next to the sources, with a name
+            // of its own, and removed after the run, so no file of the
+            // checkout changes and a `tsconfig.json` is never replaced.
+            let own = dir.join(OWN_TSCONFIG_NAME);
+            let index_with_own = || {
+                std::fs::write(&own, OWN_TSCONFIG).map_err(|e| format!("tsconfig: {e}"))?;
+                let ran = index_with(Some(OWN_TSCONFIG_NAME));
+                let _ = std::fs::remove_file(&own);
+                ran
+            };
+            let has_tsconfig = dir.join("tsconfig.json").exists();
+            let ran = if has_tsconfig {
+                // A tsconfig that takes none of the files (JavaScript with no
+                // `allowJs`, or an empty `include`) gets a second run with
+                // the config of Kairos.
+                index_with(None).or_else(|reason| {
+                    if reason.contains("no files got indexed") {
+                        index_with_own()
+                    } else {
+                        Err(reason)
+                    }
+                })
+            } else {
+                index_with_own()
+            };
+            ran.map_err(|reason| {
+                if reason.contains("no files got indexed") {
+                    format!("{reason} {}", no_files_hint(&dir, project, has_tsconfig))
+                } else {
+                    reason
+                }
+            })?;
             Ok(rebase(read_index(&out)?, project, proto::ENCODING_UTF16))
         });
         if let Some(cache) = &self.tools.cache {
@@ -416,6 +441,38 @@ impl ScipRunner for TypeScriptRunner {
         }
         output
     }
+}
+
+/// The name and the text of the tsconfig of Kairos for a project of
+/// JavaScript or TypeScript files (KAIROS-T-0669). scip-typescript's own
+/// `--infer-tsconfig` takes `.js` and `.jsx` only, and a `tsconfig.json`
+/// with no `allowJs` takes no JavaScript. `node_modules` stays out by the
+/// default of `exclude`.
+const OWN_TSCONFIG_NAME: &str = "tsconfig.kairos.json";
+const OWN_TSCONFIG: &str = r#"{
+  "compilerOptions": { "allowJs": true },
+  "include": [
+    "**/*.ts", "**/*.tsx", "**/*.mts", "**/*.cts",
+    "**/*.js", "**/*.jsx", "**/*.mjs", "**/*.cjs"
+  ]
+}
+"#;
+
+/// A line for the warning "no files got indexed" of scip-typescript
+/// (KAIROS-T-0669): the project and what the runs saw. With the config of
+/// Kairos, the project has none of the files it takes.
+fn no_files_hint(dir: &Path, project: &str, has_tsconfig: bool) -> String {
+    let at = if project.is_empty() { "." } else { project };
+    let found = if has_tsconfig {
+        "a tsconfig.json"
+    } else if dir.join("jsconfig.json").is_file() {
+        "a jsconfig.json and no tsconfig.json"
+    } else {
+        "no tsconfig.json or jsconfig.json"
+    };
+    format!(
+        "(the project at {at} has {found}; a run with the tsconfig of Kairos, for each .ts, .tsx, .mts, .cts, .js, .jsx, .mjs and .cjs file of the folder, found none.)"
+    )
 }
 
 /// The dependency files of a Python project at the root, with their texts:
@@ -1041,6 +1098,62 @@ mod tests {
                 "uv-0.0.0"
             ]
         );
+    }
+
+    /// KAIROS-T-0669: "no files got indexed" says which project and which
+    /// config files the indexer saw.
+    #[test]
+    fn no_files_indexed_names_the_project_and_its_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("app.js"), "function run() {}\n").unwrap();
+        let tools = dir.path().join("tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        let tools = LanguageTools {
+            dir: Some(tools.clone()),
+            fetch: true,
+            overrides: vec![
+                fake_component(
+                    &tools,
+                    "node",
+                    &[(
+                        "bin/node",
+                        "#!/bin/sh\necho 'no files got indexed' >&2\nexit 1\n",
+                    )],
+                ),
+                fake_component(
+                    &tools,
+                    "scip-typescript",
+                    &[(
+                        "node_modules/@sourcegraph/scip-typescript/dist/src/main.js",
+                        "",
+                    )],
+                ),
+            ],
+            cache: Some(DependencyCache {
+                root: dir.path().join("deps"),
+                key: "t/r".into(),
+                cap_bytes: u64::MAX,
+                min_free_bytes: 0,
+            }),
+            ..Default::default()
+        };
+        let report = run_python(dir.path(), &root, tools);
+        let reason = &report
+            .scip_warnings
+            .iter()
+            .find(|w| w.language == "typescript")
+            .unwrap()
+            .reason;
+        assert!(
+            reason.ends_with(
+                "no files got indexed (the project at . has no tsconfig.json or jsconfig.json; a run with the tsconfig of Kairos, for each .ts, .tsx, .mts, .cts, .js, .jsx, .mjs and .cjs file of the folder, found none.)"
+            ),
+            "{reason}"
+        );
+        assert!(!root.join("tsconfig.json").exists());
+        assert!(!root.join(OWN_TSCONFIG_NAME).exists());
     }
 
     /// KAIROS-T-0668: a failed `uv sync` names what the project asks for.
