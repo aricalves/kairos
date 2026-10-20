@@ -965,8 +965,12 @@ pub async fn serve(
     let bind_addr = config.bind_addr;
     // KAIROS-T-0366: a bad retention value stops the start, like any other
     // bad setting.
-    let retention = kairos_core::retention::RetentionConfig::from_env()
+    let mut retention = kairos_core::retention::RetentionConfig::from_env()
         .map_err(|e| format!("retention configuration: {e}"))?;
+    // KAIROS-T-0671: the store of an `s3://` archive target.
+    if let Some(store) = crate::archive_store::for_config(&retention)? {
+        retention.archive_store = store;
+    }
     let mut state = build_state(config).await.map_err(|e| e.to_string())?;
     state.retention = Arc::new(retention.clone());
     // KAIROS-T-0631: a pass that removes nothing, or fails by its config,

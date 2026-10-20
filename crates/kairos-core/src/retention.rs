@@ -28,8 +28,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Arc;
 
 use chrono::{DateTime, Datelike, Duration, Utc};
 use uuid::Uuid;
@@ -48,6 +49,12 @@ pub const KEPT_ACTIVITY_ACTIONS: [&str; 3] = ["transition", "cancel", "board_mov
 /// Env var: archive target (filesystem path or `s3://…` URL); unset/empty
 /// means no target is configured.
 pub const ENV_ARCHIVE_TARGET: &str = "KAIROS_ARCHIVE_TARGET";
+/// Env var: the endpoint of an S3-compatible store for an `s3://` archive
+/// target (KAIROS-T-0671). Unset: AWS.
+pub const ENV_ARCHIVE_S3_ENDPOINT: &str = "KAIROS_ARCHIVE_S3_ENDPOINT";
+/// Env var: the region of the bucket of an `s3://` archive target
+/// (KAIROS-T-0671). Unset: the AWS environment and the instance decide.
+pub const ENV_ARCHIVE_S3_REGION: &str = "KAIROS_ARCHIVE_S3_REGION";
 /// Env var: retention mode, one of `archive|discard|off` (default
 /// `archive` — the safe default: without a target nothing is destroyed).
 pub const ENV_RETENTION_MODE: &str = "KAIROS_RETENTION_MODE";
@@ -75,6 +82,12 @@ pub enum RetentionConfigError {
         "The value {value:?} of {ENV_RETENTION_MODE} is not correct. The values are: archive, discard, off."
     )]
     InvalidMode { value: String },
+    /// `KAIROS_ARCHIVE_TARGET` is an `s3://` URL with no bucket
+    /// (KAIROS-T-0671).
+    #[error(
+        "The value {value:?} of {ENV_ARCHIVE_TARGET} has no bucket. Use s3://bucket or s3://bucket/prefix."
+    )]
+    InvalidTarget { value: String },
 }
 
 /// `KAIROS_RETENTION_MODE` (KAIROS-A-0004): what the sweeper does with
@@ -162,6 +175,76 @@ impl ArchiveTarget {
     }
 }
 
+/// The bucket and the key prefix of an `s3://` archive target
+/// (KAIROS-T-0671). The prefix has no slash at either end, and may be empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct S3Location {
+    pub bucket: String,
+    pub prefix: String,
+}
+
+impl ArchiveTarget {
+    /// The bucket and the prefix of an `s3://bucket/prefix` target. `None`
+    /// for a filesystem target and for an S3 URL with no bucket.
+    pub fn s3_location(&self) -> Option<S3Location> {
+        let ArchiveTarget::S3(url) = self else {
+            return None;
+        };
+        let rest = url.get(5..)?;
+        let (bucket, prefix) = rest.split_once('/').unwrap_or((rest, ""));
+        (!bucket.trim().is_empty()).then(|| S3Location {
+            bucket: bucket.trim().to_string(),
+            prefix: prefix.trim().trim_matches('/').to_string(),
+        })
+    }
+}
+
+/// Where a sweep puts an archive file that its target keeps in an object
+/// store (KAIROS-T-0671). `kairos-core` does no I/O, so the server gives
+/// the implementation (a S3 store); `kairos-db` calls it.
+pub trait ArchiveStore: Send + Sync {
+    /// Upload the file at `file` as the object `key` (the prefix of the
+    /// target is part of the key). The call returns when the object is
+    /// stored: a sweep deletes its rows after it.
+    fn put_file(&self, key: &str, file: &Path) -> Result<(), String>;
+}
+
+/// The store of an `s3://` target, when the server has made one.
+#[derive(Clone, Default)]
+pub struct ArchiveStoreHandle(Option<Arc<dyn ArchiveStore>>);
+
+impl ArchiveStoreHandle {
+    pub fn new(store: Arc<dyn ArchiveStore>) -> Self {
+        ArchiveStoreHandle(Some(store))
+    }
+
+    pub fn get(&self) -> Option<&Arc<dyn ArchiveStore>> {
+        self.0.as_ref()
+    }
+}
+
+impl fmt::Debug for ArchiveStoreHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "ArchiveStoreHandle(set)"
+        } else {
+            "ArchiveStoreHandle(none)"
+        })
+    }
+}
+
+impl PartialEq for ArchiveStoreHandle {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for ArchiveStoreHandle {}
+
 /// The KAIROS-A-0004 retention policy knobs (env surface per
 /// KAIROS-A-0013; see the `ENV_*` constants).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,6 +278,16 @@ pub struct RetentionConfig {
     /// (KAIROS-T-0638). 0 keeps unread notifications. In each mode, not
     /// archived, as a read notification.
     pub notifications_unread_days: u32,
+    /// `KAIROS_ARCHIVE_S3_ENDPOINT` (KAIROS-T-0671): the endpoint of an
+    /// S3-compatible store, for an `s3://` target.
+    pub archive_s3_endpoint: Option<String>,
+    /// `KAIROS_ARCHIVE_S3_REGION` (KAIROS-T-0671): the region of the
+    /// bucket, for an `s3://` target.
+    pub archive_s3_region: Option<String>,
+    /// The store of an `s3://` target. The server sets it at start; a
+    /// config from the environment has none, and a sweep to an `s3://` target
+    /// with none fails with a typed error.
+    pub archive_store: ArchiveStoreHandle,
 }
 
 impl Default for RetentionConfig {
@@ -209,6 +302,9 @@ impl Default for RetentionConfig {
             code_index_pool_days: 30,
             code_index_keep: 5,
             notifications_unread_days: 180,
+            archive_s3_endpoint: None,
+            archive_s3_region: None,
+            archive_store: ArchiveStoreHandle::default(),
         }
     }
 }
@@ -244,7 +340,15 @@ impl RetentionConfig {
         }
         if let Some(value) = lookup(ENV_ARCHIVE_TARGET) {
             config.archive_target = ArchiveTarget::parse(&value);
+            if let Some(target @ ArchiveTarget::S3(url)) = &config.archive_target
+                && target.s3_location().is_none()
+            {
+                return Err(RetentionConfigError::InvalidTarget { value: url.clone() });
+            }
         }
+        let non_empty = |name: &str| lookup(name).filter(|v| !v.trim().is_empty());
+        config.archive_s3_endpoint = non_empty(ENV_ARCHIVE_S3_ENDPOINT);
+        config.archive_s3_region = non_empty(ENV_ARCHIVE_S3_REGION);
         if let Some(value) = lookup(ENV_RETENTION_MODE) {
             config.mode = value.parse()?;
         }
@@ -284,8 +388,9 @@ pub enum RetentionStatus {
     /// `archive` with no target: the pass reads no row of `item_history`,
     /// `team_page_history` and `activity_log`, and prunes nothing.
     NoTarget,
-    /// `archive` with an `s3://` target: each pass fails, because this
-    /// version has only the filesystem target.
+    /// `archive` with an `s3://` target and no store for it: each pass
+    /// fails. The server makes the store at start, so a server does not
+    /// report this (KAIROS-T-0671).
     TargetNotImplemented,
 }
 
@@ -309,7 +414,11 @@ impl RetentionConfig {
             (RetentionMode::Discard, _) => RetentionStatus::Prunes,
             (RetentionMode::Archive, None) => RetentionStatus::NoTarget,
             (RetentionMode::Archive, Some(ArchiveTarget::S3(_))) => {
-                RetentionStatus::TargetNotImplemented
+                if self.archive_store.get().is_some() {
+                    RetentionStatus::Prunes
+                } else {
+                    RetentionStatus::TargetNotImplemented
+                }
             }
             (RetentionMode::Archive, Some(ArchiveTarget::Filesystem(_))) => RetentionStatus::Prunes,
         }
@@ -328,8 +437,8 @@ impl RetentionConfig {
                  Set {ENV_ARCHIVE_TARGET} to a directory, or set {ENV_RETENTION_MODE} to discard."
             )),
             RetentionStatus::TargetNotImplemented => Some(format!(
-                "{ENV_ARCHIVE_TARGET} is an s3:// URL. This version has only the filesystem \
-                 target, so each retention pass fails. Set {ENV_ARCHIVE_TARGET} to a directory."
+                "{ENV_ARCHIVE_TARGET} is an s3:// URL, and no S3 store is set up for it, so \
+                 each retention pass fails. Set {ENV_ARCHIVE_TARGET} to a directory."
             )),
         }
     }
@@ -551,6 +660,9 @@ mod tests {
                 code_index_pool_days: 30,
                 code_index_keep: 5,
                 notifications_unread_days: 180,
+                archive_s3_endpoint: None,
+                archive_s3_region: None,
+                archive_store: ArchiveStoreHandle::default(),
             }
         );
     }
@@ -623,6 +735,57 @@ mod tests {
     }
 
     #[test]
+    fn an_s3_target_has_a_bucket_and_a_prefix() {
+        let at = |raw: &str| ArchiveTarget::parse(raw).and_then(|t| t.s3_location());
+        assert_eq!(
+            at("s3://bucket/some/prefix/"),
+            Some(S3Location {
+                bucket: "bucket".into(),
+                prefix: "some/prefix".into()
+            })
+        );
+        assert_eq!(
+            at("S3://bucket"),
+            Some(S3Location {
+                bucket: "bucket".into(),
+                prefix: String::new()
+            })
+        );
+        assert_eq!(at("s3://"), None);
+        assert_eq!(at("s3:///prefix"), None);
+        assert_eq!(at("/var/archive"), None);
+    }
+
+    #[test]
+    fn an_s3_target_with_no_bucket_is_refused_and_the_s3_settings_are_read() {
+        let lookup = |vars: &'static [(&'static str, &'static str)]| {
+            RetentionConfig::from_lookup(move |name| {
+                vars.iter()
+                    .find(|(k, _)| *k == name)
+                    .map(|(_, v)| v.to_string())
+            })
+        };
+        let err = lookup(&[(ENV_ARCHIVE_TARGET, "s3:///prefix")]).unwrap_err();
+        assert_eq!(
+            err,
+            RetentionConfigError::InvalidTarget {
+                value: "s3:///prefix".into()
+            }
+        );
+        let config = lookup(&[
+            (ENV_ARCHIVE_TARGET, "s3://bucket/p"),
+            (ENV_ARCHIVE_S3_ENDPOINT, "http://127.0.0.1:9090"),
+            (ENV_ARCHIVE_S3_REGION, "  "),
+        ])
+        .unwrap();
+        assert_eq!(
+            config.archive_s3_endpoint.as_deref(),
+            Some("http://127.0.0.1:9090")
+        );
+        assert_eq!(config.archive_s3_region, None);
+    }
+
+    #[test]
     fn archive_target_parsing() {
         assert_eq!(
             ArchiveTarget::parse("s3://bucket/prefix"),
@@ -664,6 +827,20 @@ mod tests {
         };
         assert_eq!(s3.status(), RetentionStatus::TargetNotImplemented);
         assert!(s3.warning().expect("s3 warns").contains("s3://"));
+
+        // With a store for the target, the pass prunes (KAIROS-T-0671).
+        struct Nothing;
+        impl ArchiveStore for Nothing {
+            fn put_file(&self, _: &str, _: &Path) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        let s3_with_store = RetentionConfig {
+            archive_store: ArchiveStoreHandle::new(Arc::new(Nothing)),
+            ..s3.clone()
+        };
+        assert_eq!(s3_with_store.status(), RetentionStatus::Prunes);
+        assert_eq!(s3_with_store.warning(), None);
 
         let discard = RetentionConfig {
             mode: RetentionMode::Discard,

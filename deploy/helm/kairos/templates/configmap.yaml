@@ -128,6 +128,12 @@ data:
   {{- with .Values.config.retention.archiveTarget }}
   KAIROS_ARCHIVE_TARGET: {{ . | quote }}
   {{- end }}
+  {{- with .Values.config.retention.archiveS3Endpoint }}
+  KAIROS_ARCHIVE_S3_ENDPOINT: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.retention.archiveS3Region }}
+  KAIROS_ARCHIVE_S3_REGION: {{ . | quote }}
+  {{- end }}
   {{- with .Values.config.retention.mode }}
   KAIROS_RETENTION_MODE: {{ . | quote }}
   {{- end }}
