@@ -2260,6 +2260,7 @@ One repository, as returned by `/api/repositories` (KAIROS-T-0106).
 |---|---|---|---|
 | `code_index_breaker` | [`CodeIndexBreaker`](#codeindexbreaker) | no | The breaker of the code index builder of the repository (KAIROS-T-0399). A build job that stopped its server or stalled trips it. Then the builder starts no build of the repository. A requested build resets it. |
 | `code_index_build` | [`CodeIndexBuild`](#codeindexbuild) | no | Whether the code index builder works on the repository (KAIROS-T-0318): `on` (the default) or `off`. |
+| `code_index_scip_warnings` | array of [`CodeIndexScipWarning`](#codeindexscipwarning) | no | Each language with no SCIP index in the newest build of the code index that ended `ok` (KAIROS-T-0668): its edges are by name, and the reason says why. Empty when each SCIP indexer gave its index, and for a repository with no build. |
 | `code_index_summaries` | [`CodeIndexSummaries`](#codeindexsummaries) | no | Where the summaries of the code index of the repository are made (KAIROS-T-0340): `embedded`, `hosted`, or `organization` (the default, KAIROS-T-0358): the default of the organization decides. |
 | `code_index_summaries_resolved` | [`CodeIndexSummaries`](#codeindexsummaries) | no | Where the summaries are made now: `embedded` or `hosted`. For `organization`, the default of the organization (KAIROS-T-0358). |
 | `created_at` | `string` | yes | RFC 3339. |

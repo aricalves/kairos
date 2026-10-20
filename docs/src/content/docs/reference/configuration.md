@@ -441,6 +441,7 @@ the index after each push to the default branch.
 | `KAIROS_CODE_INDEX_DEPS_CAP_MB` | whole number | `10240` | The largest total size in MB of the dependency caches of the SCIP runners of Go, TypeScript and Python. After a run, the builder removes the caches of other repositories, oldest first, until the total is below this value. See [The tools of Go, TypeScript and Python](#the-tools-of-go-typescript-and-python). |
 | `KAIROS_CODE_INDEX_MIN_FREE_MB` | whole number | `5120` | The least free disk space in MB before a dependency install. When the free space is less, the builder removes the dependency caches first, oldest first. If the space is still less, the language gets its edges by name, and the run records a warning. |
 | `KAIROS_CODE_INDEX_DEPS_ENV` | comma-separated names | unset | More names of environment variables that a dependency install gets. An install gets only `PATH`, its cache folders and the variables in the list below, so no other secret of the server gets to a package install. |
+| `KAIROS_CODE_INDEX_TOOL_DOWNLOADS` | `true` or `1` | unset (off) | Lets the builder fetch the Python and the uv that a Python project asks for. By default, a project with `uv.lock` is synced with the Python and the uv of the runner only, and a project that they do not fit gets its edges by name. When on: uv uses the Python of the runner if it fits the `.python-version` and `requires-python` of the project, else it downloads a matching CPython; and when the `required-version` of the project excludes the uv of the runner, `pip` fetches a uv that fits it. Both go into the dependency cache of the repository. These downloads have no pinned checksum. Turn it on only when the server can reach the internet and the Python package index. |
 
 #### The providers of the summaries and the vectors
 
@@ -885,8 +886,28 @@ In the mode `archive` with no `KAIROS_ARCHIVE_TARGET`, the pass reads no row
 of `item_history`, `team_page_history` and `activity_log`, and removes none. The `retention_sweep`
 row and the record of the job then say `skipped: no target`. `/readyz` adds a
 line that starts with `warning:`, and the status stays 200. The Admin overview
-of the GUI shows an alert. An `s3://` target gives a warning too, because
-each pass fails.
+of the GUI shows an alert.
+
+#### The S3 archive target
+
+With `KAIROS_ARCHIVE_TARGET=s3://bucket/prefix`, the pass writes the rows of
+each table to a file in the temporary folder of the server. It fsyncs the file
+and uploads it to the bucket in parts. Then it removes the file. It removes the
+rows from the database after the upload succeeds.
+
+If the upload fails, the pass fails and the rows stay. The next pass tries
+again. The temporary folder needs room for the largest archive file of one
+table. The Helm chart gives the `tmp` volume to it.
+
+The credentials come from the default AWS chain. These sources are used:
+
+- The variables `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
+- A web identity token (IAM roles for service accounts).
+- The container credentials of EKS Pod Identity and ECS.
+- The role of the instance.
+
+The server needs `s3:PutObject` on the prefix. The pass never reads the archive
+back.
 
 When there are 2 or more replicas, only one replica runs a pass. A failed
 pass is logged and tried again. The next pass runs on time. A value that the
@@ -912,7 +933,9 @@ fallback to the default:
 | `KAIROS_HISTORY_HOT_DAYS` | unsigned integer (days) | `90` | Hot window. `item_history` snapshots edited within this window are never touched. |
 | `KAIROS_HISTORY_KEEP_LATEST` | unsigned integer | `5` | Latest-N guard. The newest N versions of an item are never prune candidates regardless of age. |
 | `KAIROS_ACTIVITY_RETENTION_DAYS` | unsigned integer (days) | `365` | `activity_log` window. Rows older than this are archive-then-delete candidates, with no compaction tiers. The rows that move an item (`transition`, `cancel`, `board_move`) stay at each age. |
-| `KAIROS_ARCHIVE_TARGET` | filesystem path or `s3://…` URL | unset | Where prune candidates are offloaded as NDJSON. A `file://` prefix is stripped. An `s3://` value parses to a distinct S3 target that the shipped code rejects with a typed not-implemented error, rather than being misread as a directory name. Empty means no target. |
+| `KAIROS_ARCHIVE_TARGET` | filesystem path or `s3://bucket/prefix` URL | unset | Where prune candidates are offloaded as NDJSON. A `file://` prefix is stripped. An `s3://` value makes the pass upload each archive file to that bucket, as `{prefix}/{tenant}/{table}/{timestamp}.ndjson`, before it removes the rows. An `s3://` URL with no bucket stops the start of the server. Empty means no target. See [The S3 archive target](#the-s3-archive-target). |
+| `KAIROS_ARCHIVE_S3_ENDPOINT` | URL | unset | The endpoint of an S3-compatible store, for an `s3://` target. Unset: AWS. An `http://` value is allowed, and the store gets path-style requests. |
+| `KAIROS_ARCHIVE_S3_REGION` | region name | unset | The region of the bucket, for an `s3://` target. Unset: the AWS environment decides. |
 | `KAIROS_NOTIFICATIONS_READ_DAYS` | unsigned integer (days) | `30` | The days that a read notification stays. `0` keeps read notifications. |
 | `KAIROS_NOTIFICATIONS_UNREAD_DAYS` | unsigned integer (days) | `180` | The days that an unread notification stays after the server made it. `0` keeps unread notifications. |
 | `KAIROS_CODE_INDEX_KEEP` | unsigned integer | `5` | The code indexes that stay for each repository and ref: the newest by the time of the last write. `0` keeps each index. |
@@ -1533,7 +1556,9 @@ The read-only root filesystem is compatible with a filesystem
 | `config.retention.notificationsUnreadDays` | integer or null | `null` | Sets `KAIROS_NOTIFICATIONS_UNREAD_DAYS`. Emitted only when not null, so `0` is emitted. |
 | `config.retention.codeIndexPoolDays` | integer or null | `null` | Sets `KAIROS_CODE_INDEX_POOL_DAYS`. Emitted only when not null, so `0` is emitted. |
 | `config.retention.codeIndexKeep` | integer or null | `null` | Sets `KAIROS_CODE_INDEX_KEEP`. Emitted only when not null, so `0` is emitted. |
-| `config.retention.archiveTarget` | string | `""` | Sets `KAIROS_ARCHIVE_TARGET`. Emitted only when non-empty. |
+| `config.retention.archiveTarget` | string | `""` | Sets `KAIROS_ARCHIVE_TARGET`: a path or an `s3://bucket/prefix` URL. Emitted only when non-empty. |
+| `config.retention.archiveS3Endpoint` | string | `""` | Sets `KAIROS_ARCHIVE_S3_ENDPOINT`. Emitted only when non-empty. |
+| `config.retention.archiveS3Region` | string | `""` | Sets `KAIROS_ARCHIVE_S3_REGION`. Emitted only when non-empty. |
 | `config.retention.mode` | string | `""` | Sets `KAIROS_RETENTION_MODE`. Emitted only when non-empty. |
 | `database.url` | string | `""` | Sets `DATABASE_URL` through a chart-rendered Secret. |
 | `database.existingSecret` | string | `""` | Name of a pre-existing Secret holding it. When set, the chart renders none of its own and this value wins over `database.url`. |

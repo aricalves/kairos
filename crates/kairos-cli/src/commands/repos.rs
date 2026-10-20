@@ -722,6 +722,9 @@ impl ReposCommand {
                     "index breaker:  {}",
                     detail.repository.code_index_breaker.summary()
                 );
+                for warning in &detail.repository.code_index_scip_warnings {
+                    println!("index edges:    {}", warning.note());
+                }
                 println!(
                     "summaries:      {} (now: {})",
                     detail.repository.code_index_summaries,

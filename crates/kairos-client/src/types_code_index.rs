@@ -147,6 +147,27 @@ pub struct CodeIndexScipWarning {
     pub reason: String,
 }
 
+impl CodeIndexScipWarning {
+    /// One line for the CLI and the MCP tools (KAIROS-T-0668), for example
+    /// `python: edges by name (uv sync failed, the project asks for Python
+    /// ==3.11.*; the runner has Python 3.13.16 ...)`. A long reason is cut.
+    pub fn note(&self) -> String {
+        const LONGEST: usize = 240;
+        let reason: String = self.reason.chars().take(LONGEST).collect();
+        let cut = if self.reason.chars().count() > LONGEST {
+            "…"
+        } else {
+            ""
+        };
+        format!(
+            "{}: edges by name ({}{})",
+            self.language,
+            reason.trim_end_matches('.'),
+            cut
+        )
+    }
+}
+
 /// The disk use of the builder of this server: its tools and its
 /// dependency caches (KAIROS-T-0478).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -411,4 +432,29 @@ pub struct QueryVector {
     pub model: String,
     /// The vector: as many numbers as the dimension of the model.
     pub vector: Vec<f32>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_scip_warning_is_one_line_with_a_cut_reason() {
+        let w = CodeIndexScipWarning {
+            language: "python".into(),
+            reason: "uv sync failed, the project asks for Python ==3.11.*; the runner has Python 3.13.16.".into(),
+        };
+        assert_eq!(
+            w.note(),
+            "python: edges by name (uv sync failed, the project asks for Python ==3.11.*; the runner has Python 3.13.16)"
+        );
+        let long = CodeIndexScipWarning {
+            language: "go".into(),
+            reason: "x".repeat(300),
+        };
+        let note = long.note();
+        assert!(note.starts_with("go: edges by name (xxx"), "{note}");
+        assert!(note.ends_with("x…)"), "{note}");
+        assert_eq!(note.chars().count(), "go: edges by name (".len() + 240 + 2);
+    }
 }
