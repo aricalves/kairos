@@ -341,6 +341,9 @@ One repository in full. The output has these parts:
 - `forge filters`: `default (admit everything)`, or each field whose include
   or exclude pattern is not the default. See
   [Connect a git forge](../../how-to/connect-a-git-forge/).
+- `issue import`: `off`, or `every` and the import interval, then the last
+  complete run, the next run, the count of issues in the record, and the last
+  error. `update_repository` sets the interval.
 - the team's description of how to work in the repository
 - the documents and the ADRs that impact the repository
 - `## ADRs of the owner team`: the other ADRs of the owner team

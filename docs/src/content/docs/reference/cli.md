@@ -1953,6 +1953,10 @@ The line `forge filters:` gives the forge filters of the repository. It is
 `default (admit everything)`, or each field with a pattern that is not the
 default.
 
+The line `issue import:` gives the import interval. It is `off`, or `every`
+and the interval. The line also gives the last complete run and the next
+run. It gives the count of issues in the record, and the last error.
+
 Each document or ADR is one line. The line has the short code, the lifecycle
 or the column, the title, and the kind of the item:
 

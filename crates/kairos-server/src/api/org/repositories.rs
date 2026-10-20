@@ -160,9 +160,10 @@ pub(crate) async fn import_issues(
 ///
 /// Organization admin only. The answer gives the state of the import and
 /// its counts. It also gives the interval of the repository and its sync
-/// state (KAIROS-T-0670): the last complete run, the next run, the count of
-/// the record, the counts of the last run and the last error. A repository
-/// with an interval answers before its first job, with the state `idle`.
+/// state (KAIROS-T-0670). The sync state has the last complete run, the next
+/// run and the count of the record. It also has the counts of the last run
+/// and the last error. A repository with an interval answers before its
+/// first job, with the state `idle`.
 #[utoipa::path(
     get,
     path = "/api/repositories/{slug}/import-issues",
