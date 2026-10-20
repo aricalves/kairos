@@ -19,10 +19,12 @@
 //! - `archive` + NO target: read NOTHING and prune nothing; a warning is
 //!   logged (`tracing::warn!`), counted on the [`SweepReport`], and the
 //!   audit row records `skipped: no target` (KAIROS-T-0631).
-//! - `archive` + S3 target: typed [`RetentionError::ArchiveTargetNotImplemented`]
-//!   — v1 ships the filesystem target only (KAIROS-T-0015; no S3 SDK
-//!   dependency). The target parses so operators get a clear error, not a
-//!   misconfiguration.
+//! - `archive` + S3 target (KAIROS-T-0671): the lines go to a file in the
+//!   temporary folder, the file is fsynced, uploaded through
+//!   [`RetentionConfig::archive_store`] and removed, and the rows are
+//!   deleted after the upload. With no store in the config, typed
+//!   [`RetentionError::ArchiveTargetNotImplemented`]; the server makes the
+//!   store at start.
 //! - `discard`: prune without archiving.
 //! - `off`: complete no-op (no prune, no archive, no `retention_sweep`
 //!   activity row).
@@ -91,6 +93,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
 use diesel::pg::PgConnection;
@@ -104,8 +107,8 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use kairos_core::retention::{
-    ArchiveTarget, HistoryRowMeta, RetentionConfig, RetentionMode, plan_code_index_retention,
-    plan_history_compaction,
+    ArchiveStore, ArchiveTarget, HistoryRowMeta, RetentionConfig, RetentionMode,
+    plan_code_index_retention, plan_history_compaction,
 };
 
 use crate::models::enums::ActivityAction;
@@ -122,14 +125,18 @@ pub enum RetentionError {
     /// No `org_{slug}` schema exists for this tenant.
     #[error("The tenant {0:?} does not exist.")]
     TenantNotFound(String),
-    /// The configured archive target kind is recognized but not shipped in
-    /// v1 (KAIROS-T-0015: filesystem only; S3-compatible offload is a
-    /// follow-up — NOT IMPLEMENTED).
+    /// The archive target is an `s3://` URL and the config has no store for
+    /// it: the server makes one at start (KAIROS-T-0671), a library caller
+    /// sets [`RetentionConfig::archive_store`].
     #[error(
-        "This version does not have the archive target {0:?}. It has only the filesystem \
-         target (KAIROS-T-0015)."
+        "The archive target {0:?} is an s3:// URL, and the retention config has no S3 store \
+         for it."
     )]
     ArchiveTargetNotImplemented(String),
+    /// The upload of an archive file to an `s3://` target failed; nothing
+    /// was deleted (KAIROS-T-0671).
+    #[error("The server cannot write the archive to {url}: {message}.")]
+    ArchiveUpload { url: String, message: String },
     /// Writing (or fsyncing) an archive file failed; nothing was deleted.
     #[error("The server cannot write the archive at {path:?}: {source}.")]
     ArchiveIo {
@@ -424,6 +431,18 @@ fn archive_path(base: &Path, slug: &str, table: &str, now: DateTime<Utc>) -> Pat
         .join(format!("{}.ndjson", now.format("%Y%m%dT%H%M%S%.6fZ")))
 }
 
+/// `{prefix}/{tenant}/{table}/{timestamp}.ndjson`: the key of an archive
+/// file in the bucket of an `s3://` target (KAIROS-T-0671), the same layout
+/// as [`archive_path`]. `prefix` has no slash at its ends and may be empty.
+fn archive_key(prefix: &str, slug: &str, table: &str, now: DateTime<Utc>) -> String {
+    let name = format!("{slug}/{table}/{}.ndjson", now.format("%Y%m%dT%H%M%S%.6fZ"));
+    if prefix.is_empty() {
+        name
+    } else {
+        format!("{prefix}/{name}")
+    }
+}
+
 /// One NDJSON archive file that a sweep writes page by page
 /// (KAIROS-T-0631). The file is NEW: [`NdjsonFile::create`] refuses to
 /// overwrite an existing file (two sweeps sharing a tenant/table/timestamp
@@ -480,16 +499,44 @@ impl NdjsonFile {
     }
 }
 
+/// Where the file of an archive goes after it is written and fsynced: an
+/// object of a bucket (KAIROS-T-0671).
+struct Upload {
+    store: Arc<dyn ArchiveStore>,
+    bucket: String,
+    key: String,
+}
+
 /// The archive file of one table, opened at its first line: no file is
 /// written when a table has nothing to prune.
+///
+/// For an `s3://` target the lines go to a file in the temporary folder, and
+/// [`LazyArchive::finish`] uploads the file when the plan is complete and
+/// removes it. The rows are deleted after that. A file that a failed sweep
+/// leaves is removed when the archive is dropped.
 struct LazyArchive {
     path: PathBuf,
     file: Option<NdjsonFile>,
+    upload: Option<Upload>,
 }
 
 impl LazyArchive {
     fn new(path: PathBuf) -> Self {
-        LazyArchive { path, file: None }
+        LazyArchive {
+            path,
+            file: None,
+            upload: None,
+        }
+    }
+
+    /// An archive that ends in the object `key` of `bucket`.
+    fn to_store(store: Arc<dyn ArchiveStore>, bucket: String, key: String) -> Self {
+        let path = std::env::temp_dir().join(format!("kairos-archive-{}.ndjson", Uuid::new_v4()));
+        LazyArchive {
+            path,
+            file: None,
+            upload: Some(Upload { store, bucket, key }),
+        }
     }
 
     fn write_line(&mut self, line: &str) -> Result<(), RetentionError> {
@@ -502,9 +549,34 @@ impl LazyArchive {
         }
     }
 
-    /// The path and the lines of the file, when one was written.
-    fn finish(self) -> Result<Option<(PathBuf, u64)>, RetentionError> {
-        self.file.map(NdjsonFile::finish).transpose()
+    /// The path (for an object, `s3://bucket/key`) and the lines of the
+    /// file, when one was written. An object is stored when this returns.
+    fn finish(mut self) -> Result<Option<(PathBuf, u64)>, RetentionError> {
+        let Some(file) = self.file.take() else {
+            return Ok(None);
+        };
+        let (path, lines) = file.finish()?;
+        let Some(upload) = self.upload.take() else {
+            return Ok(Some((path, lines)));
+        };
+        let url = format!("s3://{}/{}", upload.bucket, upload.key);
+        let stored = upload.store.put_file(&upload.key, &path);
+        let _ = fs::remove_file(&path);
+        stored.map_err(|message| RetentionError::ArchiveUpload {
+            url: url.clone(),
+            message,
+        })?;
+        Ok(Some((PathBuf::from(url), lines)))
+    }
+}
+
+impl Drop for LazyArchive {
+    fn drop(&mut self) {
+        // A sweep that failed before `finish`: no file stays in the
+        // temporary folder.
+        if self.upload.is_some() {
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -825,6 +897,36 @@ fn insert_audit_row(
     Ok(())
 }
 
+/// Where a sweep puts its archive files.
+enum Target<'a> {
+    /// A folder.
+    Directory(&'a Path),
+    /// A bucket, with a key prefix (KAIROS-T-0671).
+    Store {
+        store: Arc<dyn ArchiveStore>,
+        bucket: String,
+        prefix: String,
+    },
+}
+
+impl Target<'_> {
+    /// The archive of one table of one tenant for the sweep at `now`.
+    fn archive(&self, slug: &str, table: &str, now: DateTime<Utc>) -> LazyArchive {
+        match self {
+            Target::Directory(base) => LazyArchive::new(archive_path(base, slug, table, now)),
+            Target::Store {
+                store,
+                bucket,
+                prefix,
+            } => LazyArchive::to_store(
+                Arc::clone(store),
+                bucket.clone(),
+                archive_key(prefix, slug, table, now),
+            ),
+        }
+    }
+}
+
 /// The sweep body; assumes `search_path` is pinned to the tenant schema.
 fn sweep_current_schema(
     conn: &mut PgConnection,
@@ -838,7 +940,7 @@ fn sweep_current_schema(
     let mut report = SweepReport::new(slug, config.mode);
 
     // The mode decides first, so a sweep that cannot prune reads nothing.
-    let target: Option<&Path> = match (config.mode, &config.archive_target) {
+    let target: Option<Target> = match (config.mode, &config.archive_target) {
         (RetentionMode::Off, _) => unreachable!("gated in sweep_tenant"),
         (RetentionMode::Archive, None) => {
             // A-0004: compaction pauses; data is never destroyed without an
@@ -858,15 +960,25 @@ fn sweep_current_schema(
             insert_audit_row(conn, &report, now)?;
             return Ok(report);
         }
-        (RetentionMode::Archive, Some(ArchiveTarget::S3(url))) => {
-            return Err(RetentionError::ArchiveTargetNotImplemented(url.clone()));
+        (RetentionMode::Archive, Some(target @ ArchiveTarget::S3(url))) => {
+            // KAIROS-T-0671: the store is the server's, set at start.
+            match (target.s3_location(), config.archive_store.get()) {
+                (Some(location), Some(store)) => Some(Target::Store {
+                    store: Arc::clone(store),
+                    bucket: location.bucket,
+                    prefix: location.prefix,
+                }),
+                _ => return Err(RetentionError::ArchiveTargetNotImplemented(url.clone())),
+            }
         }
-        (RetentionMode::Archive, Some(ArchiveTarget::Filesystem(base))) => Some(base.as_path()),
+        (RetentionMode::Archive, Some(ArchiveTarget::Filesystem(base))) => {
+            Some(Target::Directory(base.as_path()))
+        }
         (RetentionMode::Discard, _) => None,
     };
 
-    let mut history_archive =
-        target.map(|base| LazyArchive::new(archive_path(base, slug, "item_history", now)));
+    let archive_of = |table: &str| target.as_ref().map(|t| t.archive(slug, table, now));
+    let mut history_archive = archive_of("item_history");
     let history_delete_ids = plan_history_pages(
         conn,
         HistoryTable::Item,
@@ -879,8 +991,7 @@ fn sweep_current_schema(
     )?;
 
     // team_page_history: the tiers of item_history (KAIROS-T-0638).
-    let mut page_archive =
-        target.map(|base| LazyArchive::new(archive_path(base, slug, "team_page_history", now)));
+    let mut page_archive = archive_of("team_page_history");
     let page_delete_ids = plan_history_pages(
         conn,
         HistoryTable::TeamPage,
@@ -894,8 +1005,7 @@ fn sweep_current_schema(
 
     // activity_log: plain retention window, no compaction tiers (A-0004 §4).
     let activity_cutoff = now - Duration::days(i64::from(config.activity_retention_days));
-    let mut activity_archive =
-        target.map(|base| LazyArchive::new(archive_path(base, slug, "activity_log", now)));
+    let mut activity_archive = archive_of("activity_log");
     let activity_delete_ids = plan_activity_pages(
         conn,
         activity_cutoff,

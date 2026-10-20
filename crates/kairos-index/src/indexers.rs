@@ -174,6 +174,61 @@ fn each_project(
     Ok(output)
 }
 
+/// The Go files that the indexer hashes and that a Go command can rewrite
+/// (`GOFLAGS=-mod=mod` adds requirements to `go.mod` and `go.sum`).
+const GO_FILES: [&str; 4] = ["go.mod", "go.sum", "go.work", "go.work.sum"];
+
+/// The Go files of a folder as they were before a Go command ran. The
+/// structure build hashed them, and the summary run fails when they change
+/// after it (KAIROS-T-0667), so a step that rewrote one is undone.
+struct GoFilesGuard {
+    saved: Vec<(PathBuf, Option<Vec<u8>>)>,
+}
+
+impl GoFilesGuard {
+    fn new(dir: &Path) -> Self {
+        let saved = GO_FILES
+            .iter()
+            .map(|name| dir.join(name))
+            .map(|path| {
+                let bytes = std::fs::read(&path).ok();
+                (path, bytes)
+            })
+            .collect();
+        GoFilesGuard { saved }
+    }
+
+    /// Write back each file that `step` changed, created or removed. The
+    /// result names the files, for a warning.
+    fn restore(&self, step: &str) -> Option<String> {
+        let mut changed = Vec::new();
+        for (path, before) in &self.saved {
+            let now = std::fs::read(path).ok();
+            if now == *before {
+                continue;
+            }
+            let done = match before {
+                Some(bytes) => std::fs::write(path, bytes),
+                None => std::fs::remove_file(path),
+            };
+            let name = path
+                .file_name()
+                .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+            changed.push(if done.is_ok() {
+                name
+            } else {
+                format!("{name} (not restored)")
+            });
+        }
+        (!changed.is_empty()).then(|| {
+            format!(
+                "{step} changed {}; the files are as before",
+                changed.join(", ")
+            )
+        })
+    }
+}
+
 /// scip-go on each Go module of the tree (KAIROS-T-0475).
 pub struct GoRunner {
     tools: LanguageTools,
@@ -217,13 +272,23 @@ impl ScipRunner for GoRunner {
                     .env("CGO_ENABLED", "0");
             }
         };
+        let notes = std::cell::RefCell::new(Vec::new());
         let output = each_project(&modules, |module| {
             let dir = input.root.join(module);
+            let files = GoFilesGuard::new(&dir);
+            let step = |command: &mut Command, name: &str| {
+                let result = run_step(command, name);
+                if let Some(note) = files.restore(name) {
+                    let at = if module.is_empty() { "." } else { module };
+                    notes.borrow_mut().push(format!("{at}: {note}"));
+                }
+                result
+            };
             if deps.is_some() {
                 let mut download = Command::new(&go);
                 download.args(["mod", "download"]).current_dir(&dir);
                 go_env(&mut download);
-                run_step(&mut download, "go mod download")?;
+                step(&mut download, "go mod download")?;
             }
             let out = work
                 .path()
@@ -235,8 +300,12 @@ impl ScipRunner for GoRunner {
                 .arg(&out)
                 .current_dir(&dir);
             go_env(&mut index);
-            run_step(&mut index, "scip-go")?;
+            step(&mut index, "scip-go")?;
             Ok(rebase(read_index(&out)?, module, proto::ENCODING_UTF8))
+        });
+        let output = output.map(|mut output| {
+            output.warnings.extend(notes.take());
+            output
         });
         if let Some(cache) = &self.tools.cache {
             cache.enforce_cap("go");
@@ -484,8 +553,12 @@ impl PythonRunner {
 
     /// `uv sync --frozen` of the project at `root` into `venv`, with the
     /// Python of the runner (KAIROS-T-0486). uv is fetched on first need. It
-    /// installs the locked versions only, downloads no Python, and keeps its
-    /// cache in `deps/uv`.
+    /// installs the locked versions only, and keeps its cache in `deps/uv`.
+    ///
+    /// With `tool_downloads` (KAIROS-T-0668), uv chooses the Python from
+    /// `.python-version` and `requires-python`, and fetches a CPython that
+    /// fits; and a project whose uv `required-version` excludes the uv of the
+    /// runner is synced with a uv that `pip` fetches for that requirement.
     fn uv_sync(&self, root: &Path, python: &Path, deps: &Path, venv: &Path) -> Result<(), String> {
         let uv = match self.tools.prepare("uv")? {
             Some(map) => map
@@ -495,16 +568,155 @@ impl PythonRunner {
                 .ok_or_else(|| "uv has no uv".to_string())?,
             None => on_path("uv").ok_or_else(|| "uv is not on PATH".to_string())?,
         };
-        let mut sync = Command::new(&uv);
-        sync.args(["sync", "--frozen", "--no-progress", "--python"])
-            .arg(python)
-            .current_dir(root);
-        environment(&mut sync, &self.tools, Some(deps), &[bin_of(python)]);
-        sync.env("UV_PROJECT_ENVIRONMENT", venv)
-            .env("UV_PYTHON_DOWNLOADS", "never")
-            .env("UV_CACHE_DIR", deps.join("uv"));
-        run_step(&mut sync, "uv sync").map(|_| ())
+        let sync_with = |uv: &Path| {
+            let mut sync = Command::new(uv);
+            sync.args(["sync", "--frozen", "--no-progress"])
+                .current_dir(root);
+            // `environment` clears the variables, so the others come after it.
+            environment(&mut sync, &self.tools, Some(deps), &[bin_of(python)]);
+            if self.tools.tool_downloads {
+                // The Python of the runner is on `PATH`: uv uses it when it
+                // fits, else it fetches a CPython into the cache.
+                sync.env("UV_PYTHON_DOWNLOADS", "automatic")
+                    .env("UV_PYTHON_INSTALL_DIR", deps.join("uv-python"));
+            } else {
+                sync.arg("--python")
+                    .arg(python)
+                    .env("UV_PYTHON_DOWNLOADS", "never");
+            }
+            sync.env("UV_PROJECT_ENVIRONMENT", venv)
+                .env("UV_CACHE_DIR", deps.join("uv"));
+            run_step(&mut sync, "uv sync").map(|_| ())
+        };
+        let mut used = uv.clone();
+        let mut result = sync_with(&uv);
+        if let Err(reason) = &result
+            && self.tools.tool_downloads
+            && reason.contains("Required uv version")
+            && let Some(required) = uv_required_version(root)
+        {
+            match self.required_uv(python, deps, &required) {
+                Ok(other) => {
+                    result = sync_with(&other);
+                    used = other;
+                }
+                Err(why) => result = Err(format!("{reason}; {why}")),
+            }
+        }
+        result.map_err(|reason| match python_mismatch(root, python, &used) {
+            Some(hint) => reason.replacen("uv sync failed", &format!("uv sync failed, {hint}"), 1),
+            None => reason,
+        })
     }
+
+    /// A uv that fits `required` (a `required-version` of the project), made
+    /// by `pip install --target` with the Python of the runner, in
+    /// `deps/uv-required/<key>`, and reused from there.
+    fn required_uv(&self, python: &Path, deps: &Path, required: &str) -> Result<PathBuf, String> {
+        let spec = if required.starts_with(|c: char| c.is_ascii_digit()) {
+            format!("uv=={required}")
+        } else {
+            format!("uv{required}")
+        };
+        let key = crate::tools::hex(&Sha256::digest(spec.as_bytes()));
+        let target = deps.join("uv-required").join(&key[..16]);
+        let uv = target.join("bin/uv");
+        if uv.is_file() {
+            return Ok(uv);
+        }
+        let mut pip = Command::new(python);
+        pip.args([
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "--no-input",
+            "--quiet",
+            "--target",
+        ])
+        .arg(&target)
+        .arg(&spec);
+        environment(&mut pip, &self.tools, Some(deps), &[bin_of(python)]);
+        pip.env("PIP_CACHE_DIR", deps.join("pip"));
+        run_step(&mut pip, &format!("pip install {spec}"))?;
+        if uv.is_file() {
+            Ok(uv)
+        } else {
+            Err(format!("pip install {spec} gave no bin/uv"))
+        }
+    }
+}
+
+/// The uv `required-version` of the project at `root`: `[tool.uv]` of its
+/// `pyproject.toml`, else its `uv.toml`.
+fn uv_required_version(root: &Path) -> Option<String> {
+    let table = |name: &str| {
+        std::fs::read_to_string(root.join(name))
+            .ok()
+            .and_then(|text| text.parse::<toml::Table>().ok())
+    };
+    table("pyproject.toml")
+        .and_then(|t| {
+            t.get("tool")?
+                .get("uv")?
+                .get("required-version")?
+                .as_str()
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            table("uv.toml")?
+                .get("required-version")?
+                .as_str()
+                .map(str::to_string)
+        })
+}
+
+/// What the project asks for and what the runner has, in one line, for a
+/// failed `uv sync` (KAIROS-T-0668): its `requires-python`, `.python-version`
+/// and uv `required-version` against the interpreter and the uv of the
+/// runner. `None` when the project declares none of them.
+fn python_mismatch(root: &Path, python: &Path, uv: &Path) -> Option<String> {
+    let mut asks = Vec::new();
+    let pyproject = std::fs::read_to_string(root.join("pyproject.toml"))
+        .ok()
+        .and_then(|text| text.parse::<toml::Table>().ok());
+    if let Some(requires) = pyproject
+        .as_ref()
+        .and_then(|t| t.get("project")?.get("requires-python")?.as_str())
+    {
+        asks.push(format!("Python {requires}"));
+    }
+    if let Ok(pin) = std::fs::read_to_string(root.join(".python-version"))
+        && let Some(pin) = pin.lines().map(str::trim).find(|l| !l.is_empty())
+    {
+        asks.push(format!(".python-version {pin}"));
+    }
+    if let Some(required) = uv_required_version(root) {
+        asks.push(format!("uv {required}"));
+    }
+    if asks.is_empty() {
+        return None;
+    }
+    let version = |program: &Path| {
+        Command::new(program)
+            .arg("--version")
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    let mut has = Vec::new();
+    has.extend(version(python));
+    has.extend(version(uv));
+    Some(format!(
+        "the project asks for {}; the runner has {}",
+        asks.join(", "),
+        if has.is_empty() {
+            "unknown versions".to_string()
+        } else {
+            has.join(", ")
+        }
+    ))
 }
 
 impl ScipRunner for PythonRunner {
@@ -577,6 +789,27 @@ mod tests {
     use super::*;
     use crate::languages::{Component, DependencyCache, Source};
     use crate::tools::Download;
+
+    #[test]
+    fn a_go_step_that_rewrites_a_go_file_is_undone_and_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("go.mod"), "module x\n").unwrap();
+        let guard = GoFilesGuard::new(root);
+        assert_eq!(guard.restore("go mod download"), None);
+        std::fs::write(root.join("go.mod"), "module x\n\ngo 1.22\n").unwrap();
+        std::fs::write(root.join("go.sum"), "x v1 h1:a\n").unwrap();
+        let note = guard.restore("go mod download").unwrap();
+        assert_eq!(
+            note,
+            "go mod download changed go.mod, go.sum; the files are as before"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("go.mod")).unwrap(),
+            "module x\n"
+        );
+        assert!(!root.join("go.sum").exists());
+    }
 
     #[test]
     fn the_projects_of_a_tree_are_the_outer_folders_with_a_marker() {
@@ -668,6 +901,12 @@ mod tests {
           mkdir -p \"$3/bin\"\n\
           printf '#!/bin/sh\\necho \"$@\" > \"%s/pip.args\"\\n' \"$3\" > \"$3/bin/pip\"\n\
           chmod +x \"$3/bin/pip\"\n\
+        fi\n\
+        if [ \"$1\" = \"-m\" ] && [ \"$2\" = \"pip\" ] && [ \"$3\" = \"install\" ]; then\n\
+          mkdir -p \"$8/bin\"\n\
+          echo \"$9\" > \"$8/spec\"\n\
+          printf '#!/bin/sh\\nmkdir -p \"$UV_PROJECT_ENVIRONMENT/bin\"\\necho \"$@\" > \"$UV_PROJECT_ENVIRONMENT/uv.args\"\\n' > \"$8/bin/uv\"\n\
+          chmod +x \"$8/bin/uv\"\n\
         fi\n";
 
     /// A fake `uv` that writes its arguments and the environment folder,
@@ -676,6 +915,8 @@ mod tests {
         mkdir -p \"$UV_PROJECT_ENVIRONMENT/bin\"\n\
         echo \"$@\" > \"$UV_PROJECT_ENVIRONMENT/uv.args\"\n\
         echo \"$UV_PYTHON_DOWNLOADS $UV_CACHE_DIR\" > \"$UV_PROJECT_ENVIRONMENT/uv.env\"\n";
+
+    const OLD_UV: &str = "#!/bin/sh\necho 'error: Required uv version >=0.9.0,<0.13 does not match the running version 0.13.1' >&2\nexit 2\n";
 
     const FAILING_UV: &str = "#!/bin/sh\necho 'the lock file needs to be updated' >&2\nexit 2\n";
 
@@ -800,6 +1041,95 @@ mod tests {
                 "uv-0.0.0"
             ]
         );
+    }
+
+    /// KAIROS-T-0668: a failed `uv sync` names what the project asks for.
+    #[test]
+    fn a_failed_uv_sync_names_the_versions_the_project_asks_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = python_project(dir.path(), &["uv.lock"]);
+        std::fs::write(
+            root.join("pyproject.toml"),
+            "[project]\nrequires-python = \"==3.11.*\"\n\n[tool.uv]\nrequired-version = \">=0.9.0,<0.13\"\n",
+        )
+        .unwrap();
+        std::fs::write(root.join(".python-version"), "3.11\n").unwrap();
+        let report = run_python(dir.path(), &root, fake_python_tools(dir.path(), FAILING_UV));
+        let reason = &report.scip_warnings[0].reason;
+        assert!(
+            reason.starts_with(
+                "uv sync failed, the project asks for Python ==3.11.*, .python-version 3.11, uv >=0.9.0,<0.13; the runner has "
+            ),
+            "{reason}"
+        );
+        assert!(
+            reason.contains("the lock file needs to be updated"),
+            "{reason}"
+        );
+    }
+
+    /// KAIROS-T-0668: with the setting on, uv chooses the Python and may fetch it.
+    #[test]
+    fn tool_downloads_let_uv_choose_the_python() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = python_project(dir.path(), &["pyproject.toml", "uv.lock"]);
+        let mut tools = fake_python_tools(dir.path(), FAKE_UV);
+        tools.tool_downloads = true;
+        run_python(dir.path(), &root, tools);
+        let venv = venv_of(dir.path());
+        let args = std::fs::read_to_string(venv.join("uv.args")).unwrap();
+        assert!(!args.contains("--python"), "{args}");
+        let env = std::fs::read_to_string(venv.join("uv.env")).unwrap();
+        assert!(env.starts_with("automatic "), "{env}");
+    }
+
+    /// KAIROS-T-0668: with the setting on, a uv that the project's
+    /// `required-version` excludes is replaced by one that pip fetches.
+    #[test]
+    fn tool_downloads_fetch_the_uv_that_the_project_requires() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = python_project(dir.path(), &["uv.lock"]);
+        std::fs::write(
+            root.join("pyproject.toml"),
+            "[tool.uv]\nrequired-version = \">=0.9.0,<0.13\"\n",
+        )
+        .unwrap();
+        let mut tools = fake_python_tools(dir.path(), OLD_UV);
+        tools.tool_downloads = true;
+        let report = run_python(dir.path(), &root, tools);
+        assert!(
+            report
+                .scip_warnings
+                .iter()
+                .all(|w| !w.reason.starts_with("uv sync")),
+            "{:?}",
+            report.scip_warnings
+        );
+        let python = dir.path().join("deps/t/r/python");
+        let fetched: Vec<_> = std::fs::read_dir(python.join("uv-required"))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(fetched.len(), 1);
+        let spec = std::fs::read_to_string(fetched[0].path().join("spec")).unwrap();
+        assert_eq!(spec.trim(), "uv>=0.9.0,<0.13");
+        assert!(venv_of(dir.path()).join("uv.args").is_file());
+    }
+
+    /// KAIROS-T-0668: with the setting off, nothing is fetched.
+    #[test]
+    fn a_uv_that_the_project_excludes_is_a_warning_without_the_setting() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = python_project(dir.path(), &["uv.lock"]);
+        std::fs::write(
+            root.join("pyproject.toml"),
+            "[tool.uv]\nrequired-version = \">=0.9.0,<0.13\"\n",
+        )
+        .unwrap();
+        let report = run_python(dir.path(), &root, fake_python_tools(dir.path(), OLD_UV));
+        let reason = &report.scip_warnings[0].reason;
+        assert!(reason.contains("Required uv version"), "{reason}");
+        assert!(!dir.path().join("deps/t/r/python/uv-required").exists());
     }
 
     /// KAIROS-T-0486: a failed `uv sync` is the fallback with a warning.

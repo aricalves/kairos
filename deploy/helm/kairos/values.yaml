@@ -316,8 +316,16 @@ config:
     # not null, also for 0.
     codeIndexKeep: null
     # -- KAIROS_ARCHIVE_TARGET — NDJSON offload target: a filesystem path or an
-    # s3://… URL. Empty means no target (archive mode then prunes nothing).
+    # s3://bucket/prefix URL (credentials from the AWS chain: a role for the
+    # service account, Pod Identity or the environment). Empty means no target
+    # (archive mode then prunes nothing).
     archiveTarget: ""
+    # -- KAIROS_ARCHIVE_S3_ENDPOINT — the endpoint of an S3-compatible store
+    # for an s3:// target. Empty: AWS.
+    archiveS3Endpoint: ""
+    # -- KAIROS_ARCHIVE_S3_REGION — the region of the bucket of an s3://
+    # target. Empty: the AWS environment decides.
+    archiveS3Region: ""
     # -- KAIROS_RETENTION_MODE — archive | discard | off (server default
     # archive: nothing is destroyed without an offload copy).
     mode: ""

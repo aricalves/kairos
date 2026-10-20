@@ -460,6 +460,38 @@ pub fn summarize(
     run(root, db, Some((summarizer, embedder)), options)
 }
 
+/// [`summarize`], and when a file of the tree changed after the build of the
+/// structure ([`IndexError::Changed`]; for example a dependency step wrote a
+/// lock file), build the structure again from the tree, once, and summarize
+/// again (KAIROS-T-0667). `build` is the report of the first build of the
+/// structure: the report of the second replaces it, and the path of the file
+/// that changed is the second part of the result, for the log. A second
+/// `Changed` is the error.
+pub fn summarize_or_rebuild(
+    root: &Path,
+    db: &Path,
+    summarizer: &mut dyn Summarizer,
+    embedder: &dyn EmbeddingProvider,
+    update: &crate::UpdateOptions,
+    build: &crate::BuildReport,
+) -> Result<(crate::UpdateReport, Option<String>), IndexError> {
+    match summarize(root, db, summarizer, embedder, &update.summarize) {
+        Ok(summary) => Ok((
+            crate::UpdateReport {
+                build: build.clone(),
+                summary,
+            },
+            None,
+        )),
+        Err(IndexError::Changed(path)) => {
+            let build = crate::update_structure(root, db, update)?;
+            let summary = summarize(root, db, summarizer, embedder, &update.summarize)?;
+            Ok((crate::UpdateReport { build, summary }, Some(path)))
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// Link each symbol, file and module of the index at `db` whose key is in
 /// the pool to its summary, with no model (COLLIERY-T-1854).
 ///
@@ -1995,6 +2027,45 @@ mod tests {
             matches!(&err, IndexError::Changed(path) if path == "src/lib.rs"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn a_file_changed_after_the_build_makes_the_structure_again_once() {
+        let (_dir, repo, db) = small_index();
+        let update = crate::UpdateOptions::default();
+        let first = crate::update_structure(&repo, &db, &update).unwrap();
+        let embedder = kairos_embed::DeterministicProvider::default();
+        // Nothing changed: no second build.
+        let (report, again) = summarize_or_rebuild(
+            &repo,
+            &db,
+            &mut FakeSummarizer::default(),
+            &embedder,
+            &update,
+            &first,
+        )
+        .unwrap();
+        assert_eq!(again, None);
+        assert_eq!(report.build.symbols, first.symbols);
+        // A file written after the build: the structure is made again, and
+        // the summary run goes on.
+        fs::write(
+            repo.join("src/lib.rs"),
+            "pub fn one() -> u32 { 2 }\n\npub fn three() -> u32 { 3 }\n",
+        )
+        .unwrap();
+        let (report, again) = summarize_or_rebuild(
+            &repo,
+            &db,
+            &mut FakeSummarizer::default(),
+            &embedder,
+            &update,
+            &first,
+        )
+        .unwrap();
+        assert_eq!(again.as_deref(), Some("src/lib.rs"));
+        assert_eq!(report.build.symbols, 2);
+        assert!(report.summary.failure.is_none());
     }
 
     #[test]

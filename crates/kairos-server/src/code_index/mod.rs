@@ -150,9 +150,7 @@ use std::time::{Duration, Instant};
 use kairos_db::code_index_builds as runs;
 use kairos_db::models::repositories::Repository;
 use kairos_index::tools::{ToolSet, Tools};
-use kairos_index::{
-    IndexError, SummarizeOptions, Summarizer, SummaryRequest, UpdateOptions, UpdateReport,
-};
+use kairos_index::{IndexError, Summarizer, SummaryRequest, UpdateOptions, UpdateReport};
 
 use crate::blocking::BlockingTenantPool;
 use crate::error::ApiError;
@@ -234,6 +232,9 @@ pub struct DependencySettings {
     /// `KAIROS_CODE_INDEX_DEPS_ENV`: more variables of the environment that
     /// a dependency step gets.
     pub pass_variables: Vec<String>,
+    /// `KAIROS_CODE_INDEX_TOOL_DOWNLOADS`: uv may fetch the CPython that a
+    /// project asks for (KAIROS-T-0668).
+    pub tool_downloads: bool,
 }
 
 impl Default for DependencySettings {
@@ -242,6 +243,7 @@ impl Default for DependencySettings {
             cap_bytes: 10 * 1024 * 1024 * 1024,
             min_free_bytes: 5 * 1024 * 1024 * 1024,
             pass_variables: Vec::new(),
+            tool_downloads: false,
         }
     }
 }
@@ -496,6 +498,7 @@ impl CodeIndexService {
                     min_free_bytes: self.deps.min_free_bytes,
                 }),
                 pass_variables: self.deps.pass_variables.clone(),
+                tool_downloads: self.deps.tool_downloads,
                 ..Default::default()
             };
         }
@@ -1452,10 +1455,12 @@ impl CodeIndexService {
 /// The SCIP warnings of a run as the run row keeps them (KAIROS-T-0478): a
 /// JSON array of `{"language", "reason"}`, or `None` with no warning. Each
 /// warning is in the log too.
-fn warnings_of(report: &UpdateReport) -> Option<String> {
+fn warnings_of(tenant: &str, slug: &str, report: &UpdateReport) -> Option<String> {
     let warnings = &report.build.scip_warnings;
     for w in warnings {
         tracing::warn!(
+            tenant,
+            repository = slug,
             language = %w.language,
             reason = %w.reason,
             "code index build: no SCIP index for the language, its edges are by name"
@@ -1921,17 +1926,17 @@ pub(crate) async fn build_repository(
                 .map_err(|e| format!("no work folder: {e}"))?;
             let tree = work.path().join("tree");
             std::fs::create_dir(&tree).map_err(|e| format!("no tree folder: {e}"))?;
+            let update = UpdateOptions {
+                // The server runs SCIP for each push (COLLIERY-I-0264,
+                // decision 5 of 2026-10-01).
+                rust_edges: true,
+                build,
+                ..Default::default()
+            };
             let build = with_progress(&handle, || -> Result<_, String> {
                 prepare_update_db(&db, &base.structure, base.pool, &tenant, &slug)?;
                 git::checkout_tree(&clone, &head, &tree).map_err(|e| e.to_string())?;
-                let options = UpdateOptions {
-                    // The server runs SCIP for each push (COLLIERY-I-0264,
-                    // decision 5 of 2026-10-01).
-                    rust_edges: true,
-                    build,
-                    ..Default::default()
-                };
-                kairos_index::update_structure(&tree, &db, &options).map_err(|e| e.to_string())
+                kairos_index::update_structure(&tree, &db, &update).map_err(|e| e.to_string())
             })?;
             let Models {
                 summarizers,
@@ -1944,17 +1949,23 @@ pub(crate) async fn build_repository(
                         inner: embedder.as_ref(),
                         handle: &handle,
                     };
-                    let summary = kairos_index::summarize(
+                    let (report, changed) = kairos_index::summarize_or_rebuild(
                         &tree,
                         &db,
                         &mut summarizer,
                         &embedder,
-                        &SummarizeOptions::default(),
+                        &update,
+                        &build,
                     )?;
-                    Ok(UpdateReport {
-                        build: build.clone(),
-                        summary,
-                    })
+                    if let Some(file) = changed {
+                        tracing::warn!(
+                            tenant,
+                            repository = slug,
+                            file,
+                            "code index build: a file changed after the build of the structure; the structure was built again"
+                        );
+                    }
+                    Ok(report)
                 })
                 .map_err(|e| e.to_string())?;
             let split = kairos_index::store::split(&db).map_err(|e| e.to_string())?;
@@ -1988,7 +1999,11 @@ pub(crate) async fn build_repository(
         blocking,
         tenant,
         run,
-        Ok((counts_of(&report), model_name, warnings_of(&report))),
+        Ok((
+            counts_of(&report),
+            model_name,
+            warnings_of(tenant, &repo.slug, &report),
+        )),
     )
     .await;
     remove_database(&db);
@@ -2177,14 +2192,14 @@ pub(crate) async fn full_build_repository(
                 .map_err(|e| format!("no work folder: {e}"))?;
             let tree = work.path().join("tree");
             std::fs::create_dir(&tree).map_err(|e| format!("no tree folder: {e}"))?;
+            let update = UpdateOptions {
+                rust_edges: true,
+                build,
+                ..Default::default()
+            };
             let build = with_progress(&handle, || -> Result<_, String> {
                 git::checkout_tree(&clone, &head, &tree).map_err(|e| e.to_string())?;
-                let options = UpdateOptions {
-                    rust_edges: true,
-                    build,
-                    ..Default::default()
-                };
-                match kairos_index::update_structure(&tree, &db, &options) {
+                match kairos_index::update_structure(&tree, &db, &update) {
                     Ok(build) => Ok(build),
                     Err(e) => {
                         // A work database that the build cannot read (for
@@ -2216,17 +2231,23 @@ pub(crate) async fn full_build_repository(
                         inner: embedder.as_ref(),
                         handle: &handle,
                     };
-                    let summary = kairos_index::summarize(
+                    let (report, changed) = kairos_index::summarize_or_rebuild(
                         &tree,
                         &db,
                         &mut summarizer,
                         &embedder,
-                        &SummarizeOptions::default(),
+                        &update,
+                        &build,
                     )?;
-                    Ok(UpdateReport {
-                        build: build.clone(),
-                        summary,
-                    })
+                    if let Some(file) = changed {
+                        tracing::warn!(
+                            tenant,
+                            repository = slug,
+                            file,
+                            "code index build: a file changed after the build of the structure; the structure was built again"
+                        );
+                    }
+                    Ok(report)
                 })
                 .map_err(|e| e.to_string())?;
             let split = kairos_index::store::split(&db).map_err(|e| e.to_string())?;
@@ -2265,7 +2286,11 @@ pub(crate) async fn full_build_repository(
         blocking,
         tenant,
         run,
-        Ok((counts_of(&report), model_name, warnings_of(&report))),
+        Ok((
+            counts_of(&report),
+            model_name,
+            warnings_of(tenant, &repo.slug, &report),
+        )),
     )
     .await;
     remove_database(&db);
