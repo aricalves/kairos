@@ -742,6 +742,8 @@ fn RepositoryRow(
                         <Button variant="default" size="xs" on_click=Callback::new(on_disconnect)>
                             "Disconnect"
                         </Button>
+                    })}
+                    {connectable.then(|| view! {
                         <Button variant="default" size="xs" on_click=Callback::new(on_import_issues)>
                             "Import open issues"
                         </Button>
@@ -782,7 +784,7 @@ fn RepositoryRow(
                 {forge_filters_summary}
             </Text>
             <IssueCadence repo=cadence_repo busy outcome reload/>
-            {has_webhook.then(|| view! {
+            {connectable.then(|| view! {
                 <IssueImportStatus slug=slug.get_value() reload=import_reload list_reload=reload/>
             })}
             <crate::pages::repositories::documents::RepositoryDocuments

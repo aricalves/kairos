@@ -240,10 +240,10 @@ pub async fn fetch_page(
     Ok(Page::Rows { issues, last })
 }
 
-/// What an import needs: the read token and the API base, and for a manual
-/// import the webhook connection. The cadence needs no connection
-/// (KAIROS-T-0670). The refusals name what is missing. The request checks
-/// this before it adds the job, and the job again when it starts.
+/// What an import needs: the read token and the API base. An import needs
+/// no webhook connection, the manual import included (KAIROS-T-0670). The
+/// refusals name what is missing. The request checks this before it adds
+/// the job, and the job again when it starts.
 pub struct Target {
     pub repository: Repository,
     /// The live webhook connection, when the repository has one.
@@ -259,7 +259,6 @@ pub fn target(
     reference: &str,
     key: Option<&SecretsKey>,
     github_api: &str,
-    need_connection: bool,
 ) -> Result<Target, ApiError> {
     let repository = kairos_db::repositories::resolve(conn, reference)
         .map_err(crate::api::org::repositories::map_error)?;
@@ -272,13 +271,6 @@ pub fn target(
     }
     let connection = kairos_db::forge::find_connection_for_repository(conn, repository.id)
         .map_err(crate::api::org::forge::map_error)?;
-    if need_connection && connection.is_none() {
-        return Err(ApiError::validation(format!(
-            "The repository {} has no webhook connection. Connect the webhook first \
-             (Admin, Repositories, Connect webhook), with the Issues event, then import.",
-            repository.slug
-        )));
-    }
     let (token, _) = crate::credentials::fetch_token(conn, tenant, &repository, key)
         .map_err(crate::credentials::token_refusal)?;
     let token = token.ok_or_else(|| {
@@ -561,11 +553,10 @@ impl IssueImportService {
             .as_str()
             .and_then(|id| Uuid::parse_str(id).ok())
             .ok_or_else(|| JobError::fail("The payload of the import has no repository_id."))?;
-        let manual = payload["trigger"].as_str() != Some(Trigger::Cadence.as_str());
         let mut counts = Counts::of(&payload);
         self.sync_write(&tenant, repository_id, None).await;
         let ran = self
-            .run_pages(&handle, &tenant, repository_id, manual, &mut counts)
+            .run_pages(&handle, &tenant, repository_id, &mut counts)
             .await;
         let seen = (counts.result.imported
             + counts.result.skipped
@@ -637,13 +628,12 @@ impl IssueImportService {
         handle: &JobHandle,
         tenant: &str,
         repository_id: Uuid,
-        manual: bool,
         counts: &mut Counts,
     ) -> Result<(), JobError> {
         let job = handle.job().clone();
         let tenant = tenant.to_string();
         // The repository, the connection and the token, again: they can
-        // change after the request. The cadence needs no connection.
+        // change after the request.
         let (key, github_api, slug) = (
             self.secrets_key.clone(),
             self.github_api.clone(),
@@ -658,7 +648,6 @@ impl IssueImportService {
                     &repository_id.to_string(),
                     key.as_ref(),
                     &github_api,
-                    manual,
                 )
             })
             .await

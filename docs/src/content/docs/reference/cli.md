@@ -2042,8 +2042,8 @@ The forge filter decides which issues Kairos takes. Each issue that it
 admits becomes a support task, as an opened issue does. The import skips an
 issue that Kairos took before.
 
-The repository must have a webhook connection and a read token with
-**Issues: read** (GitHub) or **read_api** (GitLab).
+The repository must have a read token with **Issues: read** (GitHub) or
+**read_api** (GitLab). It needs no webhook connection.
 
 The import is a job of the server. The command starts the job and prints
 it. When an import of the repository waits or runs, the command prints that

@@ -185,7 +185,7 @@ kairos repos import-issues payments-api --wait
 Or push *Import open issues* on the page *Admin → Repositories*. An
 organization admin does this. The import uses the read token of the
 repository (see [Read a private repository](../read-a-private-repository/)).
-The token must have these permissions:
+It needs no webhook connection. The token must have these permissions:
 
 - GitHub: **Issues: read** on the repository.
 - GitLab: the scope **read_api**.
@@ -283,8 +283,8 @@ forge gives.
 
 Kairos never runs two imports of one repository at the same time. This holds
 when a person starts an import by hand, and when two servers share one
-database. The command `kairos repos import-issues` still needs the webhook
-connection.
+database. The command `kairos repos import-issues` starts the same import.
+It needs only the read token.
 
 ## Rotate the secret
 

@@ -363,17 +363,15 @@ forge filter decides. Then Kairos makes one support task for each issue
 id on the delivery board of the team. The import skips an issue that a
 webhook or an earlier import took.
 
-The repository needs a live webhook connection, because the issue link
-hangs off it. It also needs a read token with Issues: read (GitHub) or
-`read_api` (GitLab).
+The repository needs a read token with Issues: read (GitHub) or
+`read_api` (GitLab). It needs no webhook connection.
 
 The answer is the job, at once. While an import of the repository waits
 or runs, the answer is that import: one runs at a time. Read the counts
 with `GET /api/repositories/{slug}/import-issues`.
 
 The interval of the repository (`issue_import_interval`, KAIROS-T-0670)
-runs the same import on a cadence. The cadence needs no webhook
-connection.
+runs the same import on a cadence.
 
 | Parameter | In | Required | Type | Description |
 |---|---|---|---|---|
@@ -384,7 +382,7 @@ connection.
 | `202` | [`IssueImport`](../schemas/#issueimport) | The import job: a new one, or the one that waits or runs |
 | `403` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Not an org admin |
 | `404` | [`ErrorEnvelope`](../schemas/#errorenvelope) | Unknown repository |
-| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The repository has no read token, no webhook connection, or the forge `other` |
+| `422` | [`ErrorEnvelope`](../schemas/#errorenvelope) | The repository has no read token, or the forge `other` |
 
 ### `PUT /api/repositories/{slug}/site`
 

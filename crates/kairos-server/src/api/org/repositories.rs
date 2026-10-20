@@ -84,17 +84,15 @@ pub fn router() -> Router<AppState> {
 /// id on the delivery board of the team. The import skips an issue that a
 /// webhook or an earlier import took.
 ///
-/// The repository needs a live webhook connection, because the issue link
-/// hangs off it. It also needs a read token with Issues: read (GitHub) or
-/// `read_api` (GitLab).
+/// The repository needs a read token with Issues: read (GitHub) or
+/// `read_api` (GitLab). It needs no webhook connection.
 ///
 /// The answer is the job, at once. While an import of the repository waits
 /// or runs, the answer is that import: one runs at a time. Read the counts
 /// with `GET /api/repositories/{slug}/import-issues`.
 ///
 /// The interval of the repository (`issue_import_interval`, KAIROS-T-0670)
-/// runs the same import on a cadence. The cadence needs no webhook
-/// connection.
+/// runs the same import on a cadence.
 #[utoipa::path(
     post,
     path = "/api/repositories/{slug}/import-issues",
@@ -104,7 +102,7 @@ pub fn router() -> Router<AppState> {
         (status = 202, description = "The import job: a new one, or the one that waits or runs", body = dto::IssueImport),
         (status = 403, description = "Not an org admin", body = kairos_client::types::ErrorEnvelope),
         (status = 404, description = "Unknown repository", body = kairos_client::types::ErrorEnvelope),
-        (status = 422, description = "The repository has no read token, no webhook connection, or the forge `other`", body = kairos_client::types::ErrorEnvelope),
+        (status = 422, description = "The repository has no read token, or the forge `other`", body = kairos_client::types::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn import_issues(
@@ -124,8 +122,7 @@ pub(crate) async fn import_issues(
         .blocking
         .run(&tenant.slug, move |conn| {
             require_capability(conn, &tenant_slug, None, user, "manage_teams")?;
-            let target =
-                import::target(conn, &tenant_slug, &slug, key.as_ref(), &github_api, true)?;
+            let target = import::target(conn, &tenant_slug, &slug, key.as_ref(), &github_api)?;
             let new = import::new_job(
                 &tenant_slug,
                 &target.repository,

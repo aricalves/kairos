@@ -11,8 +11,8 @@
 //!   took is skipped; GitHub pull requests and GitLab confidential issues
 //!   are not issues to import;
 //! - the read token of the repository goes to the forge, page by page;
-//! - no token, no connection, or a refused token are refused with a
-//!   message that names what is missing.
+//! - the import needs no webhook connection (KAIROS-T-0670); no token, or a
+//!   refused token, are refused with a message that names what is missing.
 //!
 //! The forge is a local fake API with recorded fixtures (no network). Runs
 //! against the LIVE compose stack. Owns the scratch database
@@ -183,10 +183,17 @@ async fn issue_import_against_live_stack() {
     }
 
     // ---- refusals before the forge is asked ------------------------------
+    // KAIROS-T-0670: the import needs no webhook connection. With none, the
+    // refusal is the missing read token.
     let err = error_of(svc.import_issues("payments-api").await);
-    assert!(err.contains("no webhook connection"), "{err}");
+    assert!(
+        err.contains("no read token") && !err.contains("webhook"),
+        "{err}"
+    );
+    // payments-api gets a connection; portal-web has none, and its import
+    // runs all the same (below).
     let mut hooks = Vec::new();
-    for slug in ["payments-api", "portal-web"] {
+    for slug in ["payments-api"] {
         hooks.push(
             svc.create_forge_connection(&CreateForgeConnectionRequest {
                 repository: slug.into(),
@@ -359,6 +366,28 @@ async fn issue_import_against_live_stack() {
     );
     let again = run_import(&svc, &jobs, "portal-web").await.result;
     assert_eq!((again.imported, again.skipped), (0, 1), "{again:?}");
+    // The repository has no connection: the issue link has the repository.
+    assert!(
+        !svc.get_repository("portal-web")
+            .await
+            .expect("repository")
+            .repository
+            .has_webhook
+    );
+    #[derive(QueryableByName)]
+    struct Links {
+        #[diesel(sql_type = diesel::sql_types::BigInt)]
+        n: i64,
+    }
+    let linked = sql_query(
+        "SELECT count(*) AS n FROM org_acme.item_links l \
+           JOIN org_acme.repositories r ON r.id = l.repository_id \
+          WHERE r.slug = 'portal-web' AND l.kind = 'issue' AND l.connection_id IS NULL",
+    )
+    .get_result::<Links>(&mut conn)
+    .expect("links")
+    .n;
+    assert_eq!(linked, 1, "the link of the task has the repository");
     let gitlab_calls: Vec<_> = forge
         .calls()
         .into_iter()

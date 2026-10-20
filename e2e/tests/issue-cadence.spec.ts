@@ -79,6 +79,10 @@ test('issue cadence: an org admin sets, reads and turns off the interval; a refu
       'Issues in the record: 0. Last run: 0 listed, 0 new tasks, no run yet.',
     );
     await expect(cadence(page, github).getByText('Only an organization admin')).toHaveCount(0);
+    // The manual import needs no webhook connection: the button shows for a
+    // repository with no connection.
+    await expect(row(page, github).getByRole('button', { name: 'Connect webhook' })).toBeVisible();
+    await expect(row(page, github).getByRole('button', { name: 'Import open issues' })).toBeEnabled();
   });
 
   await test.step('set 15 minutes: the page shows the next run', async () => {
@@ -101,11 +105,15 @@ test('issue cadence: an org admin sets, reads and turns off the interval; a refu
       page.getByText(`Kairos set the import interval of "${github}" to 1h.`),
     ).toBeVisible({ timeout: 10_000 });
     await expect(select(page, github)).toHaveValue('1h');
-    await select(page, github).selectOption('off');
-    await cadence(page, github).getByRole('button', { name: 'Save interval' }).click();
-    await expect(
-      page.getByText(`Kairos set the import interval of "${github}" to off.`),
-    ).toBeVisible({ timeout: 10_000 });
+    // The list reads again after the save above and builds the row anew, so
+    // try the choice again if that happens between the choice and the click.
+    await expect(async () => {
+      await select(page, github).selectOption('off');
+      await cadence(page, github).getByRole('button', { name: 'Save interval' }).click();
+      await expect(
+        page.getByText(`Kairos set the import interval of "${github}" to off.`),
+      ).toBeVisible({ timeout: 3_000 });
+    }).toPass({ timeout: 20_000 });
     await expect(state(page, github)).toContainText('Next run: none. The import is off.');
     expect((await call(token, 'GET', `/api/repositories/${github}`)).issue_import_interval).toBe(
       'off',

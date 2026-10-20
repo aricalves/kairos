@@ -169,9 +169,9 @@ pub enum ReposCommand {
     },
     /// Import the open issues of a repository once (org admin). Each one
     /// becomes a support task on the delivery board of the team, as an
-    /// opened issue does. A second run skips what the first took. Needs the
-    /// webhook connection and a read token with Issues: read (GitHub) or
-    /// read_api (GitLab). The import is a job of the server: the command
+    /// opened issue does. A second run skips what the first took. Needs a read
+    /// token with Issues: read (GitHub) or read_api (GitLab), and no webhook
+    /// connection. The import is a job of the server: the command
     /// starts it and shows it. While an import of the repository waits or
     /// runs, the command shows that import
     ImportIssues {
