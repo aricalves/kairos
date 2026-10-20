@@ -572,8 +572,8 @@ pub struct ItemActivityEntry {
 // Activity log (KAIROS-A-0004 / S-0005)
 // ---------------------------------------------------------------------------
 
-/// The repository that an activity entry is about: enough to link the
-/// repository and the pull request or branch of a `forge_event`.
+/// The repository that an activity entry is about. It has enough data to
+/// link the repository and the pull request or branch of a `forge_event`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ActivityRepository {
     /// Tenant-unique handle.
