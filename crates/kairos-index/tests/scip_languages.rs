@@ -432,8 +432,75 @@ fn typescript_with_scip_typescript() {
         check_typescript(&db, &report);
         let (dir, db, report) = build("scip-js", &options);
         check_javascript(&db, &report);
-        // The tsconfig.json that `--infer-tsconfig` writes is removed.
+        // The tsconfig of Kairos is removed after the run.
         assert!(!dir.path().join("scip-js/tsconfig.json").exists());
+        assert!(!dir.path().join("scip-js/tsconfig.kairos.json").exists());
+    }
+}
+
+/// KAIROS-T-0669: a JavaScript project with `.mjs` files only, and one whose
+/// `tsconfig.json` has no `allowJs`, get SCIP edges. scip-typescript alone
+/// stops on both with "no files got indexed". No file of the project changes.
+#[test]
+fn javascript_that_scip_typescript_alone_does_not_take() {
+    let cache = tempfile::tempdir().unwrap();
+    for (mode, options) in real_modes(&["node", "scip-typescript"], cache.path()) {
+        eprintln!("JavaScript variants, {mode}");
+        // `.mjs` files only, with no config file.
+        let dir = tempfile::tempdir().unwrap();
+        let root = copy("scip-js", dir.path());
+        for name in ["lib", "main", "other"] {
+            std::fs::rename(
+                root.join(format!("{name}.js")),
+                root.join(format!("{name}.mjs")),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            root.join("main.mjs"),
+            "import { helper } from \"./lib.mjs\";\n\nexport function main() {\n  return helper();\n}\n",
+        )
+        .unwrap();
+        let db = dir.path().join("index.sqlite");
+        let report = build_structure_with(&root, &db, &options).unwrap();
+        assert!(
+            report
+                .scip_warnings
+                .iter()
+                .all(|w| w.language != "typescript"),
+            "{:?}",
+            report.scip_warnings
+        );
+        assert_eq!(
+            edges_of(&db, "main"),
+            [(
+                s("lib.helper"),
+                s("certain"),
+                s("scip"),
+                Some(s("lib.mjs:helper"))
+            )]
+        );
+        let mut left: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["lib.mjs", "main.mjs", "other.mjs", "package.json"]);
+
+        // `.js` files and a `tsconfig.json` with no `allowJs`.
+        let dir = tempfile::tempdir().unwrap();
+        let root = copy("scip-js", dir.path());
+        let tsconfig = "{\"compilerOptions\":{\"strict\":true}}\n";
+        std::fs::write(root.join("tsconfig.json"), tsconfig).unwrap();
+        let db = dir.path().join("index.sqlite");
+        let report = build_structure_with(&root, &db, &options).unwrap();
+        check_javascript(&db, &report);
+        assert_eq!(
+            std::fs::read_to_string(root.join("tsconfig.json")).unwrap(),
+            tsconfig
+        );
+        assert!(!root.join("tsconfig.kairos.json").exists());
     }
 }
 
