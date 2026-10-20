@@ -223,6 +223,7 @@ mod tests {
             entity_short_code: code.map(str::to_string),
             entity_title: None,
             entity_archived_at: None,
+            entity_repository: None,
             agent_key_id: agent.then(|| "k-1".to_string()),
         };
         let listing = Listing {

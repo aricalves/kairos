@@ -93,6 +93,7 @@ impl IntoDto<dto::ActivityEntry> for ActivityLogEntry {
             entity_short_code: None,
             entity_title: None,
             entity_archived_at: None,
+            entity_repository: None,
             agent_key_id: self.agent_key_id.map(|id| id.to_string()),
         }
     }

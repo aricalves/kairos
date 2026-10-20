@@ -113,6 +113,14 @@ pub struct HistorySnapshot {
     pub agent_key_id: Option<String>,
 }
 
+/// mirror of: `kairos_client::types_meta::ActivityRepository`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct ActivityRepository {
+    pub full_name: String,
+    pub url: String,
+    pub forge: String,
+}
+
 /// mirror of: `kairos_client::types_meta::ActivityEntry`.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct ActivityEntry {
@@ -134,6 +142,10 @@ pub struct ActivityEntry {
     /// When the item was archived (RFC 3339), absent for a live item.
     #[serde(default)]
     pub entity_archived_at: Option<String>,
+    /// The repository of a `forge_event` entry. Absent for any other
+    /// entry, and from an older server.
+    #[serde(default)]
+    pub entity_repository: Option<ActivityRepository>,
     /// The agent key of the change, when an agent made it with the agent
     /// key of a person (KAIROS-T-0359). Absent from an older server.
     #[serde(default)]
@@ -267,12 +279,53 @@ pub enum EntityCell {
         title: String,
         archived: bool,
     },
+    /// The entry is about a repository (a forge event): a link to the
+    /// repository on the forge, and a link to the pull request, the branch
+    /// or the issue that `details` names, when it names one.
+    Repository {
+        name: String,
+        href: String,
+        forge_ref: Option<ForgeRefLink>,
+    },
     /// The entry has no item that a person can open. `label` is the type
     /// of the entity, and `reason` says why the cell has no link.
     NoLink { label: String, reason: &'static str },
     /// The entry names no entity (a relationship: `details` has the short
     /// codes).
     Empty,
+}
+
+/// The link to the pull request, the branch or the issue of a forge event.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ForgeRefLink {
+    pub label: String,
+    pub href: String,
+}
+
+/// The pull request, the branch or the issue that the `details` of a
+/// forge event name, with its address on the forge. `details` start with
+/// the kind and the external id (`pull_request 12 open by robin`,
+/// `branch chore/uv open`, `issue 7 open -> DEMO-T-0001 (webhook)`). A
+/// branch name has no space, so the second word is the whole id. Pure,
+/// host-tested.
+fn forge_ref_link(repository: &ActivityRepository, details: &str) -> Option<ForgeRefLink> {
+    let mut words = details.split_whitespace();
+    let kind = words.next()?;
+    let id = words.next()?;
+    let base = repository.url.trim_end_matches('/');
+    let gitlab = repository.forge == "gitlab";
+    let dash = if gitlab { "/-" } else { "" };
+    let (label, path) = match kind {
+        "pull_request" if gitlab => (format!("MR !{id}"), format!("/-/merge_requests/{id}")),
+        "pull_request" => (format!("PR #{id}"), format!("/pull/{id}")),
+        "issue" => (format!("issue #{id}"), format!("{dash}/issues/{id}")),
+        "branch" => (format!("branch {id}"), format!("{dash}/tree/{id}")),
+        _ => return None,
+    };
+    Some(ForgeRefLink {
+        label,
+        href: format!("{base}{path}"),
+    })
 }
 
 /// Why an entry about an item has no link: Kairos does not have the item.
@@ -290,6 +343,13 @@ pub fn entity_cell(entry: &ActivityEntry) -> EntityCell {
             short_code: code.to_string(),
             title: entry.entity_title.clone().unwrap_or_default(),
             archived: entry.entity_archived_at.is_some(),
+        };
+    }
+    if let Some(repository) = &entry.entity_repository {
+        return EntityCell::Repository {
+            name: repository.full_name.clone(),
+            href: repository.url.clone(),
+            forge_ref: forge_ref_link(repository, &entry.details),
         };
     }
     if entry.entity_id.is_none() {
@@ -828,6 +888,27 @@ fn FeedTable(page: ListEnvelope<ActivityEntry>, names: HashMap<String, String>) 
                             </span>
                         })}
                         <Text dimmed=true size="xs">{title}</Text>
+                    </Group>
+                }
+                .into_any(),
+                EntityCell::Repository {
+                    name,
+                    href,
+                    forge_ref,
+                } => view! {
+                    <Group gap="xs" wrap=true>
+                        <Anchor href=href attr:target="_blank" attr:rel="noopener noreferrer">
+                            {name}
+                        </Anchor>
+                        {forge_ref.map(|link| view! {
+                            <Anchor
+                                href=link.href
+                                attr:target="_blank"
+                                attr:rel="noopener noreferrer"
+                            >
+                                {link.label}
+                            </Anchor>
+                        })}
                     </Group>
                 }
                 .into_any(),
@@ -1818,6 +1899,74 @@ mod tests {
             ..base
         };
         assert_eq!(entity_cell(&relationship), EntityCell::Empty);
+    }
+
+    /// A forge event links its repository, and its pull request, branch or
+    /// issue.
+    #[test]
+    fn a_forge_event_links_the_repository_and_the_pull_request_or_branch() {
+        let event = |forge: &str, details: &str| {
+            entry(serde_json::json!({
+                "id": "0a8e9f7d-58f7-4f6e-9f0f-4dbb1a8f3e21",
+                "actor_id": "6e4ff04d-1c92-4c66-9e46-94e0d9e0f70f",
+                "action": "forge_event",
+                "entity_id": "b7a7f5b6-83fb-46f6-a3ed-9a0d1a11e001",
+                "entity_type": "repository",
+                "details": details,
+                "occurred_at": "2026-07-14T10:00:00.000000Z",
+                "entity_repository": {
+                    "slug": "app",
+                    "full_name": "acme/app",
+                    "url": format!("https://{forge}.example/acme/app/"),
+                    "forge": forge
+                }
+            }))
+        };
+        let link = |label: &str, href: &str| {
+            Some(ForgeRefLink {
+                label: label.to_string(),
+                href: href.to_string(),
+            })
+        };
+        let cell = |forge: &str, details: &str| match entity_cell(&event(forge, details)) {
+            EntityCell::Repository {
+                name,
+                href,
+                forge_ref,
+            } => {
+                assert_eq!(name, "acme/app");
+                assert_eq!(href, format!("https://{forge}.example/acme/app/"));
+                forge_ref
+            }
+            other => panic!("a repository cell: {other:?}"),
+        };
+        assert_eq!(
+            cell("github", "branch chore/uv-0.13.3 open by dstorey-swish"),
+            link(
+                "branch chore/uv-0.13.3",
+                "https://github.example/acme/app/tree/chore/uv-0.13.3"
+            )
+        );
+        assert_eq!(
+            cell("github", "pull_request 12 merged by robin"),
+            link("PR #12", "https://github.example/acme/app/pull/12")
+        );
+        assert_eq!(
+            cell("gitlab", "pull_request 12 open"),
+            link(
+                "MR !12",
+                "https://gitlab.example/acme/app/-/merge_requests/12"
+            )
+        );
+        assert_eq!(
+            cell("gitlab", "branch main open"),
+            link("branch main", "https://gitlab.example/acme/app/-/tree/main")
+        );
+        assert_eq!(
+            cell("github", "issue 7 open by sam -> DEMO-T-0001 (webhook)"),
+            link("issue #7", "https://github.example/acme/app/issues/7")
+        );
+        assert_eq!(cell("github", "something else"), None);
     }
 
     /// KAIROS-T-0359: a change made by an agent has the mark, and an entry
