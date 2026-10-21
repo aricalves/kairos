@@ -259,6 +259,58 @@ fn go_with_scip_go() {
     }
 }
 
+/// KAIROS-T-0667: `scip-go` with `GOFLAGS=-mod=mod` rewrites `go.mod` of a
+/// module that imports a package it does not require (it raised `go` to the
+/// version of the toolchain, added the requirement and wrote `go.sum`).
+/// The summary run then stopped with `Changed("go.mod")`. With the real
+/// tools, the build leaves both files as they were and the summaries run.
+/// Needs the network, for the module proxy.
+#[test]
+fn go_leaves_go_mod_as_it_was_when_scip_go_would_rewrite_it() {
+    let cache = tempfile::tempdir().unwrap();
+    for (mode, options) in real_modes(&["go", "scip-go"], cache.path()) {
+        if mode != "server" {
+            continue;
+        }
+        eprintln!("Go with a missing requirement, {mode}");
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("app");
+        std::fs::create_dir_all(&root).unwrap();
+        let go_mod = "module example.com/app\n\ngo 1.22\n";
+        std::fs::write(root.join("go.mod"), go_mod).unwrap();
+        std::fs::write(
+            root.join("main.go"),
+            "package main\n\nimport (\n\t\"fmt\"\n\n\t\"golang.org/x/text/cases\"\n\t\"golang.org/x/text/language\"\n)\n\nfunc main() {\n\tfmt.Println(cases.Title(language.English).String(\"hi\"))\n}\n",
+        )
+        .unwrap();
+        let db = dir.path().join("index.sqlite");
+        let report = build_structure_with(&root, &db, &options).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("go.mod")).unwrap(),
+            go_mod
+        );
+        assert!(!root.join("go.sum").exists());
+        // The run says which step rewrote the files.
+        assert!(
+            report
+                .scip_warnings
+                .iter()
+                .any(|w| w.language == "go" && w.reason.contains("changed go.mod")),
+            "{:?}",
+            report.scip_warnings
+        );
+        // The summaries run: no file changed after the build of the structure.
+        kairos_index::summarize(
+            &root,
+            &db,
+            &mut kairos_index::FakeSummarizer::default(),
+            &kairos_embed::DeterministicProvider::default(),
+            &kairos_index::SummarizeOptions::default(),
+        )
+        .expect("the summary run finds no changed file");
+    }
+}
+
 /// KAIROS-T-0474: the tools of a language are fetched only for a tree with
 /// files of that language. The pins point to a closed port, so a fetch
 /// fails at once, with no network.
@@ -486,6 +538,9 @@ fn javascript_that_scip_typescript_alone_does_not_take() {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
         left.sort();
+        // A server build runs `npm install`, which writes `package-lock.json`;
+        // the runner leaves no tsconfig of its own.
+        left.retain(|name| name != "package-lock.json");
         assert_eq!(left, ["lib.mjs", "main.mjs", "other.mjs", "package.json"]);
 
         // `.js` files and a `tsconfig.json` with no `allowJs`.
@@ -636,6 +691,73 @@ fn python_install_failure_falls_back() {
             edges_of(&db, "run"),
             [(s("store.save"), s("possible"), s("name"), None)]
         );
+    }
+}
+
+/// KAIROS-T-0668: a project that asks for another Python and another uv than
+/// the pinned ones (`requires-python = "==3.12.*"` and a `required-version`
+/// that excludes uv 0.13.1) falls back to edges by name, and says why. With
+/// tool downloads, uv fetches CPython 3.12 and `pip` fetches a uv that fits,
+/// and the project syncs. Needs the network, for GitHub releases and PyPI.
+#[test]
+fn python_tool_downloads_fetch_the_python_and_the_uv_the_project_asks_for() {
+    let cache = tempfile::tempdir().unwrap();
+    for (mode, mut options) in real_modes(&["node", "scip-python", "python3"], cache.path()) {
+        if mode != "server" {
+            continue;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = copy("scip-python-uv", dir.path());
+        std::fs::write(
+            root.join("pyproject.toml"),
+            "[project]\nname = \"shop\"\nversion = \"0.1.0\"\nrequires-python = \"==3.12.*\"\ndependencies = [\"helper\"]\n\n[tool.uv]\npackage = false\nrequired-version = \"<0.13\"\n\n[tool.uv.sources]\nhelper = { path = \"wheels/helper-0.1.0-py3-none-any.whl\" }\n",
+        )
+        .unwrap();
+
+        // Without the setting: edges by name, and the reason names both asks.
+        let db = dir.path().join("off.sqlite");
+        let report = build_structure_with(&root, &db, &options).unwrap();
+        let reason = report
+            .scip_warnings
+            .iter()
+            .find(|w| w.language == "python")
+            .map(|w| w.reason.clone())
+            .expect("a python warning");
+        assert!(
+            reason.starts_with(
+                "uv sync failed, the project asks for Python ==3.12.*, uv <0.13; the runner has "
+            ),
+            "{reason}"
+        );
+
+        // With the setting: the project syncs.
+        options.scip.tools.tool_downloads = true;
+        let db = dir.path().join("on.sqlite");
+        let report = build_structure_with(&root, &db, &options).unwrap();
+        assert!(
+            report
+                .scip_warnings
+                .iter()
+                .all(|w| !(w.language == "python" && w.reason.starts_with("uv sync"))),
+            "{:?}",
+            report.scip_warnings
+        );
+        let python = cache.path().join("test/repository/python");
+        assert!(python.join("uv-required").is_dir(), "pip fetched no uv");
+        assert!(python.join("uv-python").is_dir(), "uv fetched no Python");
+        let venv = std::fs::read_dir(&python)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("venv-")
+            })
+            .expect("a venv");
+        let config = std::fs::read_to_string(venv.join("pyvenv.cfg")).unwrap();
+        assert!(config.contains("version_info = 3.12"), "{config}");
     }
 }
 
