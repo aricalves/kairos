@@ -2,7 +2,7 @@
 title: "Install Kairos on Kubernetes with Helm"
 ---
 
-Get a Kairos 0.16.0 deployment serving on a cluster you already run.
+Get a Kairos 0.16.1 deployment serving on a cluster you already run.
 
 **Before you start**, have all four:
 
@@ -123,7 +123,7 @@ mounts the Swagger UI at `/api/docs`.
 
 ```sh
 helm install kairos oci://ghcr.io/colliery-io/charts/kairos \
-  --version 0.16.0 -f my-values.yaml
+  --version 0.16.1 -f my-values.yaml
 ```
 
 `--version` is not optional in practice: the chart publishes no floating tag.
@@ -348,6 +348,54 @@ Changes that people and agents see:
 - The MCP server has 78 tools. The CLI has new verbs, and each verb takes a
   name or a slug. Run `kairos self-update` and update the plugin with
   `/plugin`.
+
+### From 0.16.0 to 0.16.1
+
+These changes of 0.16.1 show after the upgrade. They apply to Compose too.
+
+Before the upgrade, stop every 0.16.0 server before a new one serves, as
+for 0.16. No test runs 0.16.0 servers and a 0.16.1 server together.
+
+1 migration runs, for each tenant: `issue_sync`. It adds the table
+`forge_issue_sync`. It adds one nullable column to `repositories` and one to
+`item_links`. It lets `item_links.connection_id` be empty. It rewrites no
+row, and every repository keeps the new import interval off.
+
+- Locks: `repositories` and `item_links` are small tables. The CHECK and the
+  FOREIGN KEY take a short lock. No migration locks a large table.
+- Scans: no migration validates a constraint or builds an index with
+  `CONCURRENTLY`.
+
+Changes that people and agents see:
+
+- A repository can import its open issues on an interval, with no webhook.
+  An organization admin sets it: `kairos repos update --import-interval 15m`,
+  the MCP tool `update_repository`, or the Admin page Repositories. The
+  default is `off`. The shortest interval is 1 minute and the longest is 30
+  days. The import and the interval need only the read token of the
+  repository. They need no `KAIROS_PUBLIC_URL` and no webhook connection.
+  `kairos repos import-status` shows the last run.
+- The retention archive can go to a bucket. Set `KAIROS_ARCHIVE_TARGET` to
+  `s3://bucket/prefix`. Credentials come from the AWS chain. Two optional
+  settings, `KAIROS_ARCHIVE_S3_ENDPOINT` and `KAIROS_ARCHIVE_S3_REGION`, are
+  for an S3-compatible store. The Helm values are
+  `config.retention.archiveS3Endpoint` and `config.retention.archiveS3Region`.
+  An `s3://` value with no bucket stops the server at start. Before this
+  release, an `s3://` target made each retention pass fail.
+- The code index of a Go project no longer fails with "The file go.mod
+  changed after the build of the structure". The builder restores the Go
+  files after each Go step. When another file changes, the builder builds the
+  structure again once.
+- A Python project can ask for another Python or another uv than the pinned
+  ones. Set `KAIROS_CODE_INDEX_TOOL_DOWNLOADS=true`, and the builder fetches
+  them from the internet. The default is off, and the builder fetches nothing. A failed
+  `uv sync` now says what the project asks for.
+- A repository shows each language whose edges are by name: `kairos repos
+  show`, the MCP tool `get_repository`, and the field
+  `code_index_scip_warnings` of `GET /api/repositories/{slug}`.
+- JavaScript with `.mjs` or `.cjs` files, or with a `tsconfig.json` that has
+  no `allowJs`, gets a SCIP index.
+- The image build of a release no longer fails on a race in its smoke test.
 
 ## Trying it out without a database
 
