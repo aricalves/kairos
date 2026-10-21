@@ -971,7 +971,7 @@ fn IssueCadence(
                     disabled=locked
                     error=refusal_for(refused, "issue_import_interval")/>
                 <Button size="xs" disabled=locked on_click=Callback::new(on_save)>
-                    "Save interval"
+                    "Apply interval"
                 </Button>
             </Group>
             <Stack gap="xs" attr:data-testid="issue-cadence-state">

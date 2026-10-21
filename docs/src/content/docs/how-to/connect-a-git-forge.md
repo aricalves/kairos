@@ -234,7 +234,7 @@ kairos repos update payments-api --import-interval 15m
 ```
 
 - The page *Admin → Repositories*: choose the interval in *Import open
-  issues every*, then push *Save interval*. A person who is not an
+  issues every*, then push *Apply interval*. A person who is not an
   organization admin sees the interval and cannot change it.
 - The MCP tool `update_repository`, with the argument `issue_import_interval`.
 - `PATCH /api/repositories/{slug}`, with the field `issue_import_interval`.

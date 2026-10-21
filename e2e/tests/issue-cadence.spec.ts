@@ -87,7 +87,7 @@ test('issue cadence: an org admin sets, reads and turns off the interval; a refu
 
   await test.step('set 15 minutes: the page shows the next run', async () => {
     await select(page, github).selectOption('15m');
-    await cadence(page, github).getByRole('button', { name: 'Save interval' }).click();
+    await cadence(page, github).getByRole('button', { name: 'Apply interval' }).click();
     await expect(
       page.getByText(`Kairos set the import interval of "${github}" to 15m.`),
     ).toBeVisible({ timeout: 10_000 });
@@ -100,7 +100,7 @@ test('issue cadence: an org admin sets, reads and turns off the interval; a refu
 
   await test.step('change to one hour, then turn it off', async () => {
     await select(page, github).selectOption('1h');
-    await cadence(page, github).getByRole('button', { name: 'Save interval' }).click();
+    await cadence(page, github).getByRole('button', { name: 'Apply interval' }).click();
     await expect(
       page.getByText(`Kairos set the import interval of "${github}" to 1h.`),
     ).toBeVisible({ timeout: 10_000 });
@@ -109,7 +109,7 @@ test('issue cadence: an org admin sets, reads and turns off the interval; a refu
     // try the choice again if that happens between the choice and the click.
     await expect(async () => {
       await select(page, github).selectOption('off');
-      await cadence(page, github).getByRole('button', { name: 'Save interval' }).click();
+      await cadence(page, github).getByRole('button', { name: 'Apply interval' }).click();
       await expect(
         page.getByText(`Kairos set the import interval of "${github}" to off.`),
       ).toBeVisible({ timeout: 3_000 });
@@ -122,7 +122,7 @@ test('issue cadence: an org admin sets, reads and turns off the interval; a refu
 
   await test.step('a refusal of the server shows next to the select', async () => {
     await select(page, other).selectOption('15m');
-    await cadence(page, other).getByRole('button', { name: 'Save interval' }).click();
+    await cadence(page, other).getByRole('button', { name: 'Apply interval' }).click();
     await expect(cadence(page, other).locator('.cl-field__error')).toHaveText(
       `The repository ${other} has the forge \`other\`. Only a github repository or a ` +
         'gitlab repository has issues to import.',
@@ -165,7 +165,7 @@ test('issue cadence: a person who is not an org admin sees it and cannot change 
     await expect(row(page, slug)).toBeVisible({ timeout: 30_000 });
     await expect(select(page, slug)).toHaveValue('off');
     await expect(select(page, slug)).toBeDisabled();
-    await expect(cadence(page, slug).getByRole('button', { name: 'Save interval' })).toBeDisabled();
+    await expect(cadence(page, slug).getByRole('button', { name: 'Apply interval' })).toBeDisabled();
     await expect(cadence(page, slug).locator('[data-testid="issue-cadence-readonly"]')).toHaveText(
       'Only an organization admin can change the interval.',
     );

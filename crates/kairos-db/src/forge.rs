@@ -269,44 +269,80 @@ pub fn links_for_item(
     conn: &mut PgConnection,
     item_id: Uuid,
 ) -> Result<Vec<LinkWithRepo>, ForgeError> {
-    use crate::schema::{forge_connections, item_links, repositories};
-    let rows: Vec<(ItemLink, Forge, String)> = item_links::table
-        .inner_join(forge_connections::table.inner_join(repositories::table))
-        .filter(item_links::item_id.eq(item_id))
-        .filter(forge_connections::deleted_at.is_null())
-        .select((
-            ItemLink::as_select(),
-            repositories::forge,
-            repositories::repo_full_name,
-        ))
-        .load(conn)?;
-    let own: Vec<(ItemLink, Forge, String)> = item_links::table
-        .inner_join(
-            repositories::table.on(item_links::repository_id.eq(repositories::id.nullable())),
-        )
-        .filter(item_links::item_id.eq(item_id))
-        .filter(item_links::connection_id.is_null())
-        .select((
-            ItemLink::as_select(),
-            repositories::forge,
-            repositories::repo_full_name,
-        ))
-        .load(conn)?;
-    let mut rows: Vec<LinkWithRepo> = rows
+    use diesel::sql_types::{Nullable, Text, Timestamptz, Uuid as SqlUuid};
+
+    /// One row of the one statement below.
+    #[derive(QueryableByName)]
+    struct Row {
+        #[diesel(sql_type = SqlUuid)]
+        id: Uuid,
+        #[diesel(sql_type = SqlUuid)]
+        item_id: Uuid,
+        #[diesel(sql_type = Nullable<SqlUuid>)]
+        connection_id: Option<Uuid>,
+        #[diesel(sql_type = Text)]
+        kind: LinkKind,
+        #[diesel(sql_type = Text)]
+        external_id: String,
+        #[diesel(sql_type = Text)]
+        title: String,
+        #[diesel(sql_type = Text)]
+        url: String,
+        #[diesel(sql_type = Text)]
+        state: LinkState,
+        #[diesel(sql_type = Text)]
+        author: String,
+        #[diesel(sql_type = Timestamptz)]
+        forge_updated_at: DateTime<Utc>,
+        #[diesel(sql_type = Timestamptz)]
+        created_at: DateTime<Utc>,
+        #[diesel(sql_type = Timestamptz)]
+        updated_at: DateTime<Utc>,
+        #[diesel(sql_type = Nullable<SqlUuid>)]
+        repository_id: Option<Uuid>,
+        #[diesel(sql_type = Text)]
+        forge: Forge,
+        #[diesel(sql_type = Text)]
+        repo_full_name: String,
+    }
+
+    // ONE statement: a link with a connection shows while the connection
+    // lives, and its repository is the one of the connection; a link
+    // without a connection has its own repository.
+    let rows: Vec<Row> = diesel::sql_query(
+        "SELECT l.id, l.item_id, l.connection_id, l.kind, l.external_id, l.title, l.url, \
+                l.state, l.author, l.forge_updated_at, l.created_at, l.updated_at, \
+                l.repository_id, r.forge, r.repo_full_name \
+           FROM item_links l \
+           LEFT JOIN forge_connections c ON c.id = l.connection_id \
+           JOIN repositories r ON r.id = COALESCE(c.repository_id, l.repository_id) \
+          WHERE l.item_id = $1 AND (l.connection_id IS NULL OR c.deleted_at IS NULL) \
+          ORDER BY l.kind DESC, l.forge_updated_at DESC",
+    )
+    .bind::<SqlUuid, _>(item_id)
+    .load(conn)?;
+    Ok(rows
         .into_iter()
-        .chain(own)
-        .map(|(link, forge, repo_full_name)| LinkWithRepo {
-            link,
-            forge,
-            repo_full_name,
+        .map(|row| LinkWithRepo {
+            link: ItemLink {
+                id: row.id,
+                item_id: row.item_id,
+                connection_id: row.connection_id,
+                kind: row.kind,
+                external_id: row.external_id,
+                title: row.title,
+                url: row.url,
+                state: row.state,
+                author: row.author,
+                forge_updated_at: row.forge_updated_at,
+                created_at: row.created_at,
+                updated_at: row.updated_at,
+                repository_id: row.repository_id,
+            },
+            forge: row.forge,
+            repo_full_name: row.repo_full_name,
         })
-        .collect();
-    // `kind` descending, then newest first.
-    rows.sort_by(|a, b| {
-        (b.link.kind.to_string(), b.link.forge_updated_at)
-            .cmp(&(a.link.kind.to_string(), a.link.forge_updated_at))
-    });
-    Ok(rows)
+        .collect())
 }
 
 /// The link of an issue that the cadence took (KAIROS-T-0670): it has the
