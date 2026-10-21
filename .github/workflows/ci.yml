@@ -301,14 +301,14 @@ jobs:
           shared-key: tests
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      # Every integration test target but the two cucumber runners (their
+      # Every integration test target but the three cucumber runners (their
       # own harness, which nextest cannot list): those go to the bdd job.
       - name: Build the nextest archive
         run: |
           set -euo pipefail
           targets="$(cargo metadata --no-deps --format-version 1 | python3 -c '
           import json, sys
-          skip = {("kairos-cli", "index_bdd"), ("kairos-index", "bdd")}
+          skip = {("kairos-cli", "index_bdd"), ("kairos-index", "bdd"), ("kairos-index", "scip_bdd")}
           for p in json.load(sys.stdin)["packages"]:
               for t in p["targets"]:
                   if "test" in t["kind"] and (p["name"], t["name"]) not in skip:
@@ -324,12 +324,12 @@ jobs:
           set -euo pipefail
           mkdir -p bdd-bin
           cargo test --no-run --message-format=json \
-              -p kairos-cli --test index_bdd -p kairos-index --test bdd \
+              -p kairos-cli --test index_bdd -p kairos-index --test bdd --test scip_bdd \
             | python3 -c '
           import json, shutil, sys
           for line in sys.stdin:
               m = json.loads(line)
-              if m.get("reason") == "compiler-artifact" and m.get("executable") and m["target"]["name"] in ("index_bdd", "bdd"):
+              if m.get("reason") == "compiler-artifact" and m.get("executable") and m["target"]["name"] in ("index_bdd", "bdd", "scip_bdd"):
                   shutil.copy(m["executable"], "bdd-bin/" + m["target"]["name"])
                   print(m["target"]["name"], m["executable"])
           '
@@ -462,6 +462,7 @@ jobs:
       matrix:
         suite:
           - { name: kairos-index, dir: crates/kairos-index, bin: bdd }
+          - { name: kairos-index-scip, dir: crates/kairos-index, bin: scip_bdd }
           - { name: kairos-cli, dir: crates/kairos-cli, bin: index_bdd }
     steps:
       # The compose stack and the test servers bind host ports 41080-41900,
