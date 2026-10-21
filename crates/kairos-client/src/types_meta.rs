@@ -572,6 +572,20 @@ pub struct ItemActivityEntry {
 // Activity log (KAIROS-A-0004 / S-0005)
 // ---------------------------------------------------------------------------
 
+/// The repository that an activity entry is about. It has enough data to
+/// link the repository and the pull request or branch of a `forge_event`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ActivityRepository {
+    /// Tenant-unique handle.
+    pub slug: String,
+    /// `owner/repo` on GitHub, `group/subgroup/project` on GitLab.
+    pub full_name: String,
+    /// The web URL of the repository on the forge.
+    pub url: String,
+    /// `github`, `gitlab` or `other`.
+    pub forge: String,
+}
+
 /// One `activity_log` row, as returned by `GET /api/activity`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ActivityEntry {
@@ -610,6 +624,11 @@ pub struct ActivityEntry {
     /// item, and when `entity_short_code` is null.
     #[serde(default)]
     pub entity_archived_at: Option<String>,
+    /// The repository of the entry, when `entity_type` is `repository`
+    /// (a `forge_event`). Null for any other entry, and when Kairos has no
+    /// repository with the id.
+    #[serde(default)]
+    pub entity_repository: Option<ActivityRepository>,
     /// The agent key (UUID) of the request that made this change, when an
     /// agent made it with the agent key of a person (KAIROS-T-0359). The
     /// actor is still the person: show "Alice (agent)". Null for a change

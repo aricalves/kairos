@@ -112,6 +112,49 @@ fn item_heads(
     Ok(heads)
 }
 
+/// The repositories that the `repository` entries of one page are about,
+/// by id (a `forge_event` names its repository). One query for the page.
+fn repository_heads(
+    conn: &mut PgConnection,
+    rows: &[ActivityLogEntry],
+) -> Result<HashMap<Uuid, dto::ActivityRepository>, ApiError> {
+    use kairos_db::schema::repositories;
+
+    let ids: BTreeSet<Uuid> = rows
+        .iter()
+        .filter(|row| row.entity_type.as_deref() == Some("repository"))
+        .filter_map(|row| row.entity_id)
+        .collect();
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let found: Vec<(Uuid, String, String, String, String)> = repositories::table
+        .filter(repositories::id.eq_any(ids))
+        .select((
+            repositories::id,
+            repositories::slug,
+            repositories::repo_full_name,
+            repositories::repo_url,
+            repositories::forge,
+        ))
+        .load(conn)
+        .map_err(ApiError::internal)?;
+    Ok(found
+        .into_iter()
+        .map(|(id, slug, full_name, url, forge)| {
+            (
+                id,
+                dto::ActivityRepository {
+                    slug,
+                    full_name,
+                    url,
+                    forge,
+                },
+            )
+        })
+        .collect())
+}
+
 /// Query the activity log with combinable filters + pagination.
 ///
 /// An entry about an item has `entity_short_code`, `entity_title` and
@@ -247,11 +290,14 @@ pub(crate) async fn get_activity(
             // COLLIERY-T-0262: the short code and the title of each item
             // of the page.
             let heads = item_heads(conn, &rows)?;
+            let repositories = repository_heads(conn, &rows)?;
             let items = rows
                 .into_iter()
                 .map(|row| {
                     let head = row.entity_id.and_then(|id| heads.get(&id)).cloned();
+                    let repository = row.entity_id.and_then(|id| repositories.get(&id)).cloned();
                     let mut entry: dto::ActivityEntry = row.into_dto();
+                    entry.entity_repository = repository;
                     if let Some((short_code, title, archived_at)) = head {
                         entry.entity_short_code = Some(short_code);
                         entry.entity_title = Some(title);

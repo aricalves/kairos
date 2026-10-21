@@ -21,11 +21,23 @@ One `activity_log` row, as returned by `GET /api/activity`.
 | `details` | `string` | yes | Structured context, e.g. `"column:Draft->Active"`. |
 | `entity_archived_at` | `string`, nullable | no | When the item acted on was archived (RFC 3339). Null for a live item, and when `entity_short_code` is null. |
 | `entity_id` | `string`, nullable | no | The item acted on (UUID). For a relationship between two items it is the source of the edge, and `details` names the two (KAIROS-T-0638; null in older rows whose source is not known). For an `impacts` link it is the document or the ADR of the link (COLLIERY-T-0269). |
+| `entity_repository` | [`ActivityRepository`](#activityrepository), nullable | no |  |
 | `entity_short_code` | `string`, nullable | no | The short code of the item acted on (COLLIERY-T-0262), live or archived. Null when the entry is not about an item (a board, a team, a member), and when Kairos has no item with the id. |
 | `entity_title` | `string`, nullable | no | The title of the item acted on, as it is now. Null when `entity_short_code` is null. |
 | `entity_type` | `string`, nullable | no | `strategy|initiative|task|document|adr`. Null when `entity_id` is null. |
 | `id` | `string` | yes | Row id (UUID). |
 | `occurred_at` | `string` | yes | RFC 3339. |
+
+## ActivityRepository
+
+The repository that an activity entry is about. It has enough data to link the repository and the pull request or branch of a `forge_event`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `forge` | `string` | yes | `github`, `gitlab` or `other`. |
+| `full_name` | `string` | yes | `owner/repo` on GitHub, `group/subgroup/project` on GitLab. |
+| `slug` | `string` | yes | Tenant-unique handle. |
+| `url` | `string` | yes | The web URL of the repository on the forge. |
 
 ## AddBoardMemberRequest
 
