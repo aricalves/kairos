@@ -3487,6 +3487,7 @@ async fn repository_tools_against_live_stack() {
             "default_branch_source",
             "description",
             "forge_filters",
+            "issue_import_interval",
             "repo_url",
             "repository",
             "slug",
@@ -4003,7 +4004,7 @@ async fn repository_tools_against_live_stack() {
             text,
             "VALIDATION: The call has nothing to change. Send one or more of these \
              arguments: description, default_branch, default_branch_source, repo_url, \
-             code_index_build, slug, team, forge_filters."
+             code_index_build, slug, team, forge_filters, issue_import_interval."
         );
     }
     // The values that the repository has: a success that writes nothing.
@@ -4035,7 +4036,7 @@ async fn repository_tools_against_live_stack() {
             "VALIDATION: The call has the argument \"owner\". This tool does not \
              accept that argument. The arguments of this tool are: repository, \
              description, default_branch, default_branch_source, repo_url, \
-             code_index_build, slug, team, forge_filters."
+             code_index_build, slug, team, forge_filters, issue_import_interval."
         ),
         "{text}"
     );
@@ -4184,6 +4185,68 @@ async fn repository_tools_against_live_stack() {
     assert_eq!(
         text,
         "No change to repository acme-fidius: it has these values already."
+    );
+
+    // --- KAIROS-T-0670: the interval of the issue import, org admin only ---
+    let text = alice_session
+        .call_ok("get_repository", json!({"repository": "acme-fidius"}))
+        .await;
+    assert!(text.contains("\n- issue import: off\n"), "{text}");
+    let text = alice_session
+        .call_err(
+            "update_repository",
+            json!({"repository": "acme-fidius", "issue_import_interval": "1h"}),
+        )
+        .await;
+    assert!(text.starts_with("FORBIDDEN"), "{text}");
+    for (bad, needle) in [("hourly", "not valid"), ("10s", "shortest")] {
+        let text = svc_session
+            .call_err(
+                "update_repository",
+                json!({"repository": "acme-fidius", "issue_import_interval": bad}),
+            )
+            .await;
+        assert!(
+            text.starts_with("VALIDATION:") && text.contains(needle),
+            "{text}"
+        );
+    }
+    let text = svc_session
+        .call_ok(
+            "update_repository",
+            json!({"repository": "acme-fidius", "issue_import_interval": "1h"}),
+        )
+        .await;
+    assert_eq!(
+        text,
+        "Updated repository acme-fidius: issue_import_interval."
+    );
+    let text = alice_session
+        .call_ok("get_repository", json!({"repository": "acme-fidius"}))
+        .await;
+    assert!(
+        text.contains("\n- issue import: every 1h; last complete run none; next run 20"),
+        "{text}"
+    );
+    let text = svc_session
+        .call_ok(
+            "update_repository",
+            json!({"repository": "acme-fidius", "issue_import_interval": "1h"}),
+        )
+        .await;
+    assert_eq!(
+        text,
+        "No change to repository acme-fidius: it has these values already."
+    );
+    let text = svc_session
+        .call_ok(
+            "update_repository",
+            json!({"repository": "acme-fidius", "issue_import_interval": "off"}),
+        )
+        .await;
+    assert_eq!(
+        text,
+        "Updated repository acme-fidius: issue_import_interval."
     );
 
     // --- KAIROS-T-0398: update_repository turns the code index builder off --

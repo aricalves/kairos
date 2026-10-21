@@ -158,14 +158,20 @@ pub enum ReposCommand {
         /// empty pattern excludes nothing
         #[arg(long = "exclude", value_name = "FIELD=PATTERN")]
         exclude: Vec<String>,
+        /// How often the repository takes its open issues, with no webhook
+        /// (org admin): off, or a number with a unit: 90s, 15m, 1h or 1d.
+        /// The shortest interval is 1m and the longest is 30d. The
+        /// repository needs a read token
+        #[arg(long = "import-interval", value_name = "OFF|INTERVAL")]
+        import_interval: Option<String>,
         #[command(flatten)]
         common: Common,
     },
     /// Import the open issues of a repository once (org admin). Each one
     /// becomes a support task on the delivery board of the team, as an
-    /// opened issue does. A second run skips what the first took. Needs the
-    /// webhook connection and a read token with Issues: read (GitHub) or
-    /// read_api (GitLab). The import is a job of the server: the command
+    /// opened issue does. A second run skips what the first took. Needs a read
+    /// token with Issues: read (GitHub) or read_api (GitLab), and no webhook
+    /// connection. The import is a job of the server: the command
     /// starts it and shows it. While an import of the repository waits or
     /// runs, the command shows that import
     ImportIssues {
@@ -177,8 +183,9 @@ pub enum ReposCommand {
         #[command(flatten)]
         common: Common,
     },
-    /// Show the last import of the open issues of a repository (org admin):
-    /// its state, and its counts
+    /// Show the import of the open issues of a repository (org admin): the
+    /// interval, the last complete run, the next run, the counts and the
+    /// last error, then the last job
     ImportStatus {
         /// Repository slug (or UUID)
         repository: String,
@@ -734,6 +741,10 @@ impl ReposCommand {
                     "forge filters:  {}",
                     detail.repository.forge_filters.summary()
                 );
+                println!(
+                    "issue import:   {}",
+                    detail.repository.issue_import_summary()
+                );
                 println!("\nHow to work here:");
                 if detail.repository.description.trim().is_empty() {
                     println!("  (no description yet)");
@@ -823,6 +834,7 @@ impl ReposCommand {
                 code_index_summaries,
                 include,
                 exclude,
+                import_interval,
                 common,
             } => {
                 if slug.is_none()
@@ -835,11 +847,12 @@ impl ReposCommand {
                     && code_index_summaries.is_none()
                     && include.is_empty()
                     && exclude.is_empty()
+                    && import_interval.is_none()
                 {
                     return Err(CliError::Failure(
                         "The command has no change. Use --slug, --repo-url, --default-branch, \
                          --follow-forge, --team, --description, --code-index-build, \
-                         --code-index-summaries, --include or --exclude."
+                         --code-index-summaries, --include, --exclude or --import-interval."
                             .to_string(),
                     ));
                 }
@@ -873,6 +886,7 @@ impl ReposCommand {
                             // The site switch has its own command (KAIROS-T-0408).
                             site_enabled: None,
                             forge_filters,
+                            issue_import_interval: import_interval,
                         },
                     )
                     .await?;
@@ -1110,11 +1124,22 @@ fn print_import(import: &kairos_client::types_repositories::IssueImport) {
         }
         (state, _) => state.to_string(),
     };
-    println!(
-        "Import {} of {}: {state} ({} page(s) read).",
-        import.job, import.repository, import.pages
-    );
-    println!("{}", import.result.message);
+    if import.job.is_empty() {
+        println!(
+            "Repository {}: no import job has run yet.",
+            import.repository
+        );
+    } else {
+        println!(
+            "Import {} of {}: {state} ({} page(s) read).",
+            import.job, import.repository, import.pages
+        );
+        println!("{}", import.result.message);
+    }
+    println!("Interval: {}", import.interval);
+    for line in import.sync.lines("  ") {
+        println!("{line}");
+    }
     if let Some(error) = &import.error {
         println!("Error: {error}");
     }

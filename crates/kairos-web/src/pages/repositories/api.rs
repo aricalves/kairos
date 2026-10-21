@@ -86,6 +86,43 @@ pub struct Repository {
     /// server does not send it: each field has the default.
     #[serde(default)]
     pub forge_filters: std::collections::BTreeMap<String, ForgeFilterRule>,
+    /// `off`, or `15m`, `1h`, `1d` (KAIROS-T-0670): how often the
+    /// repository takes its open issues, with no webhook.
+    #[serde(default = "interval_off")]
+    pub issue_import_interval: String,
+    /// What the last runs of the import did (KAIROS-T-0670).
+    #[serde(default)]
+    pub issue_sync: IssueSync,
+}
+
+fn interval_off() -> String {
+    "off".to_string()
+}
+
+/// The intervals that the page offers (KAIROS-T-0670). A mirror of
+/// `kairos_client::types_repositories::ISSUE_IMPORT_CHOICES`: this crate
+/// does not depend on `kairos-client`.
+pub const ISSUE_IMPORT_CHOICES: [&str; 6] = ["off", "15m", "30m", "1h", "6h", "1d"];
+
+/// mirror of: `kairos_client::types_repositories::IssueSync`.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+pub struct IssueSync {
+    #[serde(default)]
+    pub next_run_at: Option<String>,
+    #[serde(default)]
+    pub last_run_at: Option<String>,
+    #[serde(default)]
+    pub last_run_complete: bool,
+    #[serde(default)]
+    pub last_complete_at: Option<String>,
+    #[serde(default)]
+    pub record_count: i64,
+    #[serde(default)]
+    pub last_run_listed: i64,
+    #[serde(default)]
+    pub last_run_imported: i64,
+    #[serde(default)]
+    pub last_error: Option<String>,
 }
 
 /// mirror of: `kairos_client::types_repositories::ForgeFilterRule`.
@@ -250,6 +287,49 @@ impl Repository {
         } else {
             format!("Forge filters: {}.", parts.join("; "))
         }
+    }
+
+    /// The choices of the interval select: the fixed choices, and the
+    /// current value when a person set another one with the CLI
+    /// (KAIROS-T-0670).
+    pub fn issue_import_choices(&self) -> Vec<String> {
+        let mut choices: Vec<String> = ISSUE_IMPORT_CHOICES.iter().map(|c| c.to_string()).collect();
+        if !choices.contains(&self.issue_import_interval) {
+            choices.push(self.issue_import_interval.clone());
+        }
+        choices
+    }
+
+    /// The sentences of the sync state (KAIROS-T-0670): the last complete
+    /// run, the next run, the counts and the last error. Pure,
+    /// host-tested.
+    pub fn issue_sync_lines(&self) -> Vec<String> {
+        let sync = &self.issue_sync;
+        let on = self.issue_import_interval != "off";
+        let mut lines = vec![
+            match &sync.last_complete_at {
+                Some(at) => format!("Last complete run: {at}."),
+                None => "Last complete run: none yet.".to_string(),
+            },
+            match (&sync.next_run_at, on) {
+                (_, false) => "Next run: none. The import is off.".to_string(),
+                (Some(at), true) => format!("Next run: {at}."),
+                (None, true) => "Next run: soon.".to_string(),
+            },
+        ];
+        let last = match (sync.last_run_at.is_some(), sync.last_run_complete) {
+            (false, _) => "no run yet".to_string(),
+            (true, true) => "complete".to_string(),
+            (true, false) => "not complete".to_string(),
+        };
+        lines.push(format!(
+            "Issues in the record: {}. Last run: {} listed, {} new tasks, {last}.",
+            sync.record_count, sync.last_run_listed, sync.last_run_imported
+        ));
+        if let Some(error) = &sync.last_error {
+            lines.push(format!("Last error: {error}"));
+        }
+        lines
     }
 
     /// The text of the setting `code_index_build` (KAIROS-T-0318).

@@ -29,6 +29,7 @@ pub mod forge_filters;
 pub mod graph;
 pub mod history;
 pub mod impacts;
+pub mod issue_sync;
 pub mod issue_writeback;
 pub mod item_activity;
 pub mod item_notes;

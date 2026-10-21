@@ -262,31 +262,114 @@ pub struct LinkWithRepo {
 }
 
 /// Every link on one item, PRs before branches then newest first (the
-/// ordering lives here so every client agrees).
+/// ordering lives here so every client agrees). A link with a connection
+/// shows while the connection lives; a link of the cadence
+/// (KAIROS-T-0670) has a repository and no connection.
 pub fn links_for_item(
     conn: &mut PgConnection,
     item_id: Uuid,
 ) -> Result<Vec<LinkWithRepo>, ForgeError> {
-    use crate::schema::{forge_connections, item_links, repositories};
-    let rows: Vec<(ItemLink, Forge, String)> = item_links::table
-        .inner_join(forge_connections::table.inner_join(repositories::table))
-        .filter(item_links::item_id.eq(item_id))
-        .filter(forge_connections::deleted_at.is_null())
-        .order((item_links::kind.desc(), item_links::forge_updated_at.desc()))
-        .select((
-            ItemLink::as_select(),
-            repositories::forge,
-            repositories::repo_full_name,
-        ))
-        .load(conn)?;
+    use diesel::sql_types::{Nullable, Text, Timestamptz, Uuid as SqlUuid};
+
+    /// One row of the one statement below.
+    #[derive(QueryableByName)]
+    struct Row {
+        #[diesel(sql_type = SqlUuid)]
+        id: Uuid,
+        #[diesel(sql_type = SqlUuid)]
+        item_id: Uuid,
+        #[diesel(sql_type = Nullable<SqlUuid>)]
+        connection_id: Option<Uuid>,
+        #[diesel(sql_type = Text)]
+        kind: LinkKind,
+        #[diesel(sql_type = Text)]
+        external_id: String,
+        #[diesel(sql_type = Text)]
+        title: String,
+        #[diesel(sql_type = Text)]
+        url: String,
+        #[diesel(sql_type = Text)]
+        state: LinkState,
+        #[diesel(sql_type = Text)]
+        author: String,
+        #[diesel(sql_type = Timestamptz)]
+        forge_updated_at: DateTime<Utc>,
+        #[diesel(sql_type = Timestamptz)]
+        created_at: DateTime<Utc>,
+        #[diesel(sql_type = Timestamptz)]
+        updated_at: DateTime<Utc>,
+        #[diesel(sql_type = Nullable<SqlUuid>)]
+        repository_id: Option<Uuid>,
+        #[diesel(sql_type = Text)]
+        forge: Forge,
+        #[diesel(sql_type = Text)]
+        repo_full_name: String,
+    }
+
+    // ONE statement: a link with a connection shows while the connection
+    // lives, and its repository is the one of the connection; a link
+    // without a connection has its own repository.
+    let rows: Vec<Row> = diesel::sql_query(
+        "SELECT l.id, l.item_id, l.connection_id, l.kind, l.external_id, l.title, l.url, \
+                l.state, l.author, l.forge_updated_at, l.created_at, l.updated_at, \
+                l.repository_id, r.forge, r.repo_full_name \
+           FROM item_links l \
+           LEFT JOIN forge_connections c ON c.id = l.connection_id \
+           JOIN repositories r ON r.id = COALESCE(c.repository_id, l.repository_id) \
+          WHERE l.item_id = $1 AND (l.connection_id IS NULL OR c.deleted_at IS NULL) \
+          ORDER BY l.kind DESC, l.forge_updated_at DESC",
+    )
+    .bind::<SqlUuid, _>(item_id)
+    .load(conn)?;
     Ok(rows
         .into_iter()
-        .map(|(link, forge, repo_full_name)| LinkWithRepo {
-            link,
-            forge,
-            repo_full_name,
+        .map(|row| LinkWithRepo {
+            link: ItemLink {
+                id: row.id,
+                item_id: row.item_id,
+                connection_id: row.connection_id,
+                kind: row.kind,
+                external_id: row.external_id,
+                title: row.title,
+                url: row.url,
+                state: row.state,
+                author: row.author,
+                forge_updated_at: row.forge_updated_at,
+                created_at: row.created_at,
+                updated_at: row.updated_at,
+                repository_id: row.repository_id,
+            },
+            forge: row.forge,
+            repo_full_name: row.repo_full_name,
         })
         .collect())
+}
+
+/// The link of an issue that the cadence took (KAIROS-T-0670): it has the
+/// repository and no webhook connection. The caller makes it once, for the
+/// task that it just made.
+pub fn add_repository_link(
+    conn: &mut PgConnection,
+    repository_id: Uuid,
+    link: NewItemLink,
+) -> Result<(), ForgeError> {
+    diesel::sql_query(
+        "INSERT INTO item_links
+             (item_id, repository_id, kind, external_id, title, url, state,
+              author, forge_updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+    )
+    .bind::<diesel::sql_types::Uuid, _>(link.item_id)
+    .bind::<diesel::sql_types::Uuid, _>(repository_id)
+    .bind::<diesel::sql_types::Text, _>(link.kind)
+    .bind::<diesel::sql_types::Text, _>(link.external_id)
+    .bind::<diesel::sql_types::Text, _>(link.title)
+    .bind::<diesel::sql_types::Text, _>(link.url)
+    .bind::<diesel::sql_types::Text, _>(link.state)
+    .bind::<diesel::sql_types::Text, _>(link.author)
+    .bind::<diesel::sql_types::Timestamptz, _>(link.forge_updated_at)
+    .execute(conn)?;
+    Ok(())
 }
 
 /// Links in the given states across a set of items — the team rollup's

@@ -12,7 +12,11 @@ Connect a GitHub or GitLab repository. Then Kairos does these things:
 - It makes one support task from each opened issue that the filter admits
   (KAIROS-A-0028).
 
-**Before you start:**
+Kairos can also take the open issues on an interval, with no webhook. See
+[section 6](#6-take-issues-on-an-interval-with-no-webhook). Use it when
+the forge cannot reach Kairos, for example on a private network.
+
+**Before you start (for the webhook):**
 
 - **Kairos is reachable from the forge.** Webhooks are inbound. For a deployed
   ingress that is ordinary; for local development you need a tunnel
@@ -181,7 +185,7 @@ kairos repos import-issues payments-api --wait
 Or push *Import open issues* on the page *Admin → Repositories*. An
 organization admin does this. The import uses the read token of the
 repository (see [Read a private repository](../read-a-private-repository/)).
-The token must have these permissions:
+It needs no webhook connection. The token must have these permissions:
 
 - GitHub: **Issues: read** on the repository.
 - GitLab: the scope **read_api**.
@@ -206,6 +210,81 @@ When the forge gives its rate limit, the import waits until the time that
 the forge gives, and then continues. The state is then `waiting`. When the
 forge refuses the token, the import fails, and the error names the
 permission.
+
+## 6. Take issues on an interval, with no webhook
+
+A webhook needs the forge to reach Kairos. A deployment on a private network
+cannot receive one. For that case, give the repository an import interval.
+Kairos then asks the forge for the open issues on that interval. It needs
+no webhook connection. It needs no `KAIROS_PUBLIC_URL` and no
+`KAIROS_WEBHOOK_SIGNING_KEY`.
+
+Before you start:
+
+- You registered the repository with a `github` or `gitlab` forge.
+- The repository has a read token with the permission for issues. See
+  [Read a private repository](../read-a-private-repository/). The permission
+  is **Issues: read** on GitHub and **read_api** on GitLab.
+- You are an organization admin.
+
+Set the interval with one of these:
+
+```sh
+kairos repos update payments-api --import-interval 15m
+```
+
+- The page *Admin → Repositories*: choose the interval in *Import open
+  issues every*, then push *Apply interval*. A person who is not an
+  organization admin sees the interval and cannot change it.
+- The MCP tool `update_repository`, with the argument `issue_import_interval`.
+- `PATCH /api/repositories/{slug}`, with the field `issue_import_interval`.
+
+The interval is `off`, or a number with a unit: `90s`, `15m`, `1h` or `1d`.
+The default is `off`. The shortest interval is `1m`. The longest is `30d`.
+Kairos refuses another value, and the error names the field.
+
+### What a run does
+
+Each run is a sync. It does not read "what is new since the last run".
+
+- The run lists every open issue of the repository.
+- It compares each issue with the record of the issues that Kairos took. The
+  key of the record is the id that the forge gives to the issue.
+- An issue with no record becomes one support task. The forge filter
+  decides, and the task is the same as the task of section 5.
+- An issue that has a record makes nothing.
+
+A missed run leaves no gap. The server can be down, or a rate limit can
+stop a run. The next run compares the full list again, so it takes each
+issue that is still missing. An issue that someone opens and closes between
+two runs makes no task. A closed issue does not change its task.
+
+A webhook and an interval can work on the same repository. They share the
+record, so one issue makes one task.
+
+### Read the state
+
+```sh
+kairos repos import-status payments-api
+```
+
+The command prints the interval and the last complete run. It prints the
+next run and the count of issues in the record. It also prints the counts of
+the last run. The page *Admin → Repositories* shows the same under the
+repository.
+
+A run that stops half way keeps the tasks that it made. It does not count as
+complete. The next run goes on from the full list.
+
+If a run fails, the state shows the error. A forge that refuses the read
+token gives an error that names the permission. The next run tries again.
+When the forge gives its rate limit, the run waits until the time that the
+forge gives.
+
+Kairos never runs two imports of one repository at the same time. This holds
+when a person starts an import by hand, and when two servers share one
+database. The command `kairos repos import-issues` starts the same import.
+It needs only the read token.
 
 ## Rotate the secret
 

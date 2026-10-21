@@ -62,6 +62,9 @@ pub struct Repository {
     /// The default branch that the remote gave at the last fetch, or `None`
     /// (KAIROS-T-0430).
     pub forge_branch: Option<String>,
+    /// The seconds between two runs of the issue import (KAIROS-T-0670), or
+    /// `None`: the cadence is off.
+    pub issue_import_interval_secs: Option<i32>,
 }
 
 /// The values of [`Repository::code_index_build`]. The column has a CHECK
@@ -134,6 +137,8 @@ pub struct RepositoryChangeset {
     pub site_enabled: Option<bool>,
     /// `forge` or `hand` (KAIROS-T-0430).
     pub default_branch_source: Option<String>,
+    /// `Some(None)` turns the cadence off (KAIROS-T-0670).
+    pub issue_import_interval_secs: Option<Option<i32>>,
     pub updated_by: Option<Uuid>,
     pub updated_at: Option<DateTime<Utc>>,
 }

@@ -127,7 +127,7 @@ async fn ingest_issue(
                 &slug,
                 actor,
                 connection.repository_id,
-                connection.id,
+                Some(connection.id),
                 &issue,
                 crate::forge::intake::Source::Webhook,
             )

@@ -420,6 +420,7 @@ fn RepositoryRow(
             .collect::<Vec<String>>(),
     );
     let refused: RwSignal<Option<api::Refusal>> = RwSignal::new(None);
+    let cadence_repo = repo.clone();
     let has_webhook = repo.has_webhook;
     let connectable = repo.forge != "other";
     let name = format!("{} · {}", repo.forge, repo.repo_full_name);
@@ -488,6 +489,7 @@ fn RepositoryRow(
                         code_index_summaries: Some(&cs),
                         site_enabled: Some(site_on),
                         forge_filters: None,
+                        issue_import_interval: None,
                     },
                 )
                 .await
@@ -740,6 +742,8 @@ fn RepositoryRow(
                         <Button variant="default" size="xs" on_click=Callback::new(on_disconnect)>
                             "Disconnect"
                         </Button>
+                    })}
+                    {connectable.then(|| view! {
                         <Button variant="default" size="xs" on_click=Callback::new(on_import_issues)>
                             "Import open issues"
                         </Button>
@@ -779,8 +783,9 @@ fn RepositoryRow(
             <Text dimmed=true size="xs" attr:data-testid="forge-filters-status">
                 {forge_filters_summary}
             </Text>
-            {has_webhook.then(|| view! {
-                <IssueImportStatus slug=slug.get_value() reload=import_reload/>
+            <IssueCadence repo=cadence_repo busy outcome reload/>
+            {connectable.then(|| view! {
+                <IssueImportStatus slug=slug.get_value() reload=import_reload list_reload=reload/>
             })}
             <crate::pages::repositories::documents::RepositoryDocuments
                 slug=documents_slug/>
@@ -909,6 +914,81 @@ fn filter_field(field: &str, include: bool) -> &'static str {
         .unwrap_or("forge_filters")
 }
 
+/// What the interval of the issue import does (KAIROS-T-0670).
+const CADENCE_HINT: &str = "Kairos takes the open issues of the repository on this interval. \
+                            It needs a read token, and no webhook. Each run compares the open \
+                            issues with the issues that Kairos took. An issue that is new \
+                            becomes a support task.";
+
+/// The interval of the issue import of a repository, and its sync state
+/// (KAIROS-T-0670). An org admin sets it, changes it, and turns it off.
+/// Another person sees it, and cannot change it. A refusal of the server
+/// shows next to the select.
+#[component]
+fn IssueCadence(
+    repo: api::Repository,
+    busy: RwSignal<bool>,
+    outcome: RwSignal<MutationOutcome>,
+    reload: RwSignal<u32>,
+) -> impl IntoView {
+    let auth = use_auth();
+    let whoami = crate::app::use_whoami();
+    let slug = StoredValue::new(repo.slug.clone());
+    let edit = RwSignal::new(repo.issue_import_interval.clone());
+    let refused: RwSignal<Option<api::Refusal>> = RwSignal::new(None);
+    let admin = move || matches!(whoami.get(), Some(Ok(me)) if super::gating::is_org_admin(&me));
+    let locked = Signal::derive(move || !admin() || busy.get());
+    let on_save = move |_| {
+        let reference = slug.get_value();
+        let value = edit.get_untracked();
+        run_form_mutation(
+            busy,
+            outcome,
+            reload,
+            refused,
+            &["issue_import_interval"],
+            format!("Kairos set the import interval of \"{reference}\" to {value}."),
+            async move {
+                api::update_repository(
+                    auth,
+                    &reference,
+                    api::RepositoryEdit {
+                        issue_import_interval: Some(&value),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .map(|_| ())
+            },
+        );
+    };
+    let lines = repo.issue_sync_lines();
+    view! {
+        <Stack gap="xs" attr:data-testid="issue-cadence">
+            <Group align="end" gap="sm" wrap=true>
+                <Select label="Import open issues every" value=edit
+                    options=repo.issue_import_choices()
+                    disabled=locked
+                    error=refusal_for(refused, "issue_import_interval")/>
+                <Button size="xs" disabled=locked on_click=Callback::new(on_save)>
+                    "Apply interval"
+                </Button>
+            </Group>
+            <Stack gap="xs" attr:data-testid="issue-cadence-state">
+                {lines.into_iter().map(|line| view! {
+                    <Text dimmed=true size="xs">{line}</Text>
+                }).collect_view()}
+            </Stack>
+            <Text dimmed=true size="xs">{CADENCE_HINT}</Text>
+            {move || (!admin()).then(|| view! {
+                <Text dimmed=true size="xs" attr:data-testid="issue-cadence-readonly">
+                    "Only an organization admin can change the interval."
+                </Text>
+            })}
+        </Stack>
+    }
+}
+
 /// The last import of the open issues of a repository (KAIROS-T-0487).
 /// While the job waits or runs, the line reads it again every 2 seconds.
 #[component]
@@ -918,6 +998,8 @@ fn IssueImportStatus(
     slug: String,
     /// Read the import again when this changes.
     reload: RwSignal<u32>,
+    /// Read the list again when the import ends.
+    list_reload: RwSignal<u32>,
 ) -> impl IntoView {
     let auth = use_auth();
     let slug = StoredValue::new(slug);
@@ -926,14 +1008,21 @@ fn IssueImportStatus(
         let _ = reload.get();
         async move { api::issue_import(auth, &slug.get_value()).await }
     });
+    // The list reads the sync state again when the import ends
+    // (KAIROS-T-0670).
+    let was_open = StoredValue::new(false);
     Effect::new(move |_| {
-        if let Some(Ok(Some(found))) = import.get()
-            && found.open()
-        {
-            set_timeout(
-                move || reload.update(|n| *n += 1),
-                std::time::Duration::from_secs(2),
-            );
+        if let Some(Ok(Some(found))) = import.get() {
+            if found.open() {
+                was_open.set_value(true);
+                set_timeout(
+                    move || reload.update(|n| *n += 1),
+                    std::time::Duration::from_secs(2),
+                );
+            } else if was_open.get_value() {
+                was_open.set_value(false);
+                list_reload.update(|n| *n += 1);
+            }
         }
     });
     view! {
@@ -966,6 +1055,61 @@ mod tests {
             assert_ne!(super::filter_field(field, true), "forge_filters");
             assert_ne!(super::filter_field(field, false), "forge_filters");
         }
+    }
+
+    fn repository(json: &str) -> super::api::Repository {
+        serde_json::from_str(&format!(
+            r#"{{"id":"r1","slug":"app","forge":"github","repo_full_name":"o/app",
+                "repo_url":"https://example.com/o/app","default_branch":"main",
+                "team":{{"id":"t1","slug":"platform","name":"Platform"}}{json}}}"#
+        ))
+        .expect("decodes")
+    }
+
+    /// KAIROS-T-0670: an older server sends no sync state; the page says
+    /// that the import is off.
+    #[test]
+    fn a_repository_with_no_sync_state_shows_the_import_off() {
+        let repo = repository("");
+        assert_eq!(repo.issue_import_interval, "off");
+        assert_eq!(
+            repo.issue_sync_lines(),
+            [
+                "Last complete run: none yet.",
+                "Next run: none. The import is off.",
+                "Issues in the record: 0. Last run: 0 listed, 0 new tasks, no run yet.",
+            ]
+        );
+        assert_eq!(repo.issue_import_choices()[0], "off");
+        assert_eq!(repo.issue_import_choices().len(), 6);
+    }
+
+    /// KAIROS-T-0670: the page shows the last complete run, the next run,
+    /// the counts and the last error. An interval that the CLI set stays in
+    /// the choices.
+    #[test]
+    fn the_sync_state_shows_the_runs_the_counts_and_the_error() {
+        let repo = repository(
+            r#","issue_import_interval":"90s","issue_sync":{"next_run_at":"2026-10-20T10:01:30+00:00",
+                "last_run_at":"2026-10-20T10:00:00+00:00","last_run_complete":false,
+                "last_complete_at":"2026-10-20T09:00:00+00:00","record_count":12,
+                "last_run_listed":100,"last_run_imported":7,
+                "last_error":"GitHub refused the read token (401 Unauthorized)."}"#,
+        );
+        assert_eq!(
+            repo.issue_sync_lines(),
+            [
+                "Last complete run: 2026-10-20T09:00:00+00:00.",
+                "Next run: 2026-10-20T10:01:30+00:00.",
+                "Issues in the record: 12. Last run: 100 listed, 7 new tasks, not complete.",
+                "Last error: GitHub refused the read token (401 Unauthorized).",
+            ]
+        );
+        assert_eq!(
+            repo.issue_import_choices().last().map(String::as_str),
+            Some("90s")
+        );
+        assert_eq!(repo.issue_import_choices().len(), 7);
     }
 
     /// KAIROS-T-0329: the form sends the team that the select shows.

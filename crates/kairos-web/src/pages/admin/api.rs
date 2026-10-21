@@ -1008,6 +1008,8 @@ pub struct RepositoryEdit<'a> {
     pub site_enabled: Option<bool>,
     /// The forge filters (KAIROS-T-0479): field → (include, exclude).
     pub forge_filters: Option<&'a [(&'static str, String, String)]>,
+    /// `off`, or `15m`, `1h`, `1d` (KAIROS-T-0670).
+    pub issue_import_interval: Option<&'a str>,
 }
 
 /// `PATCH /api/repositories/{slug}` — every field optional; `team` re-homes.
@@ -1028,6 +1030,7 @@ pub async fn update_repository(
         ("description", edit.description),
         ("code_index_build", edit.code_index_build),
         ("code_index_summaries", edit.code_index_summaries),
+        ("issue_import_interval", edit.issue_import_interval),
     ] {
         if let Some(value) = value {
             body.insert(key.to_string(), Value::String(value.to_string()));

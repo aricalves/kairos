@@ -11,6 +11,7 @@ pub mod embed_text;
 pub mod external_ref;
 pub mod forge;
 pub mod forge_filter;
+pub mod forge_sync;
 pub mod graph;
 pub mod history_diff;
 pub mod items;

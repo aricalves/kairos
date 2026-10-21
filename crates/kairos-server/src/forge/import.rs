@@ -12,6 +12,13 @@
 //! server takes again goes on from the next page, with its counts. The
 //! payload keeps the result after the job ends.
 //!
+//! The cadence (KAIROS-T-0670) queues the same job on the interval of the
+//! repository ([`crate::forge::sync`]). The job is a sync: it lists every
+//! open issue and compares it with the record of taken issues
+//! (`forge_issue_intake`). An issue with no record becomes a task. The job
+//! writes the sync state of the repository ([`kairos_db::issue_sync`]).
+//! The cadence needs only the read token: no webhook connection.
+//!
 //! The token is the read token of the repository, the one that the code
 //! index builder uses ([`crate::credentials::fetch_token`]). It needs Issues:
 //! read on GitHub, and `read_api` on GitLab.
@@ -44,6 +51,7 @@ use crate::error::ApiError;
 use crate::forge::intake::{Outcome, Source, take_issue};
 use crate::jobs::{JobError, JobFuture, JobHandle, JobHandler, Worker};
 use crate::secrets::SecretsKey;
+use kairos_db::issue_sync;
 
 /// The kind of the import job.
 pub const KIND: &str = "issue_import";
@@ -232,12 +240,14 @@ pub async fn fetch_page(
     Ok(Page::Rows { issues, last })
 }
 
-/// What an import needs: the webhook connection, the read token and the
-/// API base. The refusals name what is missing. The request checks this
-/// before it adds the job, and the job again when it starts.
+/// What an import needs: the read token and the API base. An import needs
+/// no webhook connection, the manual import included (KAIROS-T-0670). The
+/// refusals name what is missing. The request checks this before it adds
+/// the job, and the job again when it starts.
 pub struct Target {
     pub repository: Repository,
-    pub connection_id: Uuid,
+    /// The live webhook connection, when the repository has one.
+    pub connection_id: Option<Uuid>,
     pub token: String,
     pub api_base: String,
 }
@@ -260,14 +270,7 @@ pub fn target(
         )));
     }
     let connection = kairos_db::forge::find_connection_for_repository(conn, repository.id)
-        .map_err(crate::api::org::forge::map_error)?
-        .ok_or_else(|| {
-            ApiError::validation(format!(
-                "The repository {} has no webhook connection. Connect the webhook first \
-                 (Admin, Repositories, Connect webhook), with the Issues event, then import.",
-                repository.slug
-            ))
-        })?;
+        .map_err(crate::api::org::forge::map_error)?;
     let (token, _) = crate::credentials::fetch_token(conn, tenant, &repository, key)
         .map_err(crate::credentials::token_refusal)?;
     let token = token.ok_or_else(|| {
@@ -293,21 +296,40 @@ pub fn target(
         _ => github_api.to_string(),
     };
     Ok(Target {
-        connection_id: connection.id,
+        connection_id: connection.map(|c| c.id),
         token: token.expose().to_string(),
         api_base,
         repository,
     })
 }
 
+/// Who asked for an import.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trigger {
+    /// An org admin: `POST /api/repositories/{slug}/import-issues`.
+    Manual,
+    /// The cadence of the repository (KAIROS-T-0670).
+    Cadence,
+}
+
+impl Trigger {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Trigger::Manual => "manual",
+            Trigger::Cadence => "cadence",
+        }
+    }
+}
+
 /// The job that imports the open issues of `repository`.
-pub fn new_job(tenant: &str, repository: &Repository, max_tries: i32) -> NewJob {
+pub fn new_job(tenant: &str, repository: &Repository, max_tries: i32, trigger: Trigger) -> NewJob {
     NewJob {
         tenant: Some(tenant.to_string()),
         payload: json!({
             "repository_id": repository.id,
             "repository": repository.slug,
             "page": 1,
+            "trigger": trigger.as_str(),
         }),
         priority: PRIORITY,
         dedupe_key: Some(job_key(tenant, repository.id)),
@@ -401,6 +423,48 @@ impl Counts {
     }
 }
 
+/// The sync state as the API shows it (KAIROS-T-0670). `row`: the row of
+/// `forge_issue_sync`, or `None` when the repository never had one.
+/// `record_count`: the issues in the record.
+pub fn sync_dto(row: Option<&issue_sync::IssueSync>, record_count: i64) -> dto::IssueSync {
+    let at = |t: Option<chrono::DateTime<chrono::Utc>>| t.map(|t| t.to_rfc3339());
+    match row {
+        None => dto::IssueSync {
+            record_count,
+            ..Default::default()
+        },
+        Some(row) => dto::IssueSync {
+            next_run_at: at(row.next_run_at),
+            last_run_at: at(row.last_run_at),
+            last_run_complete: row.last_run_complete,
+            last_complete_at: at(row.last_complete_at),
+            record_count,
+            last_run_listed: i64::from(row.last_run_listed),
+            last_run_imported: i64::from(row.last_run_imported),
+            last_error: row.last_error.clone(),
+            last_error_at: at(row.last_error_at),
+        },
+    }
+}
+
+/// The import of a repository that has had no job yet (KAIROS-T-0670): the
+/// cadence is on, and the first run is due.
+pub fn idle_dto(repository: &Repository) -> dto::IssueImport {
+    dto::IssueImport {
+        job: String::new(),
+        repository: repository.slug.clone(),
+        state: "idle".to_string(),
+        created_at: repository.updated_at.to_rfc3339(),
+        finished_at: None,
+        waiting_until: None,
+        pages: 0,
+        result: dto::IssueImportResult::default(),
+        error: None,
+        interval: dto::interval_off(),
+        sync: dto::IssueSync::default(),
+    }
+}
+
 /// The import as the API shows it: the job and the counts of its payload.
 pub fn import_dto(job: &Job) -> dto::IssueImport {
     let payload = job.payload_json();
@@ -432,6 +496,8 @@ pub fn import_dto(job: &Job) -> dto::IssueImport {
         pages: counts.page.saturating_sub(1),
         result,
         error: job.last_error.clone(),
+        interval: dto::interval_off(),
+        sync: dto::IssueSync::default(),
     }
 }
 
@@ -474,6 +540,8 @@ impl IssueImportService {
             .map_err(|e| JobError::retry(format!("The database did not answer: {}", e.message)))
     }
 
+    /// Run one import job: write the start and the end to the sync state of
+    /// the repository (KAIROS-T-0670), and run the pages between.
     async fn run_job(self, handle: JobHandle) -> Result<(), JobError> {
         let job = handle.job().clone();
         let tenant = job
@@ -486,6 +554,84 @@ impl IssueImportService {
             .and_then(|id| Uuid::parse_str(id).ok())
             .ok_or_else(|| JobError::fail("The payload of the import has no repository_id."))?;
         let mut counts = Counts::of(&payload);
+        self.sync_write(&tenant, repository_id, None).await;
+        let ran = self
+            .run_pages(&handle, &tenant, repository_id, &mut counts)
+            .await;
+        let seen = (counts.result.imported
+            + counts.result.skipped
+            + counts.result.filtered
+            + counts.result.not_taken) as i32;
+        let end = match &ran {
+            Ok(()) => issue_sync::RunEnd {
+                complete: true,
+                listed: seen,
+                imported: counts.result.imported as i32,
+                error: None,
+            },
+            Err(e) => issue_sync::RunEnd {
+                complete: false,
+                listed: seen,
+                imported: counts.result.imported as i32,
+                error: Some(e.reason.as_str()),
+            },
+        };
+        self.sync_write(&tenant, repository_id, Some(&end)).await;
+        ran
+    }
+
+    /// Write the sync state: the start of a run (`end` is `None`), or its
+    /// end. A failed write is logged: the state is for a person, and the
+    /// import does not fail for it.
+    async fn sync_write(
+        &self,
+        tenant: &str,
+        repository_id: Uuid,
+        end: Option<&issue_sync::RunEnd<'_>>,
+    ) {
+        let end = end.map(|e| {
+            (
+                e.complete,
+                e.listed,
+                e.imported,
+                e.error.map(str::to_string),
+            )
+        });
+        let written = self
+            .blocking
+            .run(tenant, move |conn| {
+                let now = chrono::Utc::now();
+                match &end {
+                    None => issue_sync::run_started(conn, repository_id, now),
+                    Some((complete, listed, imported, error)) => issue_sync::run_finished(
+                        conn,
+                        repository_id,
+                        now,
+                        &issue_sync::RunEnd {
+                            complete: *complete,
+                            listed: *listed,
+                            imported: *imported,
+                            error: error.as_deref(),
+                        },
+                    ),
+                }
+                .map_err(ApiError::internal)
+            })
+            .await;
+        if let Err(e) = written {
+            tracing::warn!(repository = %repository_id, error = %e.message, "issue import: the sync state was not written");
+        }
+    }
+
+    async fn run_pages(
+        &self,
+        handle: &JobHandle,
+        tenant: &str,
+        repository_id: Uuid,
+        counts: &mut Counts,
+    ) -> Result<(), JobError> {
+        let job = handle.job().clone();
+        let tenant = tenant.to_string();
         // The repository, the connection and the token, again: they can
         // change after the request.
         let (key, github_api, slug) = (
@@ -560,7 +706,7 @@ impl IssueImportService {
             };
             // Take the issues of the page, and write the next page and the
             // counts in the same transaction.
-            let mut next = counts.clone();
+            let mut next = (*counts).clone();
             let (slug, connection_id) = (tenant.clone(), target.connection_id);
             let (id, instance) = (job.id, job.leased_by.unwrap_or_default());
             let taken = self
@@ -600,7 +746,7 @@ impl IssueImportService {
                     })
                 })
                 .await;
-            counts = match taken {
+            *counts = match taken {
                 Ok(next) => next,
                 Err(e) if e.code == LEASE_LOST => return Err(lost()),
                 Err(e) => {

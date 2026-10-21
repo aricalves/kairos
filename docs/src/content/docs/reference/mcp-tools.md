@@ -341,6 +341,9 @@ One repository in full. The output has these parts:
 - `forge filters`: `default (admit everything)`, or each field whose include
   or exclude pattern is not the default. See
   [Connect a git forge](../../how-to/connect-a-git-forge/).
+- `issue import`: `off`, or `every` and the import interval, then the last
+  complete run, the next run, the count of issues in the record, and the last
+  error. `update_repository` sets the interval.
 - the team's description of how to work in the repository
 - the documents and the ADRs that impact the repository
 - `## ADRs of the owner team`: the other ADRs of the owner team
@@ -479,10 +482,11 @@ for the current owner team.
 | `slug` | string | no | no change | The new slug. |
 | `team` | string | no | no change | The new owner team. Slug or UUID. |
 | `forge_filters` | object | no | no change | The forge filters (organization admin only). Keys: `branch_name`, `pr_head_branch`, `pr_title`, `pr_author`, `issue_title`, `issue_author`. Each value has `include` and `exclude`, Rust regular expressions of 512 bytes at most. Send only the fields and the patterns to change. |
+| `issue_import_interval` | string | no | no change | How often the repository takes its open issues, with no webhook (organization admin only). `off`, or a number with a unit: `90s`, `15m`, `1h`, `1d`. The shortest interval is `1m` and the longest is `30d`. The repository needs a read token. The tool refuses another form and names the argument. See [Take issues on an interval](../../how-to/connect-a-git-forge/#6-take-issues-on-an-interval-with-no-webhook). |
 
 The call must have one or more of `description`, `default_branch`,
-`default_branch_source`, `repo_url`, `code_index_build`, `slug`, `team` and
-`forge_filters`. The tool refuses an invalid or too long pattern with
+`default_branch_source`, `repo_url`, `code_index_build`, `slug`, `team`,
+`forge_filters` and `issue_import_interval`. The tool refuses an invalid or too long pattern with
 `VALIDATION`. The error names it (`forge_filters.pr_author.exclude`).
 Each checkout keeps the slug in `.claude/kairos.local.md`, and a new slug
 breaks that reference: run `/kairos:bootstrap` in the checkout again.

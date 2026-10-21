@@ -284,6 +284,22 @@ diesel::table! {
 }
 
 diesel::table! {
+    forge_issue_sync (repository_id) {
+        repository_id -> Uuid,
+        next_run_at -> Nullable<Timestamptz>,
+        last_run_started_at -> Nullable<Timestamptz>,
+        last_run_at -> Nullable<Timestamptz>,
+        last_run_complete -> Bool,
+        last_complete_at -> Nullable<Timestamptz>,
+        last_run_listed -> Int4,
+        last_run_imported -> Int4,
+        last_error -> Nullable<Text>,
+        last_error_at -> Nullable<Timestamptz>,
+        updated_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
     forge_refs (id) {
         id -> Uuid,
         repository_id -> Uuid,
@@ -403,7 +419,7 @@ diesel::table! {
     item_links (id) {
         id -> Uuid,
         item_id -> Uuid,
-        connection_id -> Uuid,
+        connection_id -> Nullable<Uuid>,
         kind -> Text,
         external_id -> Text,
         title -> Text,
@@ -413,6 +429,7 @@ diesel::table! {
         forge_updated_at -> Timestamptz,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
+        repository_id -> Nullable<Uuid>,
     }
 }
 
@@ -538,6 +555,7 @@ diesel::table! {
         site_publish_id -> Nullable<Uuid>,
         default_branch_source -> Text,
         forge_branch -> Nullable<Text>,
+        issue_import_interval_secs -> Nullable<Int4>,
     }
 }
 
@@ -806,6 +824,7 @@ diesel::joinable!(documents -> boards (board_id));
 diesel::joinable!(documents -> templates (template_id));
 diesel::joinable!(forge_connections -> repositories (repository_id));
 diesel::joinable!(forge_issue_intake -> repositories (repository_id));
+diesel::joinable!(forge_issue_sync -> repositories (repository_id));
 diesel::joinable!(forge_refs -> repositories (repository_id));
 diesel::joinable!(initiatives -> board_columns (column_id));
 diesel::joinable!(initiatives -> boards (board_id));
@@ -854,6 +873,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     edge_proposals,
     forge_connections,
     forge_issue_intake,
+    forge_issue_sync,
     forge_refs,
     initiatives,
     item_chunks,

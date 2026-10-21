@@ -84,13 +84,15 @@ pub fn router() -> Router<AppState> {
 /// id on the delivery board of the team. The import skips an issue that a
 /// webhook or an earlier import took.
 ///
-/// The repository needs a live webhook connection, because the issue link
-/// hangs off it. It also needs a read token with Issues: read (GitHub) or
-/// `read_api` (GitLab).
+/// The repository needs a read token with Issues: read (GitHub) or
+/// `read_api` (GitLab). It needs no webhook connection.
 ///
 /// The answer is the job, at once. While an import of the repository waits
 /// or runs, the answer is that import: one runs at a time. Read the counts
 /// with `GET /api/repositories/{slug}/import-issues`.
+///
+/// The interval of the repository (`issue_import_interval`, KAIROS-T-0670)
+/// runs the same import on a cadence.
 #[utoipa::path(
     post,
     path = "/api/repositories/{slug}/import-issues",
@@ -100,7 +102,7 @@ pub fn router() -> Router<AppState> {
         (status = 202, description = "The import job: a new one, or the one that waits or runs", body = dto::IssueImport),
         (status = 403, description = "Not an org admin", body = kairos_client::types::ErrorEnvelope),
         (status = 404, description = "Unknown repository", body = kairos_client::types::ErrorEnvelope),
-        (status = 422, description = "The repository has no read token, no webhook connection, or the forge `other`", body = kairos_client::types::ErrorEnvelope),
+        (status = 422, description = "The repository has no read token, or the forge `other`", body = kairos_client::types::ErrorEnvelope),
     ),
 )]
 pub(crate) async fn import_issues(
@@ -121,7 +123,12 @@ pub(crate) async fn import_issues(
         .run(&tenant.slug, move |conn| {
             require_capability(conn, &tenant_slug, None, user, "manage_teams")?;
             let target = import::target(conn, &tenant_slug, &slug, key.as_ref(), &github_api)?;
-            let new = import::new_job(&tenant_slug, &target.repository, max_tries);
+            let new = import::new_job(
+                &tenant_slug,
+                &target.repository,
+                max_tries,
+                import::Trigger::Manual,
+            );
             let dedupe_key = new.dedupe_key.clone().unwrap_or_default();
             // The open job of the repository, or a new one. A job that ends
             // between the two reads leaves room for a new one: look again.
@@ -149,7 +156,11 @@ pub(crate) async fn import_issues(
 /// The last import of the open issues of a repository (KAIROS-T-0487).
 ///
 /// Organization admin only. The answer gives the state of the import and
-/// its counts.
+/// its counts. It also gives the interval of the repository and its sync
+/// state (KAIROS-T-0670). The sync state has the last complete run, the next
+/// run and the count of the record. It also has the counts of the last run
+/// and the last error. A repository with an interval answers before its
+/// first job, with the state `idle`.
 #[utoipa::path(
     get,
     path = "/api/repositories/{slug}/import-issues",
@@ -175,18 +186,36 @@ pub(crate) async fn issue_import(
             require_capability(conn, &tenant_slug, None, user, "manage_teams")?;
             let repository = repositories::resolve(conn, &slug).map_err(map_error)?;
             let key = crate::forge::import::job_key(&tenant_slug, repository.id);
-            kairos_db::jobs::last_by_key(conn, &key)
-                .map_err(ApiError::internal)?
-                .ok_or_else(|| {
-                    ApiError::not_found(format!(
-                        "The repository {} has no import of open issues. Start one: POST \
-                         /api/repositories/{}/import-issues.",
-                        repository.slug, repository.slug
-                    ))
-                })
+            let job = kairos_db::jobs::last_by_key(conn, &key).map_err(ApiError::internal)?;
+            let sync =
+                kairos_db::issue_sync::get(conn, repository.id).map_err(ApiError::internal)?;
+            // KAIROS-T-0670: a repository with the cadence on, or a sync
+            // state, answers before its first job too.
+            if job.is_none() && sync.is_none() && repository.issue_import_interval_secs.is_none() {
+                return Err(ApiError::not_found(format!(
+                    "The repository {} has no import of open issues. Start one: POST \
+                     /api/repositories/{}/import-issues, or set issue_import_interval.",
+                    repository.slug, repository.slug
+                )));
+            }
+            let record = kairos_db::issue_sync::record_count(conn, repository.id)
+                .map_err(ApiError::internal)?;
+            Ok((job, repository, sync, record))
         })
         .await?;
-    Ok(Json(crate::forge::import::import_dto(&job)))
+    let (job, repository, sync, record) = job;
+    let mut out = match job {
+        Some(job) => crate::forge::import::import_dto(&job),
+        None => crate::forge::import::idle_dto(&repository),
+    };
+    out.interval = kairos_core::forge_sync::format_interval(
+        repository.issue_import_interval_secs.map(|s| s as u32),
+    );
+    out.sync = crate::forge::import::sync_dto(sync.as_ref(), record);
+    if repository.issue_import_interval_secs.is_none() {
+        out.sync.next_run_at = None;
+    }
+    Ok(Json(out))
 }
 
 /// [`RepositoryError`] → HTTP.
@@ -431,6 +460,7 @@ pub(crate) fn change(
         && body.code_index_build.is_none()
         && body.code_index_summaries.is_none()
         && body.site_enabled.is_none()
+        && body.issue_import_interval.is_none()
         && body
             .forge_filters
             .as_ref()
@@ -439,9 +469,31 @@ pub(crate) fn change(
         return Err(ApiError::validation(
             "The request has no field to change. Send one or more of slug, repo_url, \
              default_branch, default_branch_source, team, description, code_index_build, \
-             code_index_summaries, site_enabled and forge_filters.",
+             code_index_summaries, site_enabled, issue_import_interval and forge_filters.",
         ));
     }
+    // KAIROS-T-0670: the interval of the issue import. Org admin only, as
+    // the manual import. The form and the limits are checked before
+    // anything is written.
+    let interval = match body.issue_import_interval.as_deref() {
+        Some(text) => {
+            require_capability(conn, tenant_slug, None, user, "manage_teams")?;
+            let parsed = kairos_core::forge_sync::parse_interval(text).map_err(|e| {
+                ApiError::validation(e.to_string())
+                    .with_details(json!({ "field": "issue_import_interval" }))
+            })?;
+            if parsed.is_some() && matches!(current.forge, kairos_db::models::enums::Forge::Other) {
+                return Err(ApiError::validation(format!(
+                    "The repository {} has the forge `other`. Only a github repository or a \
+                     gitlab repository has issues to import.",
+                    current.slug
+                ))
+                .with_details(json!({ "field": "issue_import_interval" })));
+            }
+            Some(parsed.map(|secs| secs as i32))
+        }
+        None => None,
+    };
     // KAIROS-T-0479: the forge filters are set by an org admin only. The
     // patterns are checked before anything is written.
     let filter_changes = match body.forge_filters.as_ref().filter(|f| !f.is_empty()) {
@@ -535,6 +587,8 @@ pub(crate) fn change(
         site_enabled: body
             .site_enabled
             .filter(|enabled| *enabled != current.site_enabled),
+        issue_import_interval_secs: interval
+            .filter(|new| *new != current.issue_import_interval_secs),
         ..Default::default()
     };
     let changed: Vec<&'static str> = [
@@ -559,6 +613,10 @@ pub(crate) fn change(
             changes.code_index_summaries.is_some(),
         ),
         ("site_enabled", changes.site_enabled.is_some()),
+        (
+            "issue_import_interval",
+            changes.issue_import_interval_secs.is_some(),
+        ),
     ]
     .into_iter()
     .filter_map(|(name, changed)| changed.then_some(name))
@@ -567,6 +625,8 @@ pub(crate) fn change(
     // transaction of the switch. The sweep adds no new job for a
     // repository that is off, and a build that runs now goes on.
     let turned_off = changes.code_index_build.as_deref() == Some("off");
+    // KAIROS-T-0670: a new interval makes the next run due now.
+    let interval_on = matches!(changes.issue_import_interval_secs, Some(Some(_)));
     // KAIROS-T-0479: the forge filters, in the same transaction.
     let filters_changed = if filter_changes.is_empty() {
         false
@@ -594,6 +654,10 @@ pub(crate) fn change(
             } else {
                 0
             };
+            if interval_on {
+                kairos_db::issue_sync::schedule(conn, repository.id, chrono::Utc::now())
+                    .map_err(ApiError::internal)?;
+            }
             Ok((repository, cancelled))
         })?
     };
@@ -681,6 +745,15 @@ pub(crate) fn render(
     let tenant = kairos_db::sites::tenant_slug(conn).map_err(ApiError::internal)?;
     // KAIROS-T-0479: the forge filters of each repository.
     let filters = kairos_db::forge_filters::stored_for(conn, &ids).map_err(ApiError::internal)?;
+    // KAIROS-T-0670: the sync state of the issue import, and the record.
+    let syncs: HashMap<Uuid, kairos_db::issue_sync::IssueSync> =
+        kairos_db::issue_sync::get_many(conn, &ids)
+            .map_err(ApiError::internal)?
+            .into_iter()
+            .map(|s| (s.repository_id, s))
+            .collect();
+    let record_counts =
+        kairos_db::issue_sync::record_counts(conn, &ids).map_err(ApiError::internal)?;
 
     rows.into_iter()
         .map(|repo| {
@@ -745,6 +818,21 @@ pub(crate) fn render(
                     .unwrap_or_default(),
                 site,
                 forge_filters: filters_dto(filters.get(&repo.id).map(Vec::as_slice).unwrap_or(&[])),
+                issue_import_interval: kairos_core::forge_sync::format_interval(
+                    repo.issue_import_interval_secs.map(|s| s as u32),
+                ),
+                issue_import_interval_secs: repo.issue_import_interval_secs.map(|s| s as u32),
+                issue_sync: {
+                    let mut sync = crate::forge::import::sync_dto(
+                        syncs.get(&repo.id),
+                        record_counts.get(&repo.id).copied().unwrap_or(0),
+                    );
+                    // An off cadence has no next run.
+                    if repo.issue_import_interval_secs.is_none() {
+                        sync.next_run_at = None;
+                    }
+                    sync
+                },
                 created_at: repo.created_at.to_rfc3339(),
                 updated_at: repo.updated_at.to_rfc3339(),
             })

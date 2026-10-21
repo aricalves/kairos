@@ -447,7 +447,8 @@ async fn repository_fields_against_live_stack() {
             "code_index_build",
             "code_index_summaries",
             "site_enabled",
-            "forge_filters"
+            "forge_filters",
+            "issue_import_interval"
         ]),
         "{response}"
     );

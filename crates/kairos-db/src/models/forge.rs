@@ -63,7 +63,9 @@ pub struct ForgeConnectionChangeset {
 pub struct ItemLink {
     pub id: Uuid,
     pub item_id: Uuid,
-    pub connection_id: Uuid,
+    /// `None` for the link of an issue that the cadence took
+    /// (KAIROS-T-0670): the cadence needs no webhook connection.
+    pub connection_id: Option<Uuid>,
     pub kind: LinkKind,
     /// PR/MR number, or the branch ref.
     pub external_id: String,
@@ -75,6 +77,8 @@ pub struct ItemLink {
     pub forge_updated_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// The repository of a link with no connection (KAIROS-T-0670).
+    pub repository_id: Option<Uuid>,
 }
 
 /// Insert for [`ItemLink`] (also the upsert payload).

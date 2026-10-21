@@ -846,6 +846,11 @@ pub struct UpdateRepositoryParams {
     /// issue_title, issue_author. Send only what changes, for example
     /// `{"pr_author": {"exclude": "^dependabot\\[bot\\]$"}}`.
     pub forge_filters: Option<McpForgeFilters>,
+    /// How often the repository takes its open issues with no webhook
+    /// (KAIROS-T-0670), org admin only: "off", or a number with a unit
+    /// ("90s", "15m", "1h", "1d"). The shortest is 1 minute. The longest is
+    /// 30 days. The repository needs a read token.
+    pub issue_import_interval: Option<String>,
 }
 
 /// One field of `forge_filters` (KAIROS-T-0479).
@@ -1766,7 +1771,7 @@ impl KairosMcp {
             )
             .map_err(ApiError::internal)?;
             let mut out = format!(
-                "# Repository {} — {} {}\n- url: {}\n- default branch: {} ({})\n- owner team: {} ({})\n- owner's delivery board: {}\n- open tasks (all boards): {}\n- webhooks: {}\n- read token: {}\n- write-back: {}\n- code index build: {}\n- code index breaker: {}\n- code index summaries: {}\n- forge filters: {}\n",
+                "# Repository {} — {} {}\n- url: {}\n- default branch: {} ({})\n- owner team: {} ({})\n- owner's delivery board: {}\n- open tasks (all boards): {}\n- webhooks: {}\n- read token: {}\n- write-back: {}\n- code index build: {}\n- code index breaker: {}\n- code index summaries: {}\n- forge filters: {}\n- issue import: {}\n",
                 rendered.slug,
                 rendered.forge,
                 rendered.repo_full_name,
@@ -1805,6 +1810,8 @@ impl KairosMcp {
                 },
                 // KAIROS-T-0479: what the forge webhook picks up.
                 rendered.forge_filters.summary(),
+                // KAIROS-T-0670: the cadence of the issue import.
+                rendered.issue_import_summary(),
             );
             // KAIROS-T-0668: a language whose edges are by name, and why.
             for warning in &rendered.code_index_scip_warnings {
@@ -3779,7 +3786,7 @@ impl KairosMcp {
     // COLLIERY-T-0267 the tool made the comparison, and the REST route
     // always wrote.
     #[tool(
-        description = "Change a repository of the directory: `description` (how to work in it; replaces the full text, so read it with `get_repository` first), `default_branch` (set by hand; the code index builder indexes it), `default_branch_source: forge` (follow the forge's default branch again; not with `default_branch`), `repo_url` (absolute http or https, no credentials), `code_index_build` (`on` or `off`; off cancels waiting builds), `slug` (breaks `.claude/kairos.local.md` in each checkout: run /kairos:bootstrap there), the owner `team` (you need the right on both teams), and `forge_filters` (org admin: include and exclude regex per field for the branches, pull requests and issues that the forge webhook picks up). Send one or more; a value it has already changes nothing. `repository` is a slug or UUID. Needs membership of the owner team, or the org admin role. `set_repository` links a task; `delete_repository` removes a repository."
+        description = "Change a repository of the directory: `description` (how to work in it; replaces the full text, so read it with `get_repository` first), `default_branch` (set by hand; the code index builder indexes it), `default_branch_source: forge` (follow the forge's default branch again; not with `default_branch`), `repo_url` (absolute http or https, no credentials), `code_index_build` (`on` or `off`; off cancels waiting builds), `slug` (breaks `.claude/kairos.local.md` in each checkout: run /kairos:bootstrap there), the owner `team` (you need the right on both teams), `forge_filters` (org admin: include and exclude regex per field for the branches, pull requests and issues that the forge webhook picks up), and `issue_import_interval` (org admin: `off`, or `15m`, `1h`, `1d`: the repository takes its open issues on that cadence, with a read token and no webhook). Send one or more; a value it has already changes nothing. `repository` is a slug or UUID. Needs membership of the owner team, or the org admin role. `set_repository` links a task; `delete_repository` removes a repository."
     )]
     pub async fn update_repository(
         &self,
@@ -3800,11 +3807,12 @@ impl KairosMcp {
                 && params.slug.is_none()
                 && params.team.is_none()
                 && params.forge_filters.is_none()
+                && params.issue_import_interval.is_none()
             {
                 return Err(ApiError::validation(
                     "The call has nothing to change. Send one or more of these arguments: \
                      description, default_branch, default_branch_source, repo_url, \
-                     code_index_build, slug, team, forge_filters.",
+                     code_index_build, slug, team, forge_filters, issue_import_interval.",
                 ));
             }
             // KAIROS-T-0430: refuse an unknown value, and name it.
@@ -3855,6 +3863,7 @@ impl KairosMcp {
                     slug: params.slug,
                     team: params.team,
                     forge_filters: params.forge_filters.map(Into::into),
+                    issue_import_interval: params.issue_import_interval,
                     ..Default::default()
                 },
             )?;
@@ -3875,6 +3884,7 @@ impl KairosMcp {
                 "slug",
                 "team",
                 "forge_filters",
+                "issue_import_interval",
             ]
             .into_iter()
             .filter(|name| change.changed.contains(name))

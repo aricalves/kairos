@@ -381,6 +381,10 @@ Neither `KAIROS_WEBHOOK_SIGNING_KEY` nor `KAIROS_PUBLIC_URL` has a dedicated
 Helm value or `.env.example` entry; both are set through the chart's
 `extraEnv` or the container environment directly.
 
+The import interval of a repository (KAIROS-T-0670) needs neither variable.
+It reads the open issues with the read token of the repository, so it works
+with no webhook. See [Connect a git forge](../../how-to/connect-a-git-forge/#6-take-issues-on-an-interval-with-no-webhook).
+
 ### Server role
 
 | Variable | Type | Default | Description |

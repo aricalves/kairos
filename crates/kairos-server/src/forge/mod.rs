@@ -9,5 +9,6 @@ pub mod auth;
 pub mod import;
 pub mod intake;
 pub mod issue_writeback;
+pub mod sync;
 pub mod webhook;
 pub mod writeback;

@@ -46,6 +46,9 @@ pub const STALE_CLAIMS: &str = "stale-claims";
 /// The report of the keys that expire soon (KAIROS-T-0540).
 pub const KEY_EXPIRING: &str = "key-expiring";
 
+/// The look at the repositories whose issue import is due (KAIROS-T-0670).
+pub const ISSUE_SYNC: &str = "issue-sync";
+
 /// The dedupe key of the runs of the pass `pass`.
 pub fn key(pass: &str) -> String {
     format!("periodic:{pass}")
